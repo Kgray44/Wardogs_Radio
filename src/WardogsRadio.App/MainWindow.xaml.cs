@@ -2981,6 +2981,8 @@ public partial class MainWindow : Window, IMacroActionHandler
         var headsetAvailable = _headsetPeakMeter.TryRead(_config.MonitorDeviceId, out var headsetPeak);
         var monitor = new SignalLevel(headsetAvailable, headsetPeak);
         UpdateNowPlayingVisualizer(music, monitor);
+        if (_active?.ProviderId == "youtube" && monitor.Peak > .001f)
+            _youtubeStartupForensics?.Mark("T10 headset endpoint signal");
         if (_youtubeGameFeed is { HasRecentSignal: true }) _youtubeStartupForensics?.Mark("T10 B1 signal");
         _localStartupForensics?.RecordPeaks(monitor, music, gameEndpoint);
         _sawMicSignal |= microphone.Available && microphone.Peak > .005f;
