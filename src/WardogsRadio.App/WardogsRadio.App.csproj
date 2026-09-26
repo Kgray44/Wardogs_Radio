@@ -1,6 +1,6 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup><OutputType>WinExe</OutputType><UseWPF>true</UseWPF><UseWindowsForms>true</UseWindowsForms><ApplicationManifest>app.manifest</ApplicationManifest><ApplicationIcon>..\..\assets\icons\WARDOGS-Radio.ico</ApplicationIcon><AssemblyName>WARDOGS Radio</AssemblyName></PropertyGroup>
-  <ItemGroup><PackageReference Include="Microsoft.Web.WebView2" Version="1.0.2903.40" /><PackageReference Include="NAudio" Version="3.1.0" /></ItemGroup>
+  <ItemGroup><PackageReference Include="Microsoft.Web.WebView2" Version="1.0.2957.106" /><PackageReference Include="NAudio" Version="3.1.0" /></ItemGroup>
   <ItemGroup><Content Include="youtube-player.html" CopyToOutputDirectory="PreserveNewest" /><Resource Include="..\..\assets\icons\WARDOGS-Radio.png" Link="Assets\WARDOGS-Radio.png" /></ItemGroup>
   <ItemGroup><Using Remove="System.Drawing" /><Using Remove="System.Windows.Forms" /></ItemGroup>
   <ItemGroup><ProjectReference Include="..\WardogsRadio.Core\WardogsRadio.Core.csproj" /><ProjectReference Include="..\WardogsRadio.Playback\WardogsRadio.Playback.csproj" /><ProjectReference Include="..\WardogsRadio.Voicemeeter\WardogsRadio.Voicemeeter.csproj" /><ProjectReference Include="..\WardogsRadio.Input\WardogsRadio.Input.csproj" /><ProjectReference Include="..\WardogsRadio.Diagnostics\WardogsRadio.Diagnostics.csproj" /><ProjectReference Include="..\WardogsRadio.Update\WardogsRadio.Update.csproj" /></ItemGroup>
