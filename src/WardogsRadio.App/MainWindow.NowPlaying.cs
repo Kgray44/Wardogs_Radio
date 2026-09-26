@@ -30,6 +30,7 @@ public partial class MainWindow
     List<Station> _dockStationChoices = [];
     readonly NowPlayingSurfaceStateMachine _nowPlayingSurfaceState = new();
     bool _nowPlayingTransitionTargetExpanded;
+    bool _youtubeOccludedByNowPlaying;
     // Scalar level display only (not an FFT/spectrum).  Keep it deliberately
     // cheap while restoring reliable playback.
     readonly DispatcherTimer _nowPlayingVisualizerTimer = new() { Interval = TimeSpan.FromMilliseconds(100) };
@@ -87,9 +88,8 @@ public partial class MainWindow
         if (string.IsNullOrWhiteSpace(title)) title = station.Name;
         var artist = song is null ? null : _config.MusicLibrary.Songs.FirstOrDefault(candidate => candidate.Id == song.Id)?.Artist;
         if (string.IsNullOrWhiteSpace(artist)) artist = providerSnapshot?.Track?.Artist;
-        if (string.IsNullOrWhiteSpace(artist)) artist = string.IsNullOrWhiteSpace(station.Source) ? station.ProviderId : station.Source;
         DockTrackText.Text = title;
-        DockArtistText.Text = artist;
+        DockArtistText.Text = CompactNowPlayingMetadata.Format(station, artist);
         SurfaceStationState.Text = NowPlayingState(presentation);
         SurfaceRouteText.Text = _outputTelemetry.Confidence == OutputTelemetryConfidence.Unavailable ? "ROUTE UNAVAILABLE" :
             _outputTelemetry.Confidence == OutputTelemetryConfidence.Conflicting ? "ROUTE NEEDS CHECK" : "ROUTE MONITORED";
@@ -247,6 +247,13 @@ public partial class MainWindow
         if (!IsNowPlayingInteractiveTarget(e.OriginalSource)) ToggleNowPlayingSurface();
     }
 
+    void NowPlayingSurface_KeyDown(object sender, KeyEventArgs e)
+    {
+        if (e.OriginalSource != NowPlayingSurface || e.Key is not (Key.Enter or Key.Space)) return;
+        e.Handled = true;
+        ToggleNowPlayingSurface();
+    }
+
     void NowPlayingBackdrop_MouseLeftButtonUp(object sender, MouseButtonEventArgs e)
     {
         e.Handled = true;
@@ -273,6 +280,8 @@ public partial class MainWindow
         {
             StopNowPlayingSurfaceAnimations();
             _nowPlayingSurfaceState.SetImmediately(expanded);
+            SurfaceToggleButton.Visibility = expanded ? Visibility.Visible : Visibility.Collapsed;
+            SetYouTubeNowPlayingOcclusion(expanded);
             ApplyNowPlayingSurfaceLayout(expanded, animate: false, TimeSpan.Zero);
             SetNowPlayingBackdrop(expanded, animate: false, TimeSpan.Zero);
             RefreshNowPlayingPresentation();
@@ -285,6 +294,8 @@ public partial class MainWindow
     void BeginNowPlayingSurfaceTransition(bool expanded)
     {
         _nowPlayingTransitionTargetExpanded = expanded;
+        if (expanded) SurfaceToggleButton.Visibility = Visibility.Visible;
+        if (expanded) SetYouTubeNowPlayingOcclusion(true);
         var duration = TimeSpan.FromMilliseconds(expanded ? 300 : 230);
         if (expanded) NowPlayingBackdrop.Visibility = Visibility.Visible;
         NowPlayingSurface.IsHitTestVisible = true;
@@ -305,11 +316,15 @@ public partial class MainWindow
         var completedExpanded = _nowPlayingTransitionTargetExpanded;
         ApplyNowPlayingSurfaceLayout(completedExpanded, animate: false, TimeSpan.Zero);
         SetNowPlayingBackdrop(completedExpanded, animate: false, TimeSpan.Zero);
+        if (!completedExpanded) SetYouTubeNowPlayingOcclusion(false);
         var next = _nowPlayingSurfaceState.CompleteTransition();
         if (next is NowPlayingSurfaceState.Expanding or NowPlayingSurfaceState.Collapsing)
             BeginNowPlayingSurfaceTransition(_nowPlayingSurfaceState.RequestedExpanded);
         else
+        {
+            if (next == NowPlayingSurfaceState.Compact) SurfaceToggleButton.Visibility = Visibility.Collapsed;
             NowPlayingSurface.IsHitTestVisible = true;
+        }
     }
 
     void ApplyCompactNowPlayingSurface() => ApplyNowPlayingSurfaceLayout(expanded: false, animate: false, TimeSpan.Zero);
@@ -327,15 +342,16 @@ public partial class MainWindow
         if (!animate) NowPlayingSurface.Height = height;
         NowPlayingSurface.CornerRadius = new CornerRadius(expanded ? 12 : 8);
 
-        var trackWidth = expanded ? Math.Min(580, width - 260) : Math.Clamp(width * .23, 180, 250);
-        var timelineWidth = expanded ? Math.Max(280, width - 108) : Math.Max(180, width - 690);
-        SetSurfaceElementLayout(DockStationSelector, expanded ? 18 : 14, expanded ? 17 : 14, expanded ? 274 : 180, animate, duration);
+        var compact = CompactNowPlayingLayout.Create(width);
+        var trackWidth = expanded ? Math.Min(580, width - 260) : compact.TrackWidth;
+        var timelineWidth = expanded ? Math.Max(280, width - 108) : compact.TimelineWidth;
+        SetSurfaceElementLayout(DockStationSelector, expanded ? 18 : compact.StationLeft, expanded ? 17 : 12, expanded ? 274 : compact.StationWidth, animate, duration);
         SetSurfaceElementLayout(SurfaceStationState, 20, 59, 250, animate, duration);
-        SetSurfaceElementLayout(SurfaceTrackPanel, expanded ? (width - trackWidth) / 2 : 205, expanded ? 91 : 14, trackWidth, animate, duration);
-        SetSurfaceElementLayout(DockVisualizerBars, expanded ? (width - 98) / 2 : Math.Min(width - 560, 430), expanded ? 159 : 11, 98, animate, duration);
-        SetSurfaceElementLayout(SurfaceTimeline, expanded ? 54 : Math.Max(650, width - timelineWidth - 50), expanded ? 237 : 20, timelineWidth, animate, duration);
-        SetSurfaceElementLayout(SurfaceTransport, expanded ? (width - 294) / 2 : Math.Min(width - 455, 545), expanded ? 287 : 13, expanded ? 294 : 102, animate, duration);
-        SetSurfaceElementLayout(SurfaceToggleButton, expanded ? width - 132 : width - 48, expanded ? 14 : 13, expanded ? 116 : 36, animate, duration);
+        SetSurfaceElementLayout(SurfaceTrackPanel, expanded ? (width - trackWidth) / 2 : compact.TrackLeft, expanded ? 91 : 14, trackWidth, animate, duration);
+        SetSurfaceElementLayout(DockVisualizerBars, expanded ? (width - 98) / 2 : compact.VisualizerLeft, expanded ? 159 : 11, expanded ? 98 : compact.VisualizerWidth, animate, duration);
+        SetSurfaceElementLayout(SurfaceTimeline, expanded ? 54 : compact.TimelineLeft, expanded ? 237 : 20, timelineWidth, animate, duration);
+        SetSurfaceElementLayout(SurfaceTransport, expanded ? (width - 340) / 2 : compact.TransportLeft, expanded ? 287 : 13, expanded ? 340 : compact.TransportWidth, animate, duration);
+        SetSurfaceElementLayout(SurfaceToggleButton, width - 132, 14, expanded ? 116 : 36, animate, duration);
         SetSurfaceElementLayout(SurfaceSecondaryInfo, 18, Math.Min(height - 55, 348), Math.Max(300, width - 36), animate, duration);
 
         SetSurfaceScale(DockVisualizerBars, expanded ? 1.45 : 1, expanded ? 1.32 : 1, animate, duration);
@@ -343,6 +359,7 @@ public partial class MainWindow
         AnimateSurfaceValue(DockArtistText, TextBlock.FontSizeProperty, expanded ? 13 : 10, animate, duration);
         DockTrackText.TextAlignment = expanded ? TextAlignment.Center : TextAlignment.Left;
         DockArtistText.TextAlignment = expanded ? TextAlignment.Center : TextAlignment.Left;
+        DockArtistText.Visibility = expanded || compact.ShowSecondaryMetadata ? Visibility.Visible : Visibility.Collapsed;
         SurfaceToggleIcon.Text = expanded ? "⌄" : "⌃";
         AnimateSurfaceValue(SurfaceStationState, UIElement.OpacityProperty, expanded ? 1 : 0, animate, duration);
         AnimateSurfaceValue(SurfaceSecondaryInfo, UIElement.OpacityProperty, expanded ? 1 : 0, animate, duration, expanded ? TimeSpan.FromMilliseconds(150) : TimeSpan.Zero);
@@ -350,11 +367,32 @@ public partial class MainWindow
         AnimateSurfaceValue(SurfacePlayLabel, UIElement.OpacityProperty, expanded ? 1 : 0, animate, duration);
         AnimateSurfaceValue(SurfaceNextLabel, UIElement.OpacityProperty, expanded ? 1 : 0, animate, duration);
         AnimateSurfaceValue(SurfaceToggleLabel, UIElement.OpacityProperty, expanded ? 1 : 0, animate, duration);
-        AnimateSurfaceValue(SurfacePreviousLabel, FrameworkElement.WidthProperty, expanded ? 76 : 0, animate, duration);
-        AnimateSurfaceValue(SurfacePlayLabel, FrameworkElement.WidthProperty, expanded ? 53 : 0, animate, duration);
-        AnimateSurfaceValue(SurfaceNextLabel, FrameworkElement.WidthProperty, expanded ? 55 : 0, animate, duration);
+        AnimateSurfaceValue(SurfacePreviousLabel, FrameworkElement.WidthProperty, expanded ? 80 : 0, animate, duration);
+        AnimateSurfaceValue(SurfacePlayLabel, FrameworkElement.WidthProperty, expanded ? 58 : 0, animate, duration);
+        AnimateSurfaceValue(SurfaceNextLabel, FrameworkElement.WidthProperty, expanded ? 64 : 0, animate, duration);
         AnimateSurfaceValue(SurfaceToggleLabel, FrameworkElement.WidthProperty, expanded ? 74 : 0, animate, duration);
         SurfaceSecondaryInfo.IsHitTestVisible = expanded;
+    }
+
+    void SetYouTubeNowPlayingOcclusion(bool occlude)
+    {
+        // Composition-hosted WebView content can ignore WPF sibling z-order on
+        // some GPU paths. While the drawer is expanded, hide only its visual
+        // surface; the iframe and its audio continue running underneath.
+        if (occlude)
+        {
+            if (_active?.ProviderId == "youtube" && YouTubeView.Visibility == Visibility.Visible)
+            {
+                _youtubeOccludedByNowPlaying = true;
+                YouTubeView.Visibility = Visibility.Hidden;
+            }
+            return;
+        }
+
+        if (!_youtubeOccludedByNowPlaying) return;
+        _youtubeOccludedByNowPlaying = false;
+        if (_active?.ProviderId == "youtube" && !_youtubeRouteRecoveryBlocked && _youtubePlayerErrorDetail is null)
+            YouTubeView.Visibility = Visibility.Visible;
     }
 
     void SetNowPlayingBackdrop(bool expanded, bool animate, TimeSpan duration)

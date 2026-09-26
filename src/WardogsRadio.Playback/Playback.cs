@@ -78,6 +78,13 @@ public sealed class MpvProvider(MpvLocator locator, string? configuredPath=null,
  readonly SemaphoreSlim _commands = new(1,1); long _nextRequestId;
  readonly SemaphoreSlim _volumeGate = new(1,1);
  double _requestedVolume=1; bool _firstPlayPending=true;
+ // mpv's volume property is perceptually curved: a value of .6 renders at
+ // roughly .6^3 amplitude.  WARDOGS stores and displays linear gains, so
+ // encode/decode once at the provider boundary for every local output.
+ public static double EncodeLinearVolume(double linearVolume) =>
+   Math.Pow(Math.Clamp(double.IsFinite(linearVolume) ? linearVolume : 0, 0, 1), 1d / 3d);
+ public static double DecodeLinearVolume(double mpvVolume) =>
+   Math.Pow(Math.Clamp(double.IsFinite(mpvVolume) ? mpvVolume : 0, 0, 1), 3d);
  public IReadOnlyList<string> LoadedFiles {get;private set;}=[];
  public int CurrentPlaylistIndex {get;private set;}
  public string ProviderId=>"mpv"; public PlaybackCapabilities Capabilities {get;}=new(false,true,true,true,true,true,true,false,true); public PlaybackSnapshot Snapshot {get;private set;}=new(false,0,null,null,ProviderHealth.Unknown); public event EventHandler? StateChanged;
@@ -241,7 +248,8 @@ public sealed class MpvProvider(MpvLocator locator, string? configuredPath=null,
      for(var step=1;step<=8;step++)
      {
        await Task.Delay(40,ct);
-       await Command(new object[]{"set_property","volume",Math.Clamp(_requestedVolume,0,1)*100*step/8},ct);
+       var fadeGain = EncodeLinearVolume(_requestedVolume * step / 8d);
+       await Command(new object[]{"set_property","volume",fadeGain * 100},ct);
      }
      _firstPlayPending=false;
    }
@@ -267,7 +275,7 @@ public sealed class MpvProvider(MpvLocator locator, string? configuredPath=null,
  }
  public async Task SeekAsync(double s,CancellationToken ct=default){await Command(new object[]{"seek",s,"absolute"},ct);}
  public async Task<double> ReadVolumeAsync(CancellationToken ct=default) =>
-   (await GetNumberProperty("volume",ct)??throw new InvalidOperationException("mpv did not report its volume."))/100;
+   DecodeLinearVolume((await GetNumberProperty("volume",ct)??throw new InvalidOperationException("mpv did not report its volume."))/100);
  public async Task<bool> ReadMuteAsync(CancellationToken ct=default) =>
    await GetBooleanProperty("mute",ct)??throw new InvalidOperationException("mpv did not report its mute state.");
  public async Task<string> ReadAudioDeviceAsync(CancellationToken ct=default) =>
@@ -316,7 +324,7 @@ public sealed class MpvProvider(MpvLocator locator, string? configuredPath=null,
    try
    {
      var target=_requestedVolume;
-     await Command(new object[]{"set_property","volume",target*100},ct);
+     await Command(new object[]{"set_property","volume",EncodeLinearVolume(target)*100},ct);
      // Keep mute explicit for every gain write. Some WASAPI endpoints do not
      // reliably retain a cached mute state across a device start or crossfade.
      await Command(new[]{"set_property","mute",target<=.0001?"yes":"no"},ct);

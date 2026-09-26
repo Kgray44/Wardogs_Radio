@@ -134,6 +134,7 @@ public partial class MainWindow : Window, IMacroActionHandler
     BroadcastLevelTestResult? _broadcastLevelTestResult;
     Station? _active;
     bool _youtubeReady;
+    Task? _youtubeInitializationTask;
     bool _youtubePlayerReady;
     bool _youtubeHasLiveTimeline;
     bool _youtubeStartPaused;
@@ -273,6 +274,10 @@ public partial class MainWindow : Window, IMacroActionHandler
         ApplicationVersionText.Text = "Version " + (File.Exists(Path.Combine(AppContext.BaseDirectory, "VERSION")) ? File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "VERSION")).Trim() : "development build");
         _config = await _store.LoadAsync();
         InitializeNowPlayingSurface();
+        // WebView startup must not wait for optional MPV audio-device discovery.
+        // A slow or stalled MPV probe should never leave YouTube stations on a
+        // permanent loading placeholder.
+        await InitializeYouTubeAsync();
         _loadingPlaybackSettings = true;
         foreach (var station in _config.Profile.Stations) station.Runtime.IsOnAir = false;
         MpvPathBox.Text = _config.MpvPath;
@@ -311,7 +316,6 @@ public partial class MainWindow : Window, IMacroActionHandler
         RefreshSetupWizard();
         RunDiagnostics();
         SetActiveNavigation(DashboardNav);
-        await InitializeYouTubeAsync();
         RefreshSetupWizard();
         _playbackTimer.Start();
         _signalTimer.Start();
@@ -476,9 +480,19 @@ public partial class MainWindow : Window, IMacroActionHandler
         return IntPtr.Zero;
     }
 
-    async Task InitializeYouTubeAsync()
+    Task InitializeYouTubeAsync()
     {
-        if (_youtubeReady) return;
+        if (_youtubeReady) return Task.CompletedTask;
+        return _youtubeInitializationTask ??= InitializeYouTubeCoreAsync();
+    }
+
+    async Task InitializeYouTubeCoreAsync()
+    {
+        // WebView2 WPF may defer Core creation forever when its host is
+        // Collapsed. Keep it in layout but visually hidden just long enough to
+        // establish the Core, then restore the normal collapsed idle state.
+        var restoreCollapsed = YouTubeView.Visibility == Visibility.Collapsed;
+        if (restoreCollapsed) YouTubeView.Visibility = Visibility.Hidden;
         try
         {
             await YouTubeView.EnsureCoreWebView2Async();
@@ -492,6 +506,12 @@ public partial class MainWindow : Window, IMacroActionHandler
         {
             YouTubeProviderState.Text = "WEBVIEW2 UNAVAILABLE";
             Footer.Text = $"WEBVIEW2 UNAVAILABLE · {ex.Message}";
+        }
+        finally
+        {
+            if (restoreCollapsed && YouTubeView.Visibility == Visibility.Hidden)
+                YouTubeView.Visibility = Visibility.Collapsed;
+            _youtubeInitializationTask = null;
         }
     }
 
@@ -590,7 +610,7 @@ public partial class MainWindow : Window, IMacroActionHandler
 
     async void YouTubeMessage(object? sender, CoreWebView2WebMessageReceivedEventArgs e)
     {
-        if (_active?.ProviderId != "youtube" || YouTubeView.Visibility != Visibility.Visible) return;
+        if (_active?.ProviderId != "youtube" || YouTubeView.Visibility == Visibility.Collapsed) return;
         try
         {
             using var message = JsonDocument.Parse(e.TryGetWebMessageAsString());
@@ -2611,7 +2631,7 @@ public partial class MainWindow : Window, IMacroActionHandler
                 message += " Temporary YouTube route repair still needs attention: " + routeDetail;
             }
             else if (_active is { ProviderId: "youtube" } station && _youtubeRouteRecoveryBlocked == false &&
-                YouTubeView.Visibility != Visibility.Visible)
+                YouTubeView.Visibility == Visibility.Collapsed)
             {
                 await LoadYouTubeAsync(station, startPaused: false);
                 message += " Temporary YouTube route recovery completed; reloading the player.";

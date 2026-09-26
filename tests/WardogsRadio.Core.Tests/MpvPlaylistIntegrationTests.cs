@@ -9,6 +9,19 @@ namespace WardogsRadio.Core.Tests;
 
 public sealed class MpvPlaylistIntegrationTests(ITestOutputHelper output)
 {
+    [Theory]
+    [InlineData(1.00, 1.000000)]
+    [InlineData(0.60, 0.843433)]
+    [InlineData(0.35, 0.704730)]
+    [InlineData(0.20, 0.584804)]
+    [InlineData(0.10, 0.464159)]
+    public void LinearGainIsEncodedForMpvsCubicVolumeCurve(double desiredGain, double expectedMpvGain)
+    {
+        var encoded = MpvProvider.EncodeLinearVolume(desiredGain);
+        Assert.InRange(encoded, expectedMpvGain - .00001, expectedMpvGain + .00001);
+        Assert.InRange(MpvProvider.DecodeLinearVolume(encoded), desiredGain - .000001, desiredGain + .000001);
+    }
+
     [Fact]
     public async Task OneLocalFileCanLoadAsMultipleNamedSongRangesInSavedOrder()
     {
