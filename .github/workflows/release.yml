@@ -2,7 +2,7 @@ name: Release WARDOGS Radio
 
 on:
   push:
-    tags: ['v*']
+    tags: ["v*"]
   workflow_dispatch:
     inputs:
       dry_run:
@@ -117,7 +117,8 @@ jobs:
             release/SHA256SUMS.txt
       - name: Publish stable GitHub Release
         if: github.event_name == 'push' || inputs.dry_run == false
-        env: { GH_TOKEN: ${{ github.token }} }
+        env:
+          GH_TOKEN: ${{ github.token }}
         shell: pwsh
         run: gh release create '${{ steps.version.outputs.tag }}' release/WARDOGS-Radio-Setup-v${{ steps.version.outputs.version }}.exe release/update-manifest.json release/SHA256SUMS.txt --title 'WARDOGS Radio v${{ steps.version.outputs.version }}' --notes-file docs/ReleaseNotes-v0.1.0.md --latest
       - name: Verify published updater chain
