@@ -29,6 +29,9 @@ public interface IVoicemeeterRemote : IDisposable
     VoicemeeterStatus Probe();
     bool TryLogin(out string detail);
     bool TryGetLevel(int type, int channel, out float value);
+    /// <summary>Returns the native Remote API status code for a level query. 0 is success.</summary>
+    int GetLevelResult(int type, int channel, out float value) =>
+        TryGetLevel(type, channel, out value) ? 0 : -1;
     bool TryGetParameterFloat(string name, out float value);
     bool TrySetParameterFloat(string name, float value);
 }
@@ -118,9 +121,14 @@ public sealed unsafe class VoicemeeterRemote : IVoicemeeterRemote
 
     public bool TryGetLevel(int type, int channel, out float value)
     {
+        return GetLevelResult(type, channel, out value) == 0;
+    }
+
+    public int GetLevelResult(int type, int channel, out float value)
+    {
         value = 0;
-        if (!_loggedIn || _isParametersDirty == null || _getLevel == null || _isParametersDirty() < 0) return false;
-        fixed (float* pointer = &value) return _getLevel(type, channel, pointer) == 0;
+        if (!_loggedIn || _isParametersDirty == null || _getLevel == null || _isParametersDirty() < 0) return -1;
+        fixed (float* pointer = &value) return _getLevel(type, channel, pointer);
     }
 
     public bool TryGetParameterFloat(string name, out float value)

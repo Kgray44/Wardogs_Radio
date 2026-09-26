@@ -72,7 +72,7 @@ public sealed class MpvPlaylistIntegrationTests
     }
 
     [Fact]
-    public async Task InitialFadeAlwaysUnmutesAPreparedLocalPlayer()
+    public async Task InitialFadePreservesAnExplicitMuteUntilTheCrossfadeSetsGain()
     {
         if (new MpvLocator().Find(null) is null) return;
         var folder = Path.Combine(Path.GetTempPath(), "wardogs-mpv-initial-unmute-" + Guid.NewGuid().ToString("N"));
@@ -89,15 +89,16 @@ public sealed class MpvPlaylistIntegrationTests
 
             await player.PlayAsync();
 
-            Assert.False(await player.ReadMuteAsync());
+            Assert.True(await player.ReadMuteAsync());
             await player.SetVolumeAsync(.3);
+            Assert.False(await player.ReadMuteAsync());
             Assert.InRange(await player.ReadVolumeAsync(), .299, .301);
         }
         finally { Directory.Delete(folder, true); }
     }
 
     [Fact]
-    public async Task ConfiguredLocalOutputsCanStartSilentlyWithoutRemainingMuted()
+    public async Task ConfiguredLocalOutputsReportStateWhenGivenSilentTestContent()
     {
         var root = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "WARDOGS Radio");
         var configuration = await new ConfigurationStore(root).LoadAsync();
@@ -129,6 +130,51 @@ public sealed class MpvPlaylistIntegrationTests
                 Assert.False(await game.ReadMuteAsync());
                 Assert.InRange(await game.ReadVolumeAsync(), .199, .201);
             }
+        }
+        finally { Directory.Delete(folder, true); }
+    }
+
+    [Fact]
+    public async Task ExplicitOwnerProbeVerifiesNonSilentLocalAudioAtHeadsetAndB1Endpoints()
+    {
+        if (Environment.GetEnvironmentVariable("WARDOGS_RUN_LIVE_AUDIO_PROBE") != "1") return;
+        var root = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "WARDOGS Radio");
+        var configuration = await new ConfigurationStore(root).LoadAsync();
+        Assert.False(string.IsNullOrWhiteSpace(configuration.MpvAudioDeviceName), "A specific headset output is required for the live probe.");
+        Assert.False(string.IsNullOrWhiteSpace(configuration.GameMpvAudioDeviceName), "A separate game-music output is required for the live probe.");
+        Assert.False(string.IsNullOrWhiteSpace(configuration.MonitorDeviceId), "The selected headset endpoint is required for the live probe.");
+        Assert.NotNull(new MpvLocator().Find(configuration.MpvPath));
+
+        var b1 = Assert.Single(await new WindowsAudioEndpointService().DiscoverAsync(), endpoint =>
+            endpoint.IsInput && endpoint.Name.StartsWith("Voicemeeter Out " + configuration.GameBus, StringComparison.OrdinalIgnoreCase));
+        var folder = Path.Combine(Path.GetTempPath(), "wardogs-mpv-live-tone-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(folder);
+        try
+        {
+            var tone = Path.Combine(folder, "440hz-minus12dbfs.wav");
+            WriteSineWave(tone, 3);
+            await using var headset = new MpvProvider(new MpvLocator(), configuration.MpvPath, configuration.MpvAudioDeviceName);
+            await using var game = new MpvProvider(new MpvLocator(), configuration.MpvPath, configuration.GameMpvAudioDeviceName);
+            await headset.LoadAsync(new Station { Source = tone });
+            await game.LoadAsync(new Station { Source = tone });
+            await headset.SetVolumeAsync(.10);
+            await game.SetVolumeAsync(.10);
+            using var headsetMeter = new WindowsAudioPeakMeter();
+            using var b1Meter = new WindowsAudioCapturePeakMeter();
+            await Task.WhenAll(headset.PlayAsync(), game.PlayAsync());
+
+            var headsetPeak = 0f;
+            var b1Peak = 0f;
+            for (var attempt = 0; attempt < 24; attempt++)
+            {
+                if (headsetMeter.TryRead(configuration.MonitorDeviceId, out var headsetSample)) headsetPeak = Math.Max(headsetPeak, headsetSample);
+                Assert.True(b1Meter.TryRead(b1.Id, out var b1Sample), "The Voicemeeter B1 capture endpoint could not be opened.");
+                b1Peak = Math.Max(b1Peak, b1Sample);
+                await Task.Delay(100);
+            }
+
+            Assert.True(headsetPeak > .001f, $"The selected headset endpoint stayed silent (peak {headsetPeak:0.0000}).");
+            Assert.True(b1Peak > .001f, $"The Voicemeeter B1 endpoint stayed silent (peak {b1Peak:0.0000}).");
         }
         finally { Directory.Delete(folder, true); }
     }
@@ -331,5 +377,36 @@ public sealed class MpvPlaylistIntegrationTests
         writer.Write(Encoding.ASCII.GetBytes("data"));
         writer.Write(dataBytes);
         writer.Write(new byte[dataBytes]);
+    }
+
+    static void WriteSineWave(string path, int seconds)
+    {
+        const int sampleRate = 48000;
+        const short channels = 2;
+        const short bitsPerSample = 16;
+        const double amplitude = .25; // -12.0 dBFS
+        var frames = sampleRate * seconds;
+        var blockAlign = (short)(channels * bitsPerSample / 8);
+        var dataBytes = frames * blockAlign;
+        using var stream = File.Create(path);
+        using var writer = new BinaryWriter(stream, Encoding.ASCII);
+        writer.Write(Encoding.ASCII.GetBytes("RIFF"));
+        writer.Write(36 + dataBytes);
+        writer.Write(Encoding.ASCII.GetBytes("WAVEfmt "));
+        writer.Write(16);
+        writer.Write((short)1);
+        writer.Write(channels);
+        writer.Write(sampleRate);
+        writer.Write(sampleRate * blockAlign);
+        writer.Write(blockAlign);
+        writer.Write(bitsPerSample);
+        writer.Write(Encoding.ASCII.GetBytes("data"));
+        writer.Write(dataBytes);
+        for (var frame = 0; frame < frames; frame++)
+        {
+            var sample = (short)Math.Round(Math.Sin(2 * Math.PI * 440 * frame / sampleRate) * amplitude * short.MaxValue);
+            writer.Write(sample);
+            writer.Write(sample);
+        }
     }
 }

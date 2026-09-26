@@ -1,6 +1,15 @@
 namespace WardogsRadio.Voicemeeter;
 
 public sealed record SignalLevel(bool Available, float Peak);
+public sealed record RawLevelChannel(int Type, int Channel, bool Available, int ResultCode, float Peak, double? Dbfs);
+public sealed record RawMeterPath(string Name, int Type, int FirstChannel, int ChannelCount, bool Available,
+    int ResultCode, float Peak, double? Dbfs, IReadOnlyList<RawLevelChannel> Channels);
+public sealed record VoicemeeterMeterForensics(string? Edition, IReadOnlyList<RawMeterPath> Strips,
+    IReadOnlyList<RawMeterPath> Buses, IReadOnlyList<RawLevelChannel> ChannelScan)
+{
+    public RawMeterPath? Strip(int index) => Strips.FirstOrDefault(path => path.Name == $"Strip {index}");
+    public RawMeterPath? Bus(string name) => Buses.FirstOrDefault(path => path.Name == name);
+}
 
 /// <summary>Reads real post-mute strip and output-bus peaks from the Voicemeeter Remote API.</summary>
 public sealed class VoicemeeterSignalMonitor(IVoicemeeterRemote remote)
@@ -31,6 +40,58 @@ public sealed class VoicemeeterSignalMonitor(IVoicemeeterRemote remote)
         }
         return new(true, peak);
     }
+
+    /// <summary>
+    /// Captures the documented strip/bus blocks plus a raw 0..3 API-type channel scan.
+    /// The scan deliberately retains native return codes, so a live diagnosis can prove
+    /// a mapping mismatch instead of treating an unavailable read as silence.
+    /// </summary>
+    public VoicemeeterMeterForensics CaptureForensics(string? edition)
+    {
+        var strips = new List<RawMeterPath>();
+        var buses = new List<RawMeterPath>();
+        var stripCount = edition switch { "Standard" => 3, "Banana" => 5, "Potato" => 8, _ => 0 };
+        for (var strip = 0; strip < stripCount; strip++)
+            if (StripChannels(edition, strip, out var first, out var count))
+                strips.Add(ReadRawPath($"Strip {strip}", 2, first, count));
+
+        var busNames = edition switch
+        {
+            "Standard" => new[] { "A1", "B1" },
+            "Banana" => new[] { "A1", "A2", "A3", "B1", "B2" },
+            "Potato" => new[] { "A1", "A2", "A3", "A4", "A5", "B1", "B2", "B3" },
+            _ => []
+        };
+        foreach (var bus in busNames)
+            if (BusChannels(edition, bus, out var first)) buses.Add(ReadRawPath(bus, 3, first, 2));
+
+        var scan = new List<RawLevelChannel>();
+        for (var type = 0; type <= 3; type++)
+            for (var channel = 0; channel < 40; channel++) scan.Add(ReadRawChannel(type, channel));
+        return new(edition, strips, buses, scan);
+    }
+
+    RawMeterPath ReadRawPath(string name, int type, int first, int count)
+    {
+        var channels = Enumerable.Range(first, count).Select(channel => ReadRawChannel(type, channel)).ToList();
+        var available = channels.All(channel => channel.Available);
+        var result = channels.FirstOrDefault(channel => !channel.Available)?.ResultCode ?? 0;
+        // Keep any successfully returned peak even when another channel failed.
+        // The path remains unavailable for control purposes, but the forensic log
+        // can distinguish a partial API block from a genuinely quiet one.
+        var peak = channels.Where(channel => channel.Available).Select(channel => channel.Peak).DefaultIfEmpty(0).Max();
+        return new(name, type, first, count, available, result, peak, Dbfs(peak), channels);
+    }
+
+    RawLevelChannel ReadRawChannel(int type, int channel)
+    {
+        var result = remote.GetLevelResult(type, channel, out var value);
+        var available = result == 0 && float.IsFinite(value);
+        var peak = available ? Math.Max(0, value) : 0;
+        return new(type, channel, available, result, peak, available ? Dbfs(peak) : null);
+    }
+
+    public static double Dbfs(float peak) => peak <= 0 ? double.NegativeInfinity : 20 * Math.Log10(peak);
 
     public static double BarValue(SignalLevel level)
     {

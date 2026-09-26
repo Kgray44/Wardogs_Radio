@@ -31,6 +31,67 @@ public partial class MainWindow : Window, IMacroActionHandler
             StateSummary == "ON" && Macro.Activation == MacroActivation.Toggle ? "TURN OFF" : "RUN";
     }
     sealed record MusicStripChoice(int? Index, string Label);
+    // Kept in memory and surfaced only in Diagnostics while repairing startup. It lets
+    // us distinguish page/player readiness from the optional B1 feed without adding a
+    // noisy normal-playback UI.
+    sealed class YouTubeStartupForensics(string stationName)
+    {
+        readonly Stopwatch _clock = Stopwatch.StartNew();
+        readonly Dictionary<string, long> _events = [];
+        long _uiTickCount;
+        double _uiTickTotalMilliseconds;
+        double _uiTickMaxMilliseconds;
+        public string StationName { get; } = stationName;
+        public void Mark(string stage) => _events.TryAdd(stage, _clock.ElapsedMilliseconds);
+        public void RecordUiTick(TimeSpan elapsed)
+        {
+            _uiTickCount++;
+            _uiTickTotalMilliseconds += elapsed.TotalMilliseconds;
+            _uiTickMaxMilliseconds = Math.Max(_uiTickMaxMilliseconds, elapsed.TotalMilliseconds);
+        }
+        public string Describe() => string.Join(" · ", _events.Select(entry => $"{entry.Key} {entry.Value} ms")) +
+            $" · UI signal tick avg {(_uiTickCount == 0 ? 0 : _uiTickTotalMilliseconds / _uiTickCount):0.0} ms, max {_uiTickMaxMilliseconds:0.0} ms";
+    }
+    // This is temporary repair evidence, intentionally exposed only through
+    // Diagnostics. It records the local path's first observed state and peaks
+    // without pretending a player IPC response proves an audible endpoint.
+    sealed class LocalPlaybackForensics(string stationName)
+    {
+        readonly Stopwatch _clock = Stopwatch.StartNew();
+        readonly Dictionary<string, long> _events = [];
+        public string StationName { get; } = stationName;
+        public string? HeadsetDevice { get; private set; }
+        public string? GameDevice { get; private set; }
+        public double RequestedVolume { get; private set; }
+        public double? ReportedVolume { get; private set; }
+        public bool? ReportedMute { get; private set; }
+        public bool? ReportedPlaying { get; private set; }
+        public float HeadsetPeak { get; private set; }
+        public float MusicStripPeak { get; private set; }
+        public float B1Peak { get; private set; }
+        public void Mark(string stage) => _events.TryAdd(stage, _clock.ElapsedMilliseconds);
+        public void RecordHeadsetSetup(string? device, double requested)
+        {
+            HeadsetDevice = device;
+            RequestedVolume = requested;
+        }
+        public void RecordReportedState(double? volume, bool? mute, bool? playing)
+        {
+            ReportedVolume ??= volume;
+            ReportedMute ??= mute;
+            ReportedPlaying ??= playing;
+        }
+        public void RecordGameDevice(string? device) => GameDevice = device;
+        public void RecordPeaks(SignalLevel headset, SignalLevel music, SignalLevel b1)
+        {
+            HeadsetPeak = Math.Max(HeadsetPeak, headset.Peak);
+            MusicStripPeak = Math.Max(MusicStripPeak, music.Peak);
+            B1Peak = Math.Max(B1Peak, b1.Peak);
+        }
+        public string Describe() => $"{string.Join(" · ", _events.Select(entry => $"{entry.Key} {entry.Value} ms"))}\n" +
+            $"headset={HeadsetDevice ?? "not selected"}; requested={RequestedVolume:P0}; reported volume={ReportedVolume?.ToString("P0") ?? "—"}; mute={ReportedMute?.ToString() ?? "—"}; playing={ReportedPlaying?.ToString() ?? "—"}\n" +
+            $"game device={GameDevice ?? "off"}; endpoint peaks headset={HeadsetPeak:0.0000}, music strip={MusicStripPeak:0.0000}, B1={B1Peak:0.0000}";
+    }
     readonly ConfigurationStore _store;
     readonly WrRadioPackageService _backupTransfer;
     readonly string? _startupPackagePath;
@@ -44,9 +105,12 @@ public partial class MainWindow : Window, IMacroActionHandler
     readonly WindowsAudioPeakMeter _headsetPeakMeter = new();
     readonly WindowsAudioCapturePeakMeter _gameBusEndpointPeakMeter = new();
     readonly ClipGuardController _clipGuard = new();
+    readonly PrimaryPlaybackStartupCoordinator _youtubeStartupCoordinator = new();
     readonly BroadcastLevelTestSession _broadcastLevelTest = new();
     AppConfiguration _config = new();
     OutputHealthSnapshot? _outputHealth;
+    OutputTelemetryAssessment _outputTelemetry = new(OutputTelemetryConfidence.Unavailable, "B1 telemetry has not been sampled yet.");
+    VoicemeeterMeterForensics? _meterForensics;
     BroadcastLevelTestResult? _broadcastLevelTestResult;
     Station? _active;
     bool _youtubeReady;
@@ -58,6 +122,8 @@ public partial class MainWindow : Window, IMacroActionHandler
     string? _youtubeHeadsetRouteError;
     DateTime _nextYouTubeRouteHealthCheck;
     string? _youtubePlayerErrorDetail;
+    YouTubeStartupForensics? _youtubeStartupForensics;
+    LocalPlaybackForensics? _localStartupForensics;
     double? _youtubePendingResumeSeconds;
     string? _gameOutputEndpointName;
     string? _gameOutputEndpointId;
@@ -113,6 +179,8 @@ public partial class MainWindow : Window, IMacroActionHandler
     double _lastAppliedClipGuardGain = 1;
     DateTime _lastClipGuardGainApplyUtc;
     DateTime _nextSetupSignalRefresh;
+    DateTime _nextSignalPresentation;
+    DateTime _nextMeterForensicsCapture;
     DateTimeOffset? _lastOutputEventAt;
     bool _syncingMicrophoneVolumeSliders;
     bool _suppressStationSelectionActivation;
@@ -167,7 +235,12 @@ public partial class MainWindow : Window, IMacroActionHandler
         _macroEngine.ExecutionStarted += (_, id) => Dispatcher.BeginInvoke(() => { _runningMacros.Add(id); RefreshCollections(); });
         _macroEngine.ExecutionFinished += (_, id) => Dispatcher.BeginInvoke(() => { _runningMacros.Remove(id); RefreshCollections(); });
         _playbackTimer.Tick += PlaybackTimer_Tick;
-        _signalTimer.Tick += (_, _) => RefreshSignalMeters();
+        _signalTimer.Tick += (_, _) =>
+        {
+            var started = Stopwatch.GetTimestamp();
+            RefreshSignalMeters();
+            if (_active?.ProviderId == "youtube") _youtubeStartupForensics?.RecordUiTick(Stopwatch.GetElapsedTime(started));
+        };
         _volumeSaveTimer.Tick += async (_, _) =>
         {
             _volumeSaveTimer.Stop();
@@ -180,6 +253,7 @@ public partial class MainWindow : Window, IMacroActionHandler
     {
         ApplicationVersionText.Text = "Version " + (File.Exists(Path.Combine(AppContext.BaseDirectory, "VERSION")) ? File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "VERSION")).Trim() : "development build");
         _config = await _store.LoadAsync();
+        InitializeNowPlayingSurface();
         _loadingPlaybackSettings = true;
         foreach (var station in _config.Profile.Stations) station.Runtime.IsOnAir = false;
         MpvPathBox.Text = _config.MpvPath;
@@ -252,6 +326,7 @@ public partial class MainWindow : Window, IMacroActionHandler
             TimeText.Text = $"{DisplayTime(playback.PositionSeconds)} / {(playback.DurationSeconds is { } duration ? DisplayTime(duration) : "--:--")}";
             if (!_timelineDragging) Progress.Value = playback.DurationSeconds is > 0 ? Math.Clamp(100 * playback.PositionSeconds / playback.DurationSeconds.Value, 0, 100) : 0;
             RefreshDashboardPlaylist();
+            RefreshNowPlayingPresentation();
             if (!string.IsNullOrWhiteSpace(playback.Track?.Title)) NativeStatus.Text = playback.Track.Title;
             NativeHint.Text = playback.IsPlaying ? "Playing · Check your headphones and voice chat output." : "Paused · Press Play to resume.";
             if (priorPlaying != playback.IsPlaying || priorOnAir != station.Runtime.IsOnAir) RefreshCollections();
@@ -424,25 +499,35 @@ public partial class MainWindow : Window, IMacroActionHandler
             var detail = message.RootElement.TryGetProperty("detail", out var value) ? value.GetString() : null;
             if (type == "ready")
             {
+                _youtubeStartupForensics?.Mark("T4 player ready");
                 _youtubePlayerReady = true;
                 UpdateRepeatButton();
                 if (_active.PlaylistSongs.Count > 0) await SetYouTubeSongsAsync(_active);
-                // The WebView renderer now exists. Starting process-loopback here,
-                // immediately before play, avoids attaching capture before the
-                // audio child process is available and lets page navigation begin
-                // without waiting on an audio-device startup.
-                await StartYouTubeGameFeedAsync(_active);
-                await YouTubeCommandAsync(_youtubeRoute.IsActive
-                    ? "volume(100)"
-                    : $"volume({Math.Clamp((int)Math.Round(_config.MasterVolume * _active.Volume * 100), 0, 100)})");
-                var returnSeconds = _youtubePendingResumeSeconds ?? 0;
-                if (returnSeconds > 0)
-                    await YouTubeCommandAsync($"seek({returnSeconds.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture)})");
-                if (!_youtubeStartPaused) await YouTubeCommandAsync("play()");
+                var activeStation = _active;
+                var initialReturnSeconds = _youtubePendingResumeSeconds ?? 0;
+                await _youtubeStartupCoordinator.StartAsync(async () =>
+                {
+                    await YouTubeCommandAsync(_youtubeRoute.IsActive
+                        ? "volume(100)"
+                        : $"volume({Math.Clamp((int)Math.Round(_config.MasterVolume * activeStation.Volume * 100), 0, 100)})");
+                    if (initialReturnSeconds > 0)
+                        await YouTubeCommandAsync($"seek({initialReturnSeconds.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture)})");
+                    if (!_youtubeStartPaused)
+                    {
+                        _youtubeStartupForensics?.Mark("T7 play issued");
+                        await YouTubeCommandAsync("play()");
+                    }
+                }, async () =>
+                {
+                    // B1 process-loopback is secondary and may not block the visible
+                    // player or headset route after the ready message.
+                    _youtubeStartupForensics?.Mark("T5 B1 start scheduled");
+                    await StartYouTubeGameFeedAsync(activeStation);
+                });
                 Footer.Text = _youtubeStartPaused
                     ? "YOUTUBE READY · Station selected in a paused state."
-                    : returnSeconds > 0
-                        ? $"YOUTUBE READY · Resuming near {DisplayTime(returnSeconds)} in the visible player."
+                    : initialReturnSeconds > 0
+                        ? $"YOUTUBE READY · Resuming near {DisplayTime(initialReturnSeconds)} in the visible player."
                         : "YOUTUBE READY · Playback requested in the visible player. If your browser blocks autoplay, press Play in the video.";
                 _youtubeStartPaused = false;
                 if (_youtubeHeadsetRouteError is not null)
@@ -462,6 +547,7 @@ public partial class MainWindow : Window, IMacroActionHandler
                         TimeText.Text = $"00:00 / {(_active.Runtime.DurationSeconds > 0 ? DisplayTime(_active.Runtime.DurationSeconds) : "--:--")}";
                     }
                     else if (playing) _youtubeEnded = false;
+                    if (playing) _youtubeStartupForensics?.Mark("T8 playing state");
                     _active.Runtime.WasPlaying = playing;
                     _active.Runtime.IsOnAir = playing;
                     PlayButton.Content = playing ? "Ⅱ  PAUSE" : "▶  PLAY";
@@ -475,6 +561,7 @@ public partial class MainWindow : Window, IMacroActionHandler
                 var duration = progress.RootElement.GetProperty("duration").GetDouble();
                 if (double.IsFinite(position) && double.IsFinite(duration))
                 {
+                    _youtubeStartupForensics?.Mark("T9 progress");
                     if (_youtubeEnded) return;
                     if (_youtubePendingResumeSeconds is { } pending)
                     {
@@ -497,6 +584,7 @@ public partial class MainWindow : Window, IMacroActionHandler
                     TimeText.Text = $"{DisplayTime(position)} / {(duration > 0 ? DisplayTime(duration) : "--:--")}";
                     if (!_timelineDragging) Progress.Value = duration > 0 ? Math.Clamp(100 * position / duration, 0, 100) : 0;
                     RefreshDashboardPlaylist();
+                    RefreshNowPlayingPresentation();
                 }
             }
             else if (type == "error")
@@ -508,6 +596,7 @@ public partial class MainWindow : Window, IMacroActionHandler
                 Footer.Text = detail == "153" ? "THIS YOUTUBE VIDEO COULD NOT OPEN · Check the connection or try another video." :
                     detail is "101" or "150" ? "THIS VIDEO CANNOT PLAY HERE · Its owner does not allow embedded playback." :
                     "YOUTUBE PLAYBACK FAILED · Try another video or run Diagnostics for details.";
+                RefreshNowPlayingPresentation();
             }
         }
         catch (Exception error)
@@ -569,6 +658,7 @@ public partial class MainWindow : Window, IMacroActionHandler
             cards = cards.Where(x => x.Tag.Equals(statusFilter, StringComparison.OrdinalIgnoreCase)).ToList();
         MacroPageList.ItemsSource = cards;
         RefreshDashboardPlaylist();
+        RefreshNowPlayingPresentation();
     }
 
     void MacroFilter_Changed(object sender, RoutedEventArgs e) { if (IsLoaded) RefreshCollections(); }
@@ -691,11 +781,72 @@ public partial class MainWindow : Window, IMacroActionHandler
         catch (Exception error) { RecentBackupsText.Text = "Backups could not be listed · " + error.Message; }
     }
 
-    bool CanChangeConfiguration(string operation)
+    ConfigurationMutationPlaybackState ConfigurationMutationState() => new(
+        _active is not null,
+        _active?.Runtime.WasPlaying == true || _mpvProvider?.Snapshot.IsPlaying == true ||
+            _gameMpvProvider?.Snapshot.IsPlaying == true,
+        _mpvProvider is not null,
+        _gameMpvProvider is not null,
+        _youtubeGameFeed is not null,
+        _youtubeRoute.IsActive,
+        _externalProvider is not null);
+
+    async Task<bool> PrepareConfigurationMutationAsync(string operation)
     {
-        if (_active is null) return true;
-        RadioDialogWindow.Inform(this, $"{operation} needs playback stopped", "Stop the active station before changing configuration. This keeps the current player and its saved station data in sync.");
-        return false;
+        var state = ConfigurationMutationState();
+        if (state.RequiresStopConfirmation && !RadioDialogWindow.Confirm(this, $"{operation} package?",
+            "WARDOGS needs to stop the current station before changing configuration.", "STOP AND CONTINUE")) return false;
+        if (!state.RequiresDetach) return true;
+
+        _transitionCancellation?.Cancel();
+        await _activationGate.WaitAsync();
+        try
+        {
+            // A selected station is not necessarily playing, but every attached
+            // provider must be detached before imported configuration replaces its
+            // objects. Stop actual playback explicitly; disposal is only the
+            // ownership boundary, never the only stop mechanism.
+            if (state.ActualPlayback)
+            {
+                if (_mpvProvider is { } liveHeadset) try { await liveHeadset.StopAsync(); } catch { }
+                if (_gameMpvProvider is { } liveGame) try { await liveGame.StopAsync(); } catch { }
+                if (_externalProvider is { } liveExternal) try { await liveExternal.StopAsync(); } catch { }
+            }
+            if (_active?.ProviderId == "youtube")
+            {
+                await SilenceYouTubeForRouteTeardownAsync();
+                if (_youtubeReady) YouTubeView.CoreWebView2.Navigate("about:blank");
+            }
+            await StopB1AuditionAsync("Configuration change detached the current station.");
+            await StopGameOutputAsync();
+            if (_mpvProvider is { } headset)
+            {
+                _mpvProvider = null;
+                await headset.DisposeAsync();
+            }
+            if (_externalProvider is { } external)
+            {
+                _externalProvider = null;
+                await external.DisposeAsync();
+            }
+            EndYouTubeRoute("Configuration change detached the current station, but the temporary YouTube route needs restoration.");
+            _active = null;
+            _youtubePlayerReady = false;
+            _youtubeInstanceToken = null;
+            _youtubePendingResumeSeconds = null;
+            _youtubeGameFeedError = null;
+            _localStartupForensics = null;
+            _youtubeStartupForensics = null;
+            _localPlaylistEnded = false;
+            PlayButton.Content = "▶  PLAY";
+            NowStation.Text = "NO STATION SELECTED";
+            NowDetail.Text = "Import or restore will load a fresh station configuration.";
+            NativeStatus.Text = "SELECT A STATION";
+            NativeHint.Text = "Playback was detached before the configuration changed.";
+            UpdateRepeatButton();
+        }
+        finally { _activationGate.Release(); }
+        return true;
     }
 
     async void ExportConfiguration_Click(object sender, RoutedEventArgs e)
@@ -766,7 +917,6 @@ public partial class MainWindow : Window, IMacroActionHandler
 
     async Task ImportPackageAsync(string packagePath)
     {
-        if (!CanChangeConfiguration("Import")) return;
         try
         {
             var package = await _backupTransfer.OpenAsync(packagePath);
@@ -784,6 +934,7 @@ public partial class MainWindow : Window, IMacroActionHandler
                 string.Join("\n• ", preview.Conflicts.Take(3).Select(conflict => $"{conflict.Category}: {conflict.Name} — {conflict.Message}"));
             var warningText = preview.Warnings.Count == 0 ? "" : "\n\nNeeds attention:\n• " + string.Join("\n• ", preview.Warnings.Take(3));
             if (!RadioDialogWindow.Confirm(this, "Import package?", $"{preview.Summary.Stations} station(s), {preview.Summary.Songs} song(s), and {preview.Summary.Macros} macro(s) are ready to import. {conflictText}{warningText}\n\nA full automatic safety backup is created first.", "IMPORT")) return;
+            if (!await PrepareConfigurationMutationAsync("Import")) return;
             var plan = await _backupTransfer.ImportAsync(_store, _config, packagePath, options);
             _config = plan.ProposedConfiguration;
             RefreshCollections(); RefreshLibrary(); RefreshSetupWizard(); RefreshRecentBackups(); RegisterHotkeys();
@@ -794,7 +945,6 @@ public partial class MainWindow : Window, IMacroActionHandler
 
     async void RestoreBackup_Click(object sender, RoutedEventArgs e)
     {
-        if (!CanChangeConfiguration("Restore")) return;
         var picker = new Microsoft.Win32.OpenFileDialog { Filter = "WARDOGS Radio backup (*.wradio)|*.wradio", DefaultExt = ".wradio", InitialDirectory = Directory.Exists(_backupTransfer.BackupsDirectory) ? _backupTransfer.BackupsDirectory : null };
         if (picker.ShowDialog(this) != true) return;
         try
@@ -808,6 +958,7 @@ public partial class MainWindow : Window, IMacroActionHandler
             var summary = _backupTransfer.BuildImportPlan(new AppConfiguration { Profile = new RadioProfile(), MusicLibrary = new MusicLibrary() }, package,
                 new WrRadioImportOptions { Contents = WrRadioContent.All, LibraryConflictResolution = LibraryConflictResolution.ReplaceExisting, StationConflictResolution = StationConflictResolution.ReplaceExisting }).Summary;
             if (!RadioDialogWindow.Confirm(this, "Restore backup?", $"This replaces the active configuration with {summary.Stations} station(s), {summary.Songs} song(s), and {summary.Macros} macro(s). A safety backup of the current configuration is created first.", "RESTORE")) return;
+            if (!await PrepareConfigurationMutationAsync("Restore")) return;
             var plan = await _backupTransfer.RestoreAsync(_store, _config, picker.FileName);
             _config = plan.ProposedConfiguration;
             RefreshCollections(); RefreshLibrary(); RefreshSetupWizard(); RefreshRecentBackups(); RegisterHotkeys();
@@ -869,6 +1020,11 @@ public partial class MainWindow : Window, IMacroActionHandler
             if (!station.Runtime.WasPlaying && !startPaused) await ToggleActiveAsync();
             return;
         }
+        if (station.ProviderId.Equals("youtube", StringComparison.OrdinalIgnoreCase))
+        {
+            _youtubeStartupForensics = new YouTubeStartupForensics(station.Name);
+            _youtubeStartupForensics.Mark("T0 station selected");
+        }
         if (await TryCrossfadeAsync(station, forceCrossfade, fadeDuration, fadeCurve)) return;
         var old = _active;
         if (old is not null)
@@ -910,6 +1066,9 @@ public partial class MainWindow : Window, IMacroActionHandler
             old.Runtime.WasPlaying = false;
         }
         _active = station;
+        _localStartupForensics = station.ProviderId.Equals("mpv", StringComparison.OrdinalIgnoreCase)
+            ? new LocalPlaybackForensics(station.Name) : null;
+        _localStartupForensics?.Mark("station selected");
         _localPlaylistEnded = false;
         station.Runtime.IsOnAir = false;
         station.Runtime.WasPlaying = false;
@@ -925,6 +1084,7 @@ public partial class MainWindow : Window, IMacroActionHandler
             await _externalProvider.DisposeAsync();
             _externalProvider = null;
         }
+        _youtubeStartupForensics?.Mark("T1 previous output teardown complete");
         RefreshActiveStationPresentation(station);
         TransitionText.Text = old is null ? "READY" : $"TUNED FROM {old.Name.ToUpperInvariant()} → {station.Name.ToUpperInvariant()}";
         MusicRouteText.Text = $"{ProviderBadge.Text} · {station.Name}";
@@ -1277,8 +1437,13 @@ public partial class MainWindow : Window, IMacroActionHandler
                 station.Source = station.PlaylistFiles[0];
             }
             _mpvProvider = new MpvProvider(new MpvLocator(), _config.MpvPath, _config.MpvAudioDeviceName);
+            _localStartupForensics?.RecordHeadsetSetup(_config.MpvAudioDeviceName, _config.MasterVolume * station.Volume);
             await _mpvProvider.LoadAsync(station);
+            _localStartupForensics?.Mark("MPV process started / media loaded");
             await _mpvProvider.SetVolumeAsync(_config.MasterVolume * station.Volume);
+            _localStartupForensics?.Mark("audio device selected / requested volume set");
+            _localStartupForensics?.RecordReportedState(
+                await _mpvProvider.ReadVolumeAsync(), await _mpvProvider.ReadMuteAsync(), _mpvProvider.Snapshot.IsPlaying);
             NativeStatus.Text = _mpvProvider.Snapshot.Track?.Title ?? station.Name;
             NativeHint.Text = "Starting playback…";
             Footer.Text = $"{station.Name} is ready. Check your headphones and voice chat output.";
@@ -1314,11 +1479,13 @@ public partial class MainWindow : Window, IMacroActionHandler
         if (string.IsNullOrWhiteSpace(_config.GameMpvAudioDeviceName))
         {
             _youtubeGameFeedError = "Choose a Voicemeeter game-music output in Audio & Routing.";
+            _youtubeStartupForensics?.Mark("T6 B1 unavailable");
             return;
         }
         if (_config.GameMpvAudioDeviceName == _config.MpvAudioDeviceName)
         {
             _youtubeGameFeedError = "Game and headset outputs must be different devices.";
+            _youtubeStartupForensics?.Mark("T6 B1 unavailable");
             return;
         }
         try
@@ -1336,12 +1503,14 @@ public partial class MainWindow : Window, IMacroActionHandler
                 return;
             }
             _youtubeGameFeed = feed;
+            _youtubeStartupForensics?.Mark("T6 B1 feed ready");
             GameMpvOutputState.Text = "YouTube capture is feeding the selected Voicemeeter music input. Verify its live strip and B1 meters.";
         }
         catch (Exception error)
         {
             if (!ReferenceEquals(_active, station) || !station.ProviderId.Equals("youtube", StringComparison.OrdinalIgnoreCase)) return;
             _youtubeGameFeedError = error.Message;
+            _youtubeStartupForensics?.Mark("T6 B1 failed");
             GameMpvOutputState.Text = "YouTube game feed unavailable: " + error.Message;
             Footer.Text = "YOUTUBE HEADSET MAY STILL PLAY · GAME FEED UNAVAILABLE · " + error.Message;
         }
@@ -1375,6 +1544,8 @@ public partial class MainWindow : Window, IMacroActionHandler
             var playback = await headset.RefreshAsync();
             await game.SelectTrackAsync(Math.Clamp(headset.CurrentPlaylistIndex, 0, game.LoadedFiles.Count - 1), playback.PositionSeconds);
             _gameMpvProvider = game;
+            _localStartupForensics?.RecordGameDevice(device);
+            _localStartupForensics?.Mark("game MPV process started / media loaded");
             GameMpvOutputState.Text = $"Game music player ready on {device}. Check its Voicemeeter strip and game bus.";
         }
         catch (Exception error)
@@ -1408,6 +1579,7 @@ public partial class MainWindow : Window, IMacroActionHandler
 
     async Task LoadYouTubeAsync(Station station, bool startPaused)
     {
+        _youtubeStartupForensics ??= new YouTubeStartupForensics(station.Name);
         MusicLibraryService.EnsureStationLibrary(_config, station);
         MusicLibraryService.MaterializeStationPlaylist(_config, station);
         var result = YouTubeUrl.Normalize(station.Source);
@@ -1432,6 +1604,7 @@ public partial class MainWindow : Window, IMacroActionHandler
             try
             {
                 _youtubeRoute.Begin(_config.MonitorDeviceId ?? "", _config.MasterVolume * station.Volume);
+                _youtubeStartupForensics.Mark("T2 temporary route begin complete");
             }
             catch (Exception error)
             {
@@ -1444,7 +1617,11 @@ public partial class MainWindow : Window, IMacroActionHandler
                 _youtubeHeadsetRouteError = error.Message;
             }
         }
-        else _youtubeRoute.SetHeadsetGain(_config.MasterVolume * station.Volume);
+        else
+        {
+            _youtubeRoute.SetHeadsetGain(_config.MasterVolume * station.Volume);
+            _youtubeStartupForensics.Mark("T2 temporary route active");
+        }
         var returnMode = station.ModeOverride ?? _config.DefaultPlaybackMode;
         var returnSeconds = YouTubeReturnPolicy.StartingSeconds(returnMode, station.Runtime.PositionSeconds, station.Runtime.DurationSeconds);
         if (station.PlaylistSongs.Count > 0)
@@ -1456,6 +1633,7 @@ public partial class MainWindow : Window, IMacroActionHandler
         var start = returnSeconds > 0 ? $"&start={Math.Floor(returnSeconds).ToString(System.Globalization.CultureInfo.InvariantCulture)}" : "";
         _youtubeInstanceToken = Guid.NewGuid().ToString("N");
         var repeat = station.EffectiveRepeatMode.ToString().ToLowerInvariant();
+        _youtubeStartupForensics.Mark("T3 WebView navigate");
         YouTubeView.CoreWebView2.Navigate("https://wardogs-radio.example/youtube-player.html" + uri.Query + start + $"&repeat={repeat}&instance={_youtubeInstanceToken}");
         Footer.Text = _youtubeHeadsetRouteError is null
             ? "YouTube player loading · " + result.Message
@@ -2027,7 +2205,11 @@ public partial class MainWindow : Window, IMacroActionHandler
                 await SelectLocalSongAsync(0);
                 _localPlaylistEnded = false;
             }
+            _localStartupForensics?.Mark("play command issued");
             await _mpvProvider.PlayAsync();
+            _localStartupForensics?.RecordReportedState(
+                await _mpvProvider.ReadVolumeAsync(), await _mpvProvider.ReadMuteAsync(), (await _mpvProvider.RefreshAsync()).IsPlaying);
+            _localStartupForensics?.Mark("MPV reported IsPlaying");
             if (_gameMpvProvider is not null)
             {
                 try { await _gameMpvProvider.PlayAsync(); await SyncGameToHeadsetAsync(_mpvProvider); }
@@ -2535,8 +2717,11 @@ public partial class MainWindow : Window, IMacroActionHandler
             await _gameMpvProvider.SetVolumeAsync(GamePlayerGain(station), cancellationToken);
     }
 
-    bool CanAutomaticallyAttenuateGameMusic() =>
-        HasActiveGameMusicFeed();
+    bool CanAutomaticallyAttenuateGameMusic(SignalLevel music) =>
+        HasActiveGameMusicFeed() && music.Available && music.Peak > .005f &&
+        (_active?.ProviderId == "youtube"
+            ? _youtubeGameFeed is { HasRecentSignal: true, Fault: null } && _active.Runtime.WasPlaying
+            : _gameMpvProvider?.Snapshot.IsPlaying == true);
 
     void ApplyClipGuardGainIfNeeded()
     {
@@ -2575,12 +2760,17 @@ public partial class MainWindow : Window, IMacroActionHandler
     {
         var gamePeak = health.GameBus.PeakDbfs is { } db && !double.IsNegativeInfinity(db) ? $"{db:0.0} dBFS" : "—";
         var headroom = health.GameBus.DigitalHeadroomDb is { } room ? $" · headroom {room:0.0} dB" : "";
-        ClipGuardDashboardBadge.Text = $"CLIP GUARD · {health.State.ToString().ToUpperInvariant()}";
-        ClipGuardDashboardDetail.Text = health.State == OutputHealthState.Protected
+        var telemetryVerified = _outputTelemetry.CanControlClipGuard;
+        ClipGuardDashboardBadge.Text = telemetryVerified ? $"CLIP GUARD · {health.State.ToString().ToUpperInvariant()}" :
+            _outputTelemetry.Confidence == OutputTelemetryConfidence.Conflicting ? "OUTPUT TELEMETRY MISMATCH" : "PROTECTION MONITORING NEEDS VERIFICATION";
+        ClipGuardDashboardDetail.Text = !telemetryVerified ? _outputTelemetry.Detail : health.State == OutputHealthState.Protected
             ? $"B1 {gamePeak}{headroom} · reducing game music {health.ProtectionReductionDb:0.0} dB · headphone and mic levels unchanged"
             : $"B1 {gamePeak}{headroom} · {health.Diagnosis}";
-        ClipGuardStateText.Text = $"{health.State.ToString().ToUpperInvariant()} · B1 {gamePeak} · peak hold {(health.GamePeakHoldDbfs is { } hold && !double.IsNegativeInfinity(hold) ? hold.ToString("0.0") + " dBFS" : "—")}";
-        ClipGuardRuntimeText.Text = !health.GameBus.Available
+        ClipGuardStateText.Text = telemetryVerified ? $"{health.State.ToString().ToUpperInvariant()} · B1 {gamePeak} · peak hold {(health.GamePeakHoldDbfs is { } hold && !double.IsNegativeInfinity(hold) ? hold.ToString("0.0") + " dBFS" : "—")}" :
+            $"{_outputTelemetry.Confidence.ToString().ToUpperInvariant()} · automatic protection paused";
+        ClipGuardRuntimeText.Text = !telemetryVerified
+            ? _outputTelemetry.Detail + " The separate game-music gain is neutral."
+            : !health.GameBus.Available
             ? "PROTECTION MONITORING UNAVAILABLE · B1 telemetry is missing, so Clip Guard returned the runtime game-music gain to neutral."
             : !health.IndependentGameMusicPathAvailable
                 ? "Monitor-only for this playback path: no independent game-music feed is active, so Clip Guard will not reduce your headphones or microphone."
@@ -2601,8 +2791,10 @@ public partial class MainWindow : Window, IMacroActionHandler
                 ? $" · protection headroom {_config.ClipGuard.SafetyCeilingDbfs - gameDb:0.0} dB"
                 : $" · exceeds safety ceiling by {gameDb - _config.ClipGuard.SafetyCeilingDbfs:0.0} dB"
             : "";
-        OutputGameText.Text = DescribeLevel("Game mix / B1", health.GameBus, health.GamePeakHoldDbfs) + protectionHeadroom + $" · {health.State.ToString().ToUpperInvariant()}";
-        OutputHealthDiagnosis.Text = health.Diagnosis;
+        OutputGameText.Text = telemetryVerified
+            ? DescribeLevel("Game mix / B1", health.GameBus, health.GamePeakHoldDbfs) + protectionHeadroom + $" · {health.State.ToString().ToUpperInvariant()}"
+            : "Game mix / B1: protection telemetry needs verification · " + _outputTelemetry.Detail;
+        OutputHealthDiagnosis.Text = telemetryVerified ? health.Diagnosis : _outputTelemetry.Detail;
         OutputProtectionDetails.Text = $"Requested game music: {_config.GameMasterVolume:P0} × {(_active?.GameVolume ?? 1):P0} · runtime reduction {health.ProtectionReductionDb:0.0} dB · effective {GamePlayerGain(_active ?? new Station { GameVolume = 1 }):P0}\nSession peak: {DisplayLevel(health.SessionPeakDbfs)} · max reduction {health.SessionMaximumReductionDb:0.0} dB · near clips {health.NearClipEvents} · clips {health.ClipEvents} · interventions {health.ProtectionInterventions}";
         var latest = health.RecentEvents.LastOrDefault();
         if (latest is not null && latest.Timestamp != _lastOutputEventAt)
@@ -2684,39 +2876,34 @@ public partial class MainWindow : Window, IMacroActionHandler
         var microphone = status.Connected ? signals.ReadStrip(status.Edition, _config.MicrophoneStripIndex) : new SignalLevel(false, 0);
         var music = status.Connected ? signals.ReadStrip(status.Edition, _config.MusicStripIndex) : new SignalLevel(false, 0);
         var game = status.Connected ? signals.ReadBus(status.Edition, _config.GameBus) : new SignalLevel(false, 0);
+        UpdateNowPlayingVisualizer(music);
         var gameEndpointAvailable = _gameBusEndpointPeakMeter.TryRead(_gameOutputEndpointId, out var gameEndpointPeak);
         var gameEndpoint = new SignalLevel(gameEndpointAvailable, gameEndpointPeak);
+        _outputTelemetry = OutputTelemetryAssessor.Assess(game.Available, game.Peak, gameEndpoint.Available, gameEndpoint.Peak);
+        if (status.Connected && DateTime.UtcNow >= _nextMeterForensicsCapture)
+        {
+            _nextMeterForensicsCapture = DateTime.UtcNow.AddSeconds(1);
+            try { _meterForensics = signals.CaptureForensics(status.Edition); }
+            catch { /* Diagnostics reports the last valid snapshot; meter polling never interrupts playback. */ }
+        }
+        // The Remote API B1 path is the Clip Guard control sensor only after its
+        // independent Windows B1 observation agrees. On a mismatch, present it as
+        // unavailable to force neutral gain instead of inventing a SAFE result.
+        var controlGame = _outputTelemetry.CanControlClipGuard ? game : new SignalLevel(false, 0);
         _outputHealth = _clipGuard.Sample(_config.ClipGuard,
             AudioLevelSnapshot.FromLinear(music.Available, music.Peak),
             AudioLevelSnapshot.FromLinear(microphone.Available, microphone.Peak),
-            AudioLevelSnapshot.FromLinear(game.Available, game.Peak),
-            CanAutomaticallyAttenuateGameMusic(), DateTimeOffset.UtcNow);
+            AudioLevelSnapshot.FromLinear(controlGame.Available, controlGame.Peak),
+            _outputTelemetry.CanControlClipGuard && CanAutomaticallyAttenuateGameMusic(music), DateTimeOffset.UtcNow);
         _broadcastLevelTest.Observe(_outputHealth);
         ApplyClipGuardGainIfNeeded();
-        UpdateOutputHealthUi(_outputHealth);
-        UpdateGameVoiceBadge(status.Connected, game, gameEndpoint);
         var directHeadset = HeadsetPlayerTargetsSelectedOutput();
         // This is the selected physical listening endpoint, regardless of whether
         // the station reaches it directly or through Voicemeeter A1.
         var headsetAvailable = _headsetPeakMeter.TryRead(_config.MonitorDeviceId, out var headsetPeak);
         var monitor = new SignalLevel(headsetAvailable, headsetPeak);
-        MicMeter.Value = VoicemeeterSignalMonitor.BarValue(microphone);
-        MusicMeter.Value = VoicemeeterSignalMonitor.BarValue(music);
-        GameMeter.Value = VoicemeeterSignalMonitor.BarValue(game);
-        MonitorMeter.Value = VoicemeeterSignalMonitor.BarValue(monitor);
-        SetupMicMeter.Value = MicMeter.Value;
-        SetupMusicMeter.Value = MusicMeter.Value;
-        SetupGameMeter.Value = GameMeter.Value;
-        SetupB1EndpointMeter.Value = VoicemeeterSignalMonitor.BarValue(gameEndpoint);
-        SetupMonitorMeter.Value = MonitorMeter.Value;
-        SetupMicSelectionMeter.Value = MicMeter.Value;
-        SetupMonitorSelectionMeter.Value = MonitorMeter.Value;
-        AudioMicMeter.Value = MicMeter.Value;
-        AudioGameMeter.Value = GameMeter.Value;
-        AudioHeadsetMeter.Value = MonitorMeter.Value;
-        AudioListeningNodeText.Text = _youtubeRoute.IsActive
-            ? "YouTube → Voicemeeter VAIO/A1 → selected headphones"
-            : directHeadset ? "Selected Windows headphones · direct output" : "Voicemeeter A1 listening output";
+        if (_youtubeGameFeed is { HasRecentSignal: true }) _youtubeStartupForensics?.Mark("T10 B1 signal");
+        _localStartupForensics?.RecordPeaks(monitor, music, gameEndpoint);
         _sawMicSignal |= microphone.Available && microphone.Peak > .005f;
         var musicPlayerPlaying = _active?.ProviderId == "youtube"
             ? _youtubeGameFeed is not null && _active.Runtime.WasPlaying
@@ -2726,37 +2913,60 @@ public partial class MainWindow : Window, IMacroActionHandler
         _sawGameSignal |= game.Available && game.Peak > .005f;
         _sawGameEndpointSignal |= gameEndpoint.Available && gameEndpoint.Peak > .005f;
         _sawMonitorSignal |= monitor.Available && monitor.Peak > .005f;
-        MicMeterLabel.Text = !status.Connected ? "MICROPHONE · CONNECT VOICEMEETER" : _config.MicrophoneStripIndex is null ? "MICROPHONE · CHOOSE INPUT" : !microphone.Available ? "MICROPHONE · METER UNAVAILABLE" : microphone.Peak > .005f ? "MICROPHONE · SIGNAL DETECTED" : "MICROPHONE · NO SIGNAL (SPEAK TO TEST)";
-        HeadsetPlayerSignal.Text = _active?.ProviderId == "youtube"
-            ? _youtubePlayerReady
-                ? _active.Runtime.WasPlaying ? "YOUTUBE PLAYER · playing" : "YOUTUBE PLAYER · ready / paused"
-                : "YOUTUBE PLAYER · loading"
-            : _mpvProvider is null
-                ? _active is null ? "HEADSET PLAYER · no station" : "HEADSET PLAYER · no local music player"
+        if (DateTime.UtcNow < _nextSignalPresentation) return;
+        _nextSignalPresentation = DateTime.UtcNow.AddMilliseconds(200);
+        var dashboardVisible = DashboardView.Visibility == Visibility.Visible;
+        var audioVisible = AudioView.Visibility == Visibility.Visible;
+        var setupVisible = SetupView.Visibility == Visibility.Visible;
+        if (audioVisible) UpdateOutputHealthUi(_outputHealth);
+        UpdateGameVoiceBadge(status.Connected, game, gameEndpoint);
+        var microphoneBar = VoicemeeterSignalMonitor.BarValue(microphone);
+        var musicBar = VoicemeeterSignalMonitor.BarValue(music);
+        var gameBar = VoicemeeterSignalMonitor.BarValue(game);
+        var monitorBar = VoicemeeterSignalMonitor.BarValue(monitor);
+        if (setupVisible)
+        {
+            SetupMicMeter.Value = microphoneBar;
+            SetupMusicMeter.Value = musicBar;
+            SetupGameMeter.Value = gameBar;
+            SetupB1EndpointMeter.Value = VoicemeeterSignalMonitor.BarValue(gameEndpoint);
+            SetupMonitorMeter.Value = monitorBar;
+            SetupMicSelectionMeter.Value = microphoneBar;
+            SetupMonitorSelectionMeter.Value = monitorBar;
+            SetupB1EndpointLabel.Text = _gameOutputEndpointName is null ? "VOICEMEETER OUT B1 · WINDOWS ENDPOINT NOT FOUND"
+                : !gameEndpoint.Available ? "VOICEMEETER OUT B1 · CAPTURE UNAVAILABLE"
+                : gameEndpoint.Peak > .005f ? "VOICEMEETER OUT B1 · CAPTURED SIGNAL" : "VOICEMEETER OUT B1 · NO SIGNAL";
+        }
+        if (audioVisible)
+        {
+            AudioMicMeter.Value = microphoneBar;
+            AudioGameMeter.Value = gameBar;
+            AudioHeadsetMeter.Value = monitorBar;
+            AudioListeningNodeText.Text = _youtubeRoute.IsActive
+                ? "YouTube → Voicemeeter VAIO/A1 → selected headphones"
+                : directHeadset ? "Selected Windows headphones · direct output" : "Voicemeeter A1 listening output";
+            GameRouteText.Text = _gameOutputEndpointName is null ? $"{_config.GameBus} output device not found"
+                : $"{_config.GameBus} · {_gameOutputEndpointName} · {(gameEndpoint.Peak > .005f ? "captured signal" : "no signal yet")}";
+        }
+        if (dashboardVisible)
+        {
+            MicMeter.Value = microphoneBar;
+            MusicMeter.Value = musicBar;
+            GameMeter.Value = gameBar;
+            MonitorMeter.Value = monitorBar;
+            MicMeterLabel.Text = !status.Connected ? "MICROPHONE · CONNECT VOICEMEETER" : _config.MicrophoneStripIndex is null ? "MICROPHONE · CHOOSE INPUT" : !microphone.Available ? "MICROPHONE · METER UNAVAILABLE" : microphone.Peak > .005f ? "MICROPHONE · SIGNAL DETECTED" : "MICROPHONE · NO SIGNAL (SPEAK TO TEST)";
+            HeadsetPlayerSignal.Text = _active?.ProviderId == "youtube"
+                ? _youtubePlayerReady ? _active.Runtime.WasPlaying ? "YOUTUBE PLAYER · playing" : "YOUTUBE PLAYER · ready / paused" : "YOUTUBE PLAYER · loading"
+                : _mpvProvider is null ? _active is null ? "HEADSET PLAYER · no station" : "HEADSET PLAYER · no local music player"
                 : _mpvProvider.Snapshot.IsPlaying ? "HEADSET PLAYER · playing" : "HEADSET PLAYER · ready / paused";
-        GamePlayerSignal.Text = _config.GameMpvAudioDeviceName is null
-            ? "GAME MUSIC · output off"
-            : _active?.ProviderId == "youtube" ? _youtubeGameFeed is null ? "GAME MUSIC · YouTube route unavailable" :
-                _youtubeGameFeed.Fault is not null ? "GAME MUSIC · YouTube route stopped: " + _youtubeGameFeed.Fault :
-                _youtubeGameFeed.HasRecentSignal ? "GAME MUSIC · YouTube audio captured for Voicemeeter" : "GAME MUSIC · waiting for YouTube audio"
-            : _gameMpvProvider is null ? "GAME MUSIC · configured but not connected"
-            : _gameMpvProvider.Snapshot.IsPlaying ? "GAME MUSIC · playing" : "GAME MUSIC · ready / paused";
-        var musicInputLabel = _config.GameMpvAudioDeviceName is null ? "VOICEMEETER MUSIC INPUT" : "GAME MUSIC INPUT";
-        MusicMeterLabel.Text = !status.Connected ? $"{musicInputLabel} · CONNECT VOICEMEETER"
-            : _active?.ProviderId == "youtube" && _youtubeGameFeed is null ? "GAME MUSIC INPUT · YOUTUBE ROUTE UNAVAILABLE"
-            : _config.GameMpvAudioDeviceName is null && _config.MpvAudioDeviceName is null ? $"{musicInputLabel} · PLAYER ROUTED DIRECTLY TO HEADSET"
-            : _config.MusicStripIndex is null ? $"{musicInputLabel} · CHOOSE INPUT"
-            : !music.Available ? $"{musicInputLabel} · METER UNAVAILABLE"
-            : music.Peak > .005f ? $"{musicInputLabel} · SIGNAL DETECTED" : $"{musicInputLabel} · NO SIGNAL";
-        GameMeterLabel.Text = !game.Available ? "GAME VOICE BUS · METER UNAVAILABLE" : game.Peak > .005f ? "GAME VOICE BUS · SIGNAL DETECTED" : "GAME VOICE BUS · NO SIGNAL";
-        SetupB1EndpointLabel.Text = _gameOutputEndpointName is null ? "VOICEMEETER OUT B1 · WINDOWS ENDPOINT NOT FOUND"
-            : !gameEndpoint.Available ? "VOICEMEETER OUT B1 · CAPTURE UNAVAILABLE"
-            : gameEndpoint.Peak > .005f ? "VOICEMEETER OUT B1 · CAPTURED SIGNAL" : "VOICEMEETER OUT B1 · NO SIGNAL";
-        GameRouteText.Text = _gameOutputEndpointName is null ? $"{_config.GameBus} output device not found"
-            : $"{_config.GameBus} · {_gameOutputEndpointName} · {(gameEndpoint.Peak > .005f ? "captured signal" : "no signal yet")}";
-        MonitorMeterLabel.Text = string.IsNullOrWhiteSpace(_config.MonitorDeviceId) ? "HEADSET OUTPUT · CHOOSE HEADPHONES"
-            : !monitor.Available ? "HEADSET OUTPUT · WINDOWS METER UNAVAILABLE"
-            : monitor.Peak > .005f ? "HEADSET OUTPUT · SIGNAL DETECTED" : "HEADSET OUTPUT · NO SIGNAL";
+            GamePlayerSignal.Text = _config.GameMpvAudioDeviceName is null ? "GAME MUSIC · output off"
+                : _active?.ProviderId == "youtube" ? _youtubeGameFeed is null ? "GAME MUSIC · YouTube route unavailable" : _youtubeGameFeed.Fault is not null ? "GAME MUSIC · YouTube route stopped: " + _youtubeGameFeed.Fault : _youtubeGameFeed.HasRecentSignal && music.Available && music.Peak <= VoicemeeterSignalMonitor.VisualSignalFloor ? "GAME FEED CAPTURED AUDIO BUT OUTPUT ROUTE IS SILENT" : _youtubeGameFeed.HasRecentSignal && music.Available ? "GAME MUSIC · source and selected Voicemeeter input show signal" : _youtubeGameFeed.HasRecentSignal ? "GAME MUSIC · source captured; configured Voicemeeter input meter unavailable" : "GAME MUSIC · waiting for YouTube audio"
+                : _gameMpvProvider is null ? "GAME MUSIC · configured but not connected" : _gameMpvProvider.Snapshot.IsPlaying ? "GAME MUSIC · playing" : "GAME MUSIC · ready / paused";
+            var musicInputLabel = _config.GameMpvAudioDeviceName is null ? "VOICEMEETER MUSIC INPUT" : "GAME MUSIC INPUT";
+            MusicMeterLabel.Text = !status.Connected ? $"{musicInputLabel} · CONNECT VOICEMEETER" : _active?.ProviderId == "youtube" && _youtubeGameFeed is null ? "GAME MUSIC INPUT · YOUTUBE ROUTE UNAVAILABLE" : _config.GameMpvAudioDeviceName is null && _config.MpvAudioDeviceName is null ? $"{musicInputLabel} · PLAYER ROUTED DIRECTLY TO HEADSET" : _config.MusicStripIndex is null ? $"{musicInputLabel} · CHOOSE INPUT" : !music.Available ? $"{musicInputLabel} · METER UNAVAILABLE" : music.Peak > .005f ? $"{musicInputLabel} · SIGNAL DETECTED" : $"{musicInputLabel} · NO SIGNAL";
+            GameMeterLabel.Text = _outputTelemetry.Confidence == OutputTelemetryConfidence.Conflicting ? "GAME VOICE BUS · OUTPUT TELEMETRY MISMATCH" : !game.Available ? "GAME VOICE BUS · METER UNAVAILABLE" : game.Peak > .005f ? "GAME VOICE BUS · SIGNAL DETECTED" : "GAME VOICE BUS · NO SIGNAL";
+            MonitorMeterLabel.Text = string.IsNullOrWhiteSpace(_config.MonitorDeviceId) ? "HEADSET OUTPUT · CHOOSE HEADPHONES" : !monitor.Available ? "HEADSET OUTPUT · WINDOWS METER UNAVAILABLE" : monitor.Peak > .005f ? "HEADSET OUTPUT · SIGNAL DETECTED" : "HEADSET OUTPUT · NO SIGNAL";
+        }
         if (SetupView.Visibility == Visibility.Visible && DateTime.UtcNow >= _nextSetupSignalRefresh)
         {
             _nextSetupSignalRefresh = DateTime.UtcNow.AddSeconds(1);
@@ -3848,13 +4058,26 @@ public partial class MainWindow : Window, IMacroActionHandler
         if (_youtubePlayerErrorDetail is not null)
             checks.Add(new DiagnosticItem("YouTube playback", "WARNING",
                 "The selected YouTube video could not play", _youtubePlayerErrorDetail));
+        if (_youtubeStartupForensics is { } startup)
+            checks.Add(new DiagnosticItem("YouTube startup timing", "INFO",
+                startup.StationName, startup.Describe()));
+        if (_localStartupForensics is { } localStartup)
+            checks.Add(new DiagnosticItem("Local playback forensics", "INFO",
+                localStartup.StationName, localStartup.Describe()));
         var vm = _vm.Probe();
         VmStatus.Text = vm.Connected ? "VM: CONNECTED" : vm.Installed ? "VM: INSTALLED" : "VM: MISSING";
-        var mixer = vm.Connected ? new VoicemeeterSignalMonitor(_vm).ReadBus(vm.Edition, _config.GameBus) : new SignalLevel(false, 0);
+        var meterMonitor = new VoicemeeterSignalMonitor(_vm);
+        var mixer = vm.Connected ? meterMonitor.ReadBus(vm.Edition, _config.GameBus) : new SignalLevel(false, 0);
+        if (vm.Connected)
+        {
+            try { _meterForensics = meterMonitor.CaptureForensics(vm.Edition); }
+            catch (Exception error) { checks.Add(new DiagnosticItem("Voicemeeter raw meter forensics", "WARNING", "Raw Remote API scan failed", error.Message)); }
+        }
         var endpointAvailable = _gameBusEndpointPeakMeter.TryRead(_gameOutputEndpointId, out var endpointPeak);
         if (_gameBusEndpointPeakMeter.LastError is { } captureError)
             checks.Add(new DiagnosticItem("B1 output capture", "WARNING",
                 "WARDOGS could not capture the B1 Windows output for its live verification meter", captureError));
+        AddMeterForensicsDiagnostics(checks, vm, endpointAvailable, endpointPeak);
         DiagnosticList.ItemsSource = checks;
         UpdateGameVoiceBadge(vm.Connected, mixer, new SignalLevel(endpointAvailable, endpointPeak));
         GameRouteText.Text = _gameOutputEndpointName is null ? $"{_config.GameBus} output device not found" : $"{_config.GameBus} · {_gameOutputEndpointName} · check its live endpoint meter";
@@ -3869,6 +4092,49 @@ public partial class MainWindow : Window, IMacroActionHandler
         HealthText.Text = vm.Installed ? "ATTENTION · SETUP AND VERIFICATION REQUIRED" : "DEGRADED — SETUP REQUIRED";
     }
 
+    static string RawPeak(RawMeterPath? path) => path is null ? "not mapped" :
+        $"linear={path.Peak:0.000000}; dBFS={(path.Dbfs is { } db && !double.IsNegativeInfinity(db) ? db.ToString("0.0") : "-∞")}; available={path.Available}; result={path.ResultCode}; type={path.Type}; channels={path.FirstChannel}-{path.FirstChannel + path.ChannelCount - 1}";
+
+    static string RawScan(RawLevelChannel channel) =>
+        $"T{channel.Type}:C{channel.Channel}={channel.Peak:0.000000}/{(channel.Dbfs is { } db && !double.IsNegativeInfinity(db) ? db.ToString("0.0") : "-∞")}dBFS;avail={channel.Available};rc={channel.ResultCode}";
+
+    string RouteState(int? strip, string route)
+    {
+        if (strip is not { } index) return "not configured";
+        return _vm.TryGetParameterFloat($"Strip[{index}].{route}", out var value)
+            ? value > .5f ? "ON" : "OFF" : "unavailable";
+    }
+
+    void AddMeterForensicsDiagnostics(ICollection<DiagnosticItem> checks, VoicemeeterStatus vm,
+        bool windowsB1Available, float windowsB1Peak)
+    {
+        if (_meterForensics is not { } report)
+        {
+            checks.Add(new DiagnosticItem("Voicemeeter raw meter forensics", "NOT TESTED",
+                "No connected raw meter snapshot", "Connect Voicemeeter and run Diagnostics while audio is playing."));
+            return;
+        }
+
+        var selected = _config.MusicStripIndex is { } selectedIndex ? report.Strip(selectedIndex) : null;
+        var b1 = report.Bus("B1");
+        var feed = _youtubeGameFeed;
+        var metadata = $"edition={vm.Edition ?? "unknown"}; MusicStripIndex={_config.MusicStripIndex?.ToString() ?? "none"}; " +
+            $"MicrophoneStripIndex={_config.MicrophoneStripIndex?.ToString() ?? "none"}; GameBus={_config.GameBus}; " +
+            $"GameMpvAudioDeviceName={_config.GameMpvAudioDeviceName ?? "off"}; MpvAudioDeviceName={_config.MpvAudioDeviceName ?? "default"}\n" +
+            $"YouTube feed endpoint={feed?.OutputEndpointName ?? "none"} ({feed?.OutputEndpointId ?? "—"}); capturedPeak={feed?.CapturedPeak.ToString("0.000000") ?? "—"}; " +
+            $"recent={feed?.HasRecentSignal.ToString() ?? "false"}; requested/effective gain={feed?.RequestedGain.ToString("0.000") ?? "—"}/{feed?.EffectiveGain.ToString("0.000") ?? "—"}\n" +
+            $"selected strip A1={RouteState(_config.MusicStripIndex, "A1")}; B1={RouteState(_config.MusicStripIndex, "B1")}; selected raw: {RawPeak(selected)}\n" +
+            $"Remote API B1: {RawPeak(b1)}; Windows Voicemeeter Out {_config.GameBus}: linear={windowsB1Peak:0.000000}; " +
+            $"available={windowsB1Available}; headset Windows peak={(_headsetPeakMeter.TryRead(_config.MonitorDeviceId, out var headsetPeak) ? headsetPeak.ToString("0.000000") : "unavailable")}\n" +
+            $"telemetry confidence={_outputTelemetry.Confidence}; {_outputTelemetry.Detail}";
+        checks.Add(new DiagnosticItem("Voicemeeter raw meter forensics", _outputTelemetry.Confidence == OutputTelemetryConfidence.Conflicting ? "WARNING" : "INFO",
+            "Direct strip/bus meter snapshot", metadata));
+        checks.Add(new DiagnosticItem("Voicemeeter raw mapped paths", "INFO", "Every configured Banana strip and bus block",
+            string.Join(Environment.NewLine, report.Strips.Concat(report.Buses).Select(path => $"{path.Name}: {RawPeak(path)}"))));
+        checks.Add(new DiagnosticItem("Voicemeeter raw channel scan", "INFO", "API types 0-3, channels 0-39",
+            string.Join(Environment.NewLine, report.ChannelScan.Select(RawScan))));
+    }
+
     void AddLimiterDiagnostic(ICollection<DiagnosticItem> checks)
     {
         if (!_voicemeeterStripLimiter.IsActive) return;
@@ -3881,6 +4147,20 @@ public partial class MainWindow : Window, IMacroActionHandler
     async void ExportDiagnostics_Click(object s, RoutedEventArgs e)
     {
         var path = await _diagnostics.ExportAsync(_config, Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "WARDOGS Radio", "Diagnostics"), _mpvProvider?.Snapshot, _youtubeReady, _outputHealth);
+        if (_meterForensics is { } report)
+        {
+            var vm = _vm.Probe();
+            var endpointAvailable = _gameBusEndpointPeakMeter.TryRead(_gameOutputEndpointId, out var endpointPeak);
+            var selected = _config.MusicStripIndex is { } index ? report.Strip(index) : null;
+            var feed = _youtubeGameFeed;
+            var text = Environment.NewLine + "RAW VOICEMEETER METER FORENSICS" + Environment.NewLine +
+                $"edition={vm.Edition}; selectedStrip={_config.MusicStripIndex}; gameBus={_config.GameBus}; " +
+                $"remoteB1={RawPeak(report.Bus("B1"))}; windowsB1={endpointPeak:0.000000}; windowsB1Available={endpointAvailable}; " +
+                $"confidence={_outputTelemetry.Confidence}; feedEndpoint={feed?.OutputEndpointName ?? "none"}; captured={feed?.CapturedPeak.ToString("0.000000") ?? "—"}" + Environment.NewLine +
+                string.Join(Environment.NewLine, report.Strips.Concat(report.Buses).Select(path => $"{path.Name}: {RawPeak(path)}")) + Environment.NewLine +
+                string.Join(Environment.NewLine, report.ChannelScan.Select(RawScan)) + Environment.NewLine;
+            await File.AppendAllTextAsync(path, text);
+        }
         Footer.Text = "DIAGNOSTIC REPORT EXPORTED · " + path;
     }
 
@@ -4255,6 +4535,7 @@ public partial class MainWindow : Window, IMacroActionHandler
         IsEnabled = false;
         _playbackTimer.Stop();
         _signalTimer.Stop();
+        StopNowPlayingSurface();
         _b1PointerHeld = false;
         _b1KeyboardHeld = false;
         await SilenceYouTubeForRouteTeardownAsync();

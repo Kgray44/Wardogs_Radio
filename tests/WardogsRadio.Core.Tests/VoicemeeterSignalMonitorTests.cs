@@ -22,7 +22,7 @@ public sealed class VoicemeeterSignalMonitorTests
     [InlineData("Banana", 3, 6, 8)]
     [InlineData("Banana", 4, 14, 8)]
     [InlineData("Potato", 5, 10, 8)]
-    public void StripMappingMatchesOfficialRemoteApi(string edition, int strip, int first, int count)
+    public void StripChannelBlockLayoutMatchesTheCurrentMonitorContract(string edition, int strip, int first, int count)
     {
         Assert.True(VoicemeeterSignalMonitor.StripChannels(edition, strip, out var actualFirst, out var actualCount));
         Assert.Equal(first, actualFirst);
@@ -34,7 +34,7 @@ public sealed class VoicemeeterSignalMonitorTests
     [InlineData("Banana", "A1", 0)]
     [InlineData("Banana", "B1", 24)]
     [InlineData("Potato", "B1", 40)]
-    public void BusMappingMatchesOfficialRemoteApi(string edition, string bus, int first)
+    public void BusChannelBlockLayoutMatchesTheCurrentMonitorContract(string edition, string bus, int first)
     {
         Assert.True(VoicemeeterSignalMonitor.BusChannels(edition, bus, out var actual));
         Assert.Equal(first, actual);
@@ -61,6 +61,24 @@ public sealed class VoicemeeterSignalMonitorTests
 
         Assert.Equal(0, VoicemeeterSignalMonitor.BarValue(belowFloor));
         Assert.True(VoicemeeterSignalMonitor.BarValue(audible) > 0);
+    }
+
+    [Fact]
+    public void RawForensicsIncludesEveryBananaStripBusAndNativeReadResult()
+    {
+        var remote = new Remote();
+        remote.Levels[(2, 14)] = .25f;
+        remote.Levels[(2, 15)] = .50f;
+        remote.Levels[(3, 24)] = .30f;
+        remote.Levels[(3, 25)] = .40f;
+        var report = new VoicemeeterSignalMonitor(remote).CaptureForensics("Banana");
+
+        Assert.Equal(5, report.Strips.Count);
+        Assert.Equal(new[] { "A1", "A2", "A3", "B1", "B2" }, report.Buses.Select(bus => bus.Name));
+        Assert.Equal(.5f, report.Strip(4)!.Peak);
+        Assert.Equal(.4f, report.Bus("B1")!.Peak);
+        Assert.Contains(report.ChannelScan, channel => channel.Type == 2 && channel.Channel == 14 && channel.Available);
+        Assert.Contains(report.ChannelScan, channel => channel.Type == 0 && channel.Channel == 39 && channel.ResultCode != 0);
     }
 
     [Fact]

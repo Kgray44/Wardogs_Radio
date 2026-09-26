@@ -66,7 +66,10 @@ public sealed class AppConfiguration
     public int SchemaVersion { get; set; } = MusicLibraryService.CurrentSchemaVersion; public bool SetupComplete { get; set; } public RadioProfile Profile { get; set; } = Defaults.Profile(); public MusicLibrary MusicLibrary { get; set; } = new();
     public ClipGuardSettings ClipGuard { get; set; } = new();
     public PlaybackMode DefaultPlaybackMode { get; set; } = PlaybackMode.Player; public bool CrossfadeEnabled { get; set; } = true; public double CrossfadeSeconds { get; set; } = .65; public TransitionCurve Curve { get; set; } = TransitionCurve.EqualPower;
-    public double MasterVolume { get; set; } = .8; public double GameMasterVolume { get; set; } = .8; public double MicrophoneVolume { get; set; } = 1; public bool MicrophoneVolumeInitialized { get; set; } public Dictionary<string, YouTubeTrackMetadata> YouTubeDurationCache { get; set; } = [];
+    public double MasterVolume { get; set; } = .8; public double GameMasterVolume { get; set; } = .8; public double MicrophoneVolume { get; set; } = 1; public bool MicrophoneVolumeInitialized { get; set; }
+    /// <summary>Suppresses decorative Now Playing transitions while retaining all controls and state updates.</summary>
+    public bool ReduceMotion { get; set; }
+    public Dictionary<string, YouTubeTrackMetadata> YouTubeDurationCache { get; set; } = [];
     public Dictionary<string, double> LocalDurationCache { get; set; } = [];
     public string? MpvPath { get; set; } public string? MpvAudioDeviceName { get; set; } public string? GameMpvAudioDeviceName { get; set; } public string? YtDlpPath { get; set; } public string? MonitorDeviceId { get; set; } public string? MicrophoneDeviceId { get; set; } public string GameBus { get; set; } = "B1";
     public int? MusicStripIndex { get; set; } public int? MicrophoneStripIndex { get; set; }

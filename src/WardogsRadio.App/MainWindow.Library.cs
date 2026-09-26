@@ -10,6 +10,16 @@ public partial class MainWindow
         string CueCountLabel);
     sealed record LibrarySongCard(LibrarySong SongRecord, string Name, string Detail, string StationCountLabel);
 
+    static string LibraryProviderLabel(string providerId) => providerId switch
+    {
+        "youtube" => "YOUTUBE VIDEO",
+        "soundcloud" => "SOUNDCLOUD",
+        "applemusic" => "APPLE MUSIC",
+        "external-audio" => "MUSIC APP",
+        "mpv" => "LOCAL / MPV",
+        _ => providerId.ToUpperInvariant()
+    };
+
     void RefreshLibrary()
     {
         var library = _config.MusicLibrary;
@@ -20,7 +30,7 @@ public partial class MainWindow
         LibrarySourceCountText.Text = $"{library.Sources.Count} sources";
         LibrarySourceList.ItemsSource = library.Sources.OrderBy(source => source.Name, StringComparer.OrdinalIgnoreCase)
             .Select(source => new LibrarySourceCard(source, source.Name,
-                source.ProviderId == "youtube" ? "YOUTUBE VIDEO" : "LOCAL / MPV",
+                LibraryProviderLabel(source.ProviderId),
                 source.Source,
                 $"{library.Songs.Count(song => song.SourceId == source.Id)} {Plural(library.Songs.Count(song => song.SourceId == source.Id), "cue", "cues")}"))
             .ToList();
@@ -45,7 +55,7 @@ public partial class MainWindow
                 $"Used by {usage.GetValueOrDefault(song.Id)} {Plural(usage.GetValueOrDefault(song.Id), "station", "stations")}"))
             .ToList();
         LibrarySongHintText.Text = library.Sources.Count == 0
-            ? "Add a local source or a single YouTube video to create reusable cues."
+            ? "Add any station source. Local files and single YouTube videos can create reusable timeline cues."
             : "Editing a cue updates every station that references it.";
     }
 

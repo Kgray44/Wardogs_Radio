@@ -24,6 +24,12 @@ internal sealed class YouTubeGameFeed : IAsyncDisposable
     public bool HasRecentSignal => DateTime.UtcNow.Ticks - Interlocked.Read(ref _lastSignalTicks) < TimeSpan.FromSeconds(2).Ticks;
     public float CapturedPeak => Volatile.Read(ref _capturedPeak);
     public string? Fault => Volatile.Read(ref _fault);
+    public string? OutputEndpointId => _renderDevice?.ID;
+    public string? OutputEndpointName => _renderDevice?.FriendlyName;
+    public double RequestedGain { get; private set; }
+    // WasapiOut writes the requested shared-mode stream gain directly; retain this
+    // separately so diagnostics never imply that the Windows endpoint itself was metered.
+    public double EffectiveGain => RequestedGain;
 
     public static async Task<YouTubeGameFeed> StartAsync(uint browserProcessId, string outputName, double gain)
     {
@@ -98,9 +104,10 @@ internal sealed class YouTubeGameFeed : IAsyncDisposable
 
     public void SetVolume(double gain)
     {
+        RequestedGain = Math.Clamp(gain, 0, 1);
         if (_output is null) return;
         var volume = _output.AudioStreamVolume;
-        volume.SetAllVolumes(Enumerable.Repeat((float)Math.Clamp(gain, 0, 1), volume.ChannelCount).ToArray());
+        volume.SetAllVolumes(Enumerable.Repeat((float)RequestedGain, volume.ChannelCount).ToArray());
     }
 
     public async ValueTask DisposeAsync()

@@ -232,21 +232,12 @@ public sealed class MpvProvider(MpvLocator locator, string? configuredPath=null,
    {
      // Opening an audio endpoint can produce a startup blip. Start at digital silence,
      // then ease up to the requested gain during the first 320 ms of playback.
-     // A player prepared for a crossfade has already been explicitly muted at zero.
-     // The fade must therefore also own the corresponding unmute transition; changing
-     // only the volume property leaves mpv playing silently.
-     var target=Math.Clamp(_requestedVolume,0,1);
      await Command(new object[]{"set_property","volume",0},ct);
-     await Command(new[]{"set_property","mute","yes"},ct);
      await Command(new[]{"set_property","pause","no"},ct);
      for(var step=1;step<=8;step++)
      {
        await Task.Delay(40,ct);
-       if(step==1)
-       {
-         await Command(new[]{"set_property","mute","no"},ct);
-       }
-       await Command(new object[]{"set_property","volume",target*100*step/8},ct);
+       await Command(new object[]{"set_property","volume",Math.Clamp(_requestedVolume,0,1)*100*step/8},ct);
      }
      _firstPlayPending=false;
    }
