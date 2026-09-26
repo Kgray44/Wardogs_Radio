@@ -266,6 +266,8 @@ public sealed class MpvProvider(MpvLocator locator, string? configuredPath=null,
    (await GetNumberProperty("volume",ct)??throw new InvalidOperationException("mpv did not report its volume."))/100;
  public async Task<bool> ReadMuteAsync(CancellationToken ct=default) =>
    await GetBooleanProperty("mute",ct)??throw new InvalidOperationException("mpv did not report its mute state.");
+ public async Task<string> ReadAudioDeviceAsync(CancellationToken ct=default) =>
+   await GetStringProperty("audio-device",ct)??throw new InvalidOperationException("mpv did not report its audio device.");
  public async Task SelectTrackAsync(int index,double seconds,CancellationToken ct=default)
  {
    if(index<0||index>=LoadedFiles.Count)throw new ArgumentOutOfRangeException(nameof(index));

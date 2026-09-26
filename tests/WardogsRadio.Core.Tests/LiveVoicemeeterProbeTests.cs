@@ -38,10 +38,14 @@ public sealed class LiveVoicemeeterProbeTests(ITestOutputHelper output)
             var a1 = routes.TryRead(strip, "A1", out enabled) ? enabled.ToString() : "unavailable";
             var level = monitor.ReadStrip(status.Edition, strip);
             remote.TryGetParameterString($"Strip[{strip}].device.name", out var stripDevice);
-            output.WriteLine($"Strip {strip}: device={stripDevice}, B1={b1}, A1={a1}, available={level.Available}, peak={level.Peak}");
+            remote.TryGetParameterFloat($"Strip[{strip}].Gain", out var gain);
+            output.WriteLine($"Strip {strip}: device={stripDevice}, B1={b1}, A1={a1}, gain={gain:0.0} dB, available={level.Available}, peak={level.Peak}");
         }
         var bus = monitor.ReadBus(status.Edition, "B1");
-        output.WriteLine($"B1: available={bus.Available}, peak={bus.Peak}");
+        var b1Index = status.Edition switch { "Standard" => 1, "Banana" => 3, "Potato" => 5, _ => -1 };
+        remote.TryGetParameterFloat($"Bus[{b1Index}].Gain", out var b1Gain);
+        remote.TryGetParameterFloat($"Bus[{b1Index}].Mute", out var b1Mute);
+        output.WriteLine($"B1: available={bus.Available}, peak={bus.Peak}, gain={b1Gain:0.0} dB, mute={b1Mute > .5f}");
     }
 
     [Fact]

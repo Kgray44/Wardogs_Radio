@@ -2,6 +2,7 @@ using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using System.Windows.Media.Animation;
 using System.Windows.Threading;
@@ -42,7 +43,8 @@ public partial class MainWindow
 
     void RefreshNowPlayingPresentation()
     {
-        var station = _active;
+        var presentation = GetPlaybackPresentation();
+        var station = presentation.Station;
         _syncingNowPlayingStationSelector = true;
         try
         {
@@ -74,7 +76,7 @@ public partial class MainWindow
         MusicLibraryService.MaterializeStationPlaylist(_config, station);
         var index = station.ProviderId == "mpv" ? _mpvProvider?.CurrentPlaylistIndex ?? station.Runtime.SequenceIndex : station.Runtime.SequenceIndex;
         index = Math.Clamp(index, 0, Math.Max(0, station.PlaylistSongs.Count - 1));
-        var song = station.PlaylistSongs.ElementAtOrDefault(index);
+        var song = presentation.Song ?? station.PlaylistSongs.ElementAtOrDefault(index);
         var providerSnapshot = _mpvProvider?.Snapshot ?? _externalProvider?.Snapshot;
         var title = song?.Name;
         if (string.IsNullOrWhiteSpace(title)) title = providerSnapshot?.Track?.Title;
@@ -88,14 +90,59 @@ public partial class MainWindow
         DrawerStationIcon.Data = IconCatalog.Get(station.IconId).Shape;
         try { DrawerStationIcon.Fill = (System.Windows.Media.Brush)new System.Windows.Media.BrushConverter().ConvertFromString(station.AccentColor)!; }
         catch { DrawerStationIcon.Fill = (System.Windows.Media.Brush)FindResource("OliveBrush"); }
-        DrawerStateText.Text = NowPlayingState(station, providerSnapshot);
+        DrawerStateText.Text = NowPlayingState(presentation);
         DrawerRouteText.Text = _outputTelemetry.Confidence == OutputTelemetryConfidence.Unavailable ? "ROUTE UNAVAILABLE" :
             _outputTelemetry.Confidence == OutputTelemetryConfidence.Conflicting ? "ROUTE NEEDS CHECK" : "ROUTE MONITORED";
         DrawerUpNextText.Text = NextSongText(station, index);
-        var absolutePosition = station.ProviderId == "mpv" ? _mpvProvider?.Snapshot.PositionSeconds ?? station.Runtime.PositionSeconds : station.Runtime.PositionSeconds;
-        var sourceDuration = station.ProviderId == "mpv" ? _mpvProvider?.Snapshot.DurationSeconds ?? station.Runtime.DurationSeconds : station.Runtime.DurationSeconds;
-        SetNowPlayingTimeline(NowPlayingTimeline.FromSource(absolutePosition, sourceDuration, song?.StartSeconds ?? 0, song?.EndSeconds));
-        SetNowPlayingTransport(station.Runtime.WasPlaying);
+        SetNowPlayingTimeline(presentation.LogicalSongPosition is { } position
+            ? new NowPlayingTimeline(position, presentation.LogicalSongDuration) : new NowPlayingTimeline(0, null));
+        SetNowPlayingTransport(presentation.IsPlaying);
+    }
+
+    PlaybackPresentationState GetPlaybackPresentation()
+    {
+        if (_active is not { } station) return PlaybackPresentationState.Idle;
+        var index = station.ProviderId == "mpv" ? _mpvProvider?.CurrentPlaylistIndex ?? station.Runtime.SequenceIndex : station.Runtime.SequenceIndex;
+        var song = station.PlaylistSongs.ElementAtOrDefault(Math.Clamp(index, 0, Math.Max(0, station.PlaylistSongs.Count - 1)));
+        if (station.ProviderId == "youtube")
+        {
+            var kind = _youtubeRouteRecoveryBlocked ? PlaybackPresentationKind.RouteRepairRequired :
+                _youtubePlayerErrorDetail is not null ? PlaybackPresentationKind.Error :
+                !_youtubePlayerReady ? PlaybackPresentationKind.Loading :
+                station.Runtime.WasPlaying ? PlaybackPresentationKind.Playing : PlaybackPresentationKind.Paused;
+            // A persisted resume point is not player telemetry. The embedded page must
+            // send one current progress message before a YouTube timeline is exposed.
+            var hasLiveTimeline = _youtubePlayerReady && _youtubeHasLiveTimeline;
+            return PlaybackPresentationState.Create(station, song,
+                _youtubePlayerErrorDetail is null ? ProviderHealth.Ready : ProviderHealth.Failed,
+                kind, _youtubePlayerReady, station.Runtime.WasPlaying,
+                hasLiveTimeline ? station.Runtime.PositionSeconds : null,
+                hasLiveTimeline ? station.Runtime.DurationSeconds : null);
+        }
+
+        var snapshot = station.ProviderId == "mpv" ? _mpvProvider?.Snapshot : _externalProvider?.Snapshot;
+        var ready = snapshot?.Health == ProviderHealth.Ready;
+        var nativeKind = snapshot?.Health is ProviderHealth.Failed or ProviderHealth.Unavailable ? PlaybackPresentationKind.Unavailable :
+            !ready ? PlaybackPresentationKind.Loading : snapshot!.IsPlaying ? PlaybackPresentationKind.Playing : PlaybackPresentationKind.Paused;
+        return PlaybackPresentationState.Create(station, song, snapshot?.Health ?? ProviderHealth.Unknown, nativeKind,
+            ready, snapshot?.IsPlaying ?? false, snapshot?.PositionSeconds, snapshot?.DurationSeconds);
+    }
+
+    void RefreshSharedPlaybackPresentation()
+    {
+        var presentation = GetPlaybackPresentation();
+        if (presentation.LogicalSongPosition is { } position && presentation.LogicalSongDuration is { } duration)
+        {
+            TimeText.Text = $"{DisplayTime(position)} / {DisplayTime(duration)}";
+            if (!_timelineDragging) Progress.Value = duration > 0 ? Math.Clamp(100 * position / duration, 0, 100) : 0;
+        }
+        else
+        {
+            TimeText.Text = "--:-- / --:--";
+            if (!_timelineDragging) Progress.Value = 0;
+        }
+        PlayButton.Content = presentation.IsPlaying ? "Ⅱ  PAUSE" : "▶  PLAY";
+        RefreshNowPlayingPresentation();
     }
 
     static bool SameStationChoices(IReadOnlyList<Station> left, IReadOnlyList<Station> right) =>
@@ -103,15 +150,18 @@ public partial class MainWindow
             pair.First.Name == pair.Second.Name && pair.First.IconId == pair.Second.IconId &&
             pair.First.AccentColor == pair.Second.AccentColor && pair.First.Order == pair.Second.Order);
 
-    string NowPlayingState(Station station, PlaybackSnapshot? snapshot)
+    static string NowPlayingState(PlaybackPresentationState presentation)
     {
-        if (station.Runtime.WasPlaying) return "● ON AIR";
-        if (snapshot?.Health is ProviderHealth.Unavailable or ProviderHealth.Failed) return "! SOURCE UNAVAILABLE";
-        // YouTube's first ready/progress event is the authoritative handoff from the
-        // embedded player. Keep this explicit rather than misrepresenting load as pause.
-        if (station.ProviderId == "youtube" && !_youtubePlayerReady) return "◌ ACQUIRING SIGNAL";
-        if (snapshot?.Health == ProviderHealth.Unknown) return "◌ ACQUIRING SIGNAL";
-        return "Ⅱ PAUSED";
+        return presentation.Kind switch
+        {
+            PlaybackPresentationKind.Playing => "● ON AIR",
+            PlaybackPresentationKind.Loading => "◌ ACQUIRING SIGNAL",
+            PlaybackPresentationKind.Ready => "◌ AWAITING LIVE TIMELINE",
+            PlaybackPresentationKind.RouteRepairRequired => "! ROUTE REPAIR REQUIRED",
+            PlaybackPresentationKind.Error => "! PLAYER ERROR",
+            PlaybackPresentationKind.Unavailable => "! SOURCE UNAVAILABLE",
+            _ => "Ⅱ PAUSED"
+        };
     }
 
     static string NextSongText(Station station, int index)
@@ -150,7 +200,8 @@ public partial class MainWindow
         // This method is invoked by the existing 10 Hz Voicemeeter polling loop.
         // Rendering is deliberately decoupled below at 30 FPS, so the mixer is never
         // polled at UI-frame rate.
-        _nowPlayingLevelTarget = music.Available ? VoicemeeterSignalMonitor.BarValue(music) / 100d : 0;
+        _nowPlayingLevelTarget = _active?.ProviderId == "youtube" && !_youtubePlayerReady
+            ? 0 : music.Available ? VoicemeeterSignalMonitor.BarValue(music) / 100d : 0;
     }
 
     void RenderNowPlayingVisualizer()
@@ -174,8 +225,34 @@ public partial class MainWindow
         RefreshNowPlayingPresentation();
     }
 
-    void NowPlayingExpand_Click(object sender, RoutedEventArgs e) => OpenNowPlayingDrawer();
-    void NowPlayingDockTrack_MouseLeftButtonUp(object sender, MouseButtonEventArgs e) => OpenNowPlayingDrawer();
+    void NowPlayingExpand_Click(object sender, RoutedEventArgs e) => ToggleNowPlayingDrawer();
+
+    static bool IsNowPlayingInteractiveTarget(object source) => source is DependencyObject node &&
+        (FindAncestor<ButtonBase>(node) is not null || FindAncestor<ComboBox>(node) is not null ||
+         FindAncestor<Slider>(node) is not null || FindAncestor<Thumb>(node) is not null);
+
+    static T? FindAncestor<T>(DependencyObject source) where T : DependencyObject
+    {
+        for (var node = source; node is not null; node = System.Windows.Media.VisualTreeHelper.GetParent(node))
+            if (node is T match) return match;
+        return null;
+    }
+
+    void NowPlayingDock_MouseLeftButtonUp(object sender, MouseButtonEventArgs e)
+    {
+        if (!IsNowPlayingInteractiveTarget(e.OriginalSource)) ToggleNowPlayingDrawer();
+    }
+
+    void NowPlayingDrawerHeader_MouseLeftButtonUp(object sender, MouseButtonEventArgs e)
+    {
+        if (!IsNowPlayingInteractiveTarget(e.OriginalSource)) ToggleNowPlayingDrawer();
+    }
+
+    void ToggleNowPlayingDrawer()
+    {
+        if (NowPlayingDrawer.Visibility == Visibility.Visible) CloseNowPlayingDrawer();
+        else OpenNowPlayingDrawer();
+    }
 
     void OpenNowPlayingDrawer()
     {
@@ -186,7 +263,9 @@ public partial class MainWindow
         RefreshNowPlayingPresentation();
     }
 
-    void NowPlayingCollapse_Click(object sender, RoutedEventArgs e)
+    void NowPlayingCollapse_Click(object sender, RoutedEventArgs e) => CloseNowPlayingDrawer();
+
+    void CloseNowPlayingDrawer()
     {
         if (_config.ReduceMotion) { NowPlayingDrawer.Visibility = Visibility.Collapsed; return; }
         var close = new DoubleAnimation(1, 0, TimeSpan.FromMilliseconds(140));

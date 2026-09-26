@@ -115,6 +115,7 @@ public partial class MainWindow : Window, IMacroActionHandler
     Station? _active;
     bool _youtubeReady;
     bool _youtubePlayerReady;
+    bool _youtubeHasLiveTimeline;
     bool _youtubeStartPaused;
     bool _youtubeEnded;
     string? _youtubeInstanceToken;
@@ -281,9 +282,8 @@ public partial class MainWindow : Window, IMacroActionHandler
             ReconcileVoicemeeterLimiter();
             await _store.SaveAsync(_config);
         }
-        if (!_youtubeRoute.TryRecover(out var routeRecovery))
+        if (!EnsureYouTubeRouteHealthy(out var routeRecovery))
         {
-            _youtubeRouteRecoveryBlocked = true;
             Footer.Text = routeRecovery;
         }
         PopulateMusicStrips();
@@ -322,11 +322,8 @@ public partial class MainWindow : Window, IMacroActionHandler
             var priorOnAir = station.Runtime.IsOnAir;
             station.Runtime.WasPlaying = playback.IsPlaying;
             station.Runtime.IsOnAir = playback.IsPlaying;
-            PlayButton.Content = playback.IsPlaying ? "Ⅱ  PAUSE" : "▶  PLAY";
-            TimeText.Text = $"{DisplayTime(playback.PositionSeconds)} / {(playback.DurationSeconds is { } duration ? DisplayTime(duration) : "--:--")}";
-            if (!_timelineDragging) Progress.Value = playback.DurationSeconds is > 0 ? Math.Clamp(100 * playback.PositionSeconds / playback.DurationSeconds.Value, 0, 100) : 0;
             RefreshDashboardPlaylist();
-            RefreshNowPlayingPresentation();
+            RefreshSharedPlaybackPresentation();
             if (!string.IsNullOrWhiteSpace(playback.Track?.Title)) NativeStatus.Text = playback.Track.Title;
             NativeHint.Text = playback.IsPlaying ? "Playing · Check your headphones and voice chat output." : "Paused · Press Play to resume.";
             if (priorPlaying != playback.IsPlaying || priorOnAir != station.Runtime.IsOnAir) RefreshCollections();
@@ -487,6 +484,93 @@ public partial class MainWindow : Window, IMacroActionHandler
         return _youtubeReady;
     }
 
+    bool EnsureYouTubeRouteHealthy(out string detail)
+    {
+        // A failed restore is evidence only until a current recovery attempt fails.
+        // Never let an earlier transient failure poison every later YouTube tune.
+        if (_youtubeRoute.IsActive)
+        {
+            if (_youtubeRoute.TryCheckHealth(out _))
+            {
+                _youtubeRouteRecoveryBlocked = false;
+                _youtubeHeadsetRouteError = null;
+                detail = "Temporary YouTube route is active and healthy.";
+                return true;
+            }
+            if (!_youtubeRoute.TryEnd(out var endFailure))
+            {
+                detail = "The active temporary route could not be restored: " + endFailure;
+                _youtubeRouteRecoveryBlocked = true;
+                _youtubeHeadsetRouteError = detail;
+                return false;
+            }
+            _youtubeRouteRecoveryBlocked = false;
+            _youtubeHeadsetRouteError = null;
+            detail = "Repaired the previous temporary YouTube route.";
+            return true;
+        }
+        if (!_youtubeRoute.TryRecover(out var recovery))
+        {
+            detail = recovery;
+            _youtubeRouteRecoveryBlocked = true;
+            _youtubeHeadsetRouteError = recovery;
+            return false;
+        }
+
+        _youtubeRouteRecoveryBlocked = false;
+        _youtubeHeadsetRouteError = null;
+        detail = recovery;
+        return true;
+    }
+
+    void ResetYouTubePresentationForLoad(Station station, bool startPaused)
+    {
+        _youtubePlayerReady = false;
+        _youtubeHasLiveTimeline = false;
+        _youtubeEnded = false;
+        _youtubePlayerErrorDetail = null;
+        _youtubeStartPaused = startPaused;
+        _youtubePendingResumeSeconds = null;
+        _youtubeInstanceToken = null;
+        station.Runtime.WasPlaying = false;
+        station.Runtime.IsOnAir = false;
+        YouTubeView.Visibility = Visibility.Collapsed;
+        YouTubePlaceholder.Visibility = Visibility.Visible;
+        YouTubePlaceholderTitle.Text = "YOUTUBE PLAYER LOADING";
+        YouTubePlaceholderDetail.Text = "Preparing the visible player and checking its temporary listening route…";
+        RepairYouTubeRouteButton.Visibility = Visibility.Collapsed;
+        RefreshSharedPlaybackPresentation();
+    }
+
+    void ShowYouTubeRouteRepairRequired(string detail)
+    {
+        _youtubeRouteRecoveryBlocked = true;
+        _youtubePlayerReady = false;
+        _youtubeHasLiveTimeline = false;
+        if (_active?.ProviderId != "youtube") return;
+        YouTubeView.Visibility = Visibility.Collapsed;
+        YouTubePlaceholder.Visibility = Visibility.Visible;
+        YouTubePlaceholderTitle.Text = "YOUTUBE AUDIO ROUTE NEEDS REPAIR";
+        YouTubePlaceholderDetail.Text = detail;
+        RepairYouTubeRouteButton.Visibility = Visibility.Visible;
+        RefreshSharedPlaybackPresentation();
+    }
+
+    async void RepairYouTubeRoute_Click(object sender, RoutedEventArgs e)
+    {
+        if (!EnsureYouTubeRouteHealthy(out var detail))
+        {
+            ShowYouTubeRouteRepairRequired(detail);
+            Footer.Text = "YOUTUBE ROUTE NEEDS RESTORATION · " + detail;
+            return;
+        }
+        if (_active is { ProviderId: "youtube" } station)
+        {
+            Footer.Text = "YOUTUBE ROUTE REPAIRED · Reloading the visible player.";
+            await LoadYouTubeAsync(station, startPaused: false);
+        }
+    }
+
     async void YouTubeMessage(object? sender, CoreWebView2WebMessageReceivedEventArgs e)
     {
         if (_active?.ProviderId != "youtube" || YouTubeView.Visibility != Visibility.Visible) return;
@@ -501,6 +585,7 @@ public partial class MainWindow : Window, IMacroActionHandler
             {
                 _youtubeStartupForensics?.Mark("T4 player ready");
                 _youtubePlayerReady = true;
+                RefreshSharedPlaybackPresentation();
                 UpdateRepeatButton();
                 if (_active.PlaylistSongs.Count > 0) await SetYouTubeSongsAsync(_active);
                 var activeStation = _active;
@@ -552,6 +637,7 @@ public partial class MainWindow : Window, IMacroActionHandler
                     _active.Runtime.IsOnAir = playing;
                     PlayButton.Content = playing ? "Ⅱ  PAUSE" : "▶  PLAY";
                     RefreshCollections();
+                    RefreshSharedPlaybackPresentation();
                 }
             }
             else if (type == "progress" && detail is not null)
@@ -562,6 +648,7 @@ public partial class MainWindow : Window, IMacroActionHandler
                 if (double.IsFinite(position) && double.IsFinite(duration))
                 {
                     _youtubeStartupForensics?.Mark("T9 progress");
+                    _youtubeHasLiveTimeline = true;
                     if (_youtubeEnded) return;
                     if (_youtubePendingResumeSeconds is { } pending)
                     {
@@ -581,10 +668,8 @@ public partial class MainWindow : Window, IMacroActionHandler
                         if (source is not null && (source.DurationSeconds is not { } known || Math.Abs(known - duration) >= .1))
                             source.DurationSeconds = duration;
                     }
-                    TimeText.Text = $"{DisplayTime(position)} / {(duration > 0 ? DisplayTime(duration) : "--:--")}";
-                    if (!_timelineDragging) Progress.Value = duration > 0 ? Math.Clamp(100 * position / duration, 0, 100) : 0;
                     RefreshDashboardPlaylist();
-                    RefreshNowPlayingPresentation();
+                    RefreshSharedPlaybackPresentation();
                 }
             }
             else if (type == "error")
@@ -596,7 +681,12 @@ public partial class MainWindow : Window, IMacroActionHandler
                 Footer.Text = detail == "153" ? "THIS YOUTUBE VIDEO COULD NOT OPEN · Check the connection or try another video." :
                     detail is "101" or "150" ? "THIS VIDEO CANNOT PLAY HERE · Its owner does not allow embedded playback." :
                     "YOUTUBE PLAYBACK FAILED · Try another video or run Diagnostics for details.";
-                RefreshNowPlayingPresentation();
+                YouTubeView.Visibility = Visibility.Collapsed;
+                YouTubePlaceholder.Visibility = Visibility.Visible;
+                YouTubePlaceholderTitle.Text = "YOUTUBE PLAYER ERROR";
+                YouTubePlaceholderDetail.Text = Footer.Text;
+                RepairYouTubeRouteButton.Visibility = Visibility.Collapsed;
+                RefreshSharedPlaybackPresentation();
             }
         }
         catch (Exception error)
@@ -1035,6 +1125,7 @@ public partial class MainWindow : Window, IMacroActionHandler
                 await StopB1AuditionAsync("Normal headset listening restored.");
                 YouTubeView.CoreWebView2.Navigate("about:blank");
                 _youtubePlayerReady = false;
+                _youtubeHasLiveTimeline = false;
                 _youtubeInstanceToken = null;
                 _youtubePendingResumeSeconds = null;
                 if (station.ProviderId != "youtube")
@@ -1096,7 +1187,6 @@ public partial class MainWindow : Window, IMacroActionHandler
             if (DashboardView.Visibility != Visibility.Visible)
                 Show(DashboardView, "DASHBOARD", "Your stations and sound", DashboardNav);
             NativePanel.Visibility = Visibility.Collapsed;
-            YouTubeView.Visibility = Visibility.Visible;
             await LoadYouTubeAsync(station, startPaused);
         }
         else
@@ -1582,23 +1672,32 @@ public partial class MainWindow : Window, IMacroActionHandler
         _youtubeStartupForensics ??= new YouTubeStartupForensics(station.Name);
         MusicLibraryService.EnsureStationLibrary(_config, station);
         MusicLibraryService.MaterializeStationPlaylist(_config, station);
+        // Reset before every early return: no prior player token, progress, or
+        // persisted resume position may masquerade as this station's live state.
+        ResetYouTubePresentationForLoad(station, startPaused);
         var result = YouTubeUrl.Normalize(station.Source);
-        if (!result.IsValid) { Footer.Text = "YOUTUBE SOURCE ERROR · " + result.Message; return; }
+        if (!result.IsValid)
+        {
+            _youtubePlayerErrorDetail = result.Message;
+            YouTubePlaceholderTitle.Text = "YOUTUBE SOURCE ERROR";
+            YouTubePlaceholderDetail.Text = result.Message;
+            Footer.Text = "YOUTUBE SOURCE ERROR · " + result.Message;
+            RefreshSharedPlaybackPresentation();
+            return;
+        }
         if (!await EnsureYouTubeReadyAsync())
         {
+            YouTubePlaceholderTitle.Text = "WEBVIEW2 RUNTIME REQUIRED";
+            YouTubePlaceholderDetail.Text = "Install or repair WebView2, then retry the station.";
             Footer.Text = "WEBVIEW2 RUNTIME IS REQUIRED FOR OFFICIAL YOUTUBE PLAYBACK.";
             return;
         }
-        if (_youtubeRouteRecoveryBlocked)
+        if (!EnsureYouTubeRouteHealthy(out var recoveryDetail))
         {
-            Footer.Text = "YOUTUBE ROUTE NEEDS RESTORATION · Reconnect Voicemeeter, then restart WARDOGS before playing.";
+            ShowYouTubeRouteRepairRequired(recoveryDetail);
+            Footer.Text = "YOUTUBE ROUTE NEEDS RESTORATION · " + recoveryDetail;
             return;
         }
-        _youtubePlayerReady = false;
-        _youtubeEnded = false;
-        _youtubePlayerErrorDetail = null;
-        _youtubeStartPaused = startPaused;
-        _youtubeHeadsetRouteError = null;
         if (!_youtubeRoute.IsActive)
         {
             try
@@ -1611,6 +1710,8 @@ public partial class MainWindow : Window, IMacroActionHandler
                 if (_youtubeRoute.IsActive)
                 {
                     _youtubeRouteRecoveryBlocked = true;
+                    _youtubeHeadsetRouteError = error.Message;
+                    ShowYouTubeRouteRepairRequired(error.Message);
                     Footer.Text = "YOUTUBE ROUTE NEEDS RESTORATION · " + error.Message;
                     return;
                 }
@@ -1634,6 +1735,11 @@ public partial class MainWindow : Window, IMacroActionHandler
         _youtubeInstanceToken = Guid.NewGuid().ToString("N");
         var repeat = station.EffectiveRepeatMode.ToString().ToLowerInvariant();
         _youtubeStartupForensics.Mark("T3 WebView navigate");
+        // The raw WebView only becomes visible at the same point that it has a
+        // real WARDOGS player navigation. Route and source failures keep the
+        // themed placeholder on screen instead of about:blank white.
+        YouTubePlaceholder.Visibility = Visibility.Collapsed;
+        YouTubeView.Visibility = Visibility.Visible;
         YouTubeView.CoreWebView2.Navigate("https://wardogs-radio.example/youtube-player.html" + uri.Query + start + $"&repeat={repeat}&instance={_youtubeInstanceToken}");
         Footer.Text = _youtubeHeadsetRouteError is null
             ? "YouTube player loading · " + result.Message
@@ -2354,6 +2460,12 @@ public partial class MainWindow : Window, IMacroActionHandler
 
     async void Window_PreviewKeyDown(object sender, KeyEventArgs e)
     {
+        if (e.Key == Key.Escape && NowPlayingDrawer.Visibility == Visibility.Visible)
+        {
+            e.Handled = true;
+            CloseNowPlayingDrawer();
+            return;
+        }
         if (e.Key is not (Key.Return or Key.Space) || e.IsRepeat || !IsActive || !IsEnabled) return;
         if (Keyboard.FocusedElement == AudioAuditionB1Button || Keyboard.FocusedElement == SetupAuditionB1Button) return;
         if (Keyboard.FocusedElement is TextBoxBase or PasswordBox or ComboBox { IsEditable: true }) return;
@@ -2451,13 +2563,27 @@ public partial class MainWindow : Window, IMacroActionHandler
         finally { _playbackToggleInFlight = false; }
     }
 
-    void Reconnect_Click(object s, RoutedEventArgs e)
+    async void Reconnect_Click(object s, RoutedEventArgs e)
     {
         var ok = _vm.TryLogin(out var message);
         _signalStatus = null;
         PopulateMusicStrips();
         if (_config.ClipGuard.LimiterEnabled) ReconcileVoicemeeterLimiter();
-        if (ok) _ = InitializeMicrophoneVolumeAsync();
+        if (ok)
+        {
+            await InitializeMicrophoneVolumeAsync();
+            if (!EnsureYouTubeRouteHealthy(out var routeDetail))
+            {
+                ShowYouTubeRouteRepairRequired(routeDetail);
+                message += " Temporary YouTube route repair still needs attention: " + routeDetail;
+            }
+            else if (_active is { ProviderId: "youtube" } station && _youtubeRouteRecoveryBlocked == false &&
+                YouTubeView.Visibility != Visibility.Visible)
+            {
+                await LoadYouTubeAsync(station, startPaused: false);
+                message += " Temporary YouTube route recovery completed; reloading the player.";
+            }
+        }
         RunDiagnostics();
         RoutingDetail.Text = message;
         HealthText.Text = ok ? "NEEDS SETUP · Check your game voice output" : "NEEDS SETUP · Connect Voicemeeter";
@@ -2880,7 +3006,9 @@ public partial class MainWindow : Window, IMacroActionHandler
         var gameEndpointAvailable = _gameBusEndpointPeakMeter.TryRead(_gameOutputEndpointId, out var gameEndpointPeak);
         var gameEndpoint = new SignalLevel(gameEndpointAvailable, gameEndpointPeak);
         _outputTelemetry = OutputTelemetryAssessor.Assess(game.Available, game.Peak, gameEndpoint.Available, gameEndpoint.Peak);
-        if (status.Connected && DateTime.UtcNow >= _nextMeterForensicsCapture)
+        // Full raw scans query 160 Remote API levels. They are repair evidence
+        // for the Diagnostics page, not a permanent normal-playback workload.
+        if (status.Connected && DiagnosticsView.Visibility == Visibility.Visible && DateTime.UtcNow >= _nextMeterForensicsCapture)
         {
             _nextMeterForensicsCapture = DateTime.UtcNow.AddSeconds(1);
             try { _meterForensics = signals.CaptureForensics(status.Edition); }
@@ -4068,7 +4196,7 @@ public partial class MainWindow : Window, IMacroActionHandler
         VmStatus.Text = vm.Connected ? "VM: CONNECTED" : vm.Installed ? "VM: INSTALLED" : "VM: MISSING";
         var meterMonitor = new VoicemeeterSignalMonitor(_vm);
         var mixer = vm.Connected ? meterMonitor.ReadBus(vm.Edition, _config.GameBus) : new SignalLevel(false, 0);
-        if (vm.Connected)
+        if (vm.Connected && DiagnosticsView.Visibility == Visibility.Visible)
         {
             try { _meterForensics = meterMonitor.CaptureForensics(vm.Edition); }
             catch (Exception error) { checks.Add(new DiagnosticItem("Voicemeeter raw meter forensics", "WARNING", "Raw Remote API scan failed", error.Message)); }
@@ -4507,7 +4635,12 @@ public partial class MainWindow : Window, IMacroActionHandler
 
     bool EndYouTubeRoute(string failureDetail)
     {
-        if (_youtubeRoute.TryEnd(out var message)) return true;
+        if (_youtubeRoute.TryEnd(out var message))
+        {
+            _youtubeRouteRecoveryBlocked = false;
+            _youtubeHeadsetRouteError = null;
+            return true;
+        }
         _youtubeRouteRecoveryBlocked = true;
         _youtubeHeadsetRouteError = message;
         Footer.Text = $"YOUTUBE ROUTE NEEDS RESTORATION · {failureDetail} {message}";

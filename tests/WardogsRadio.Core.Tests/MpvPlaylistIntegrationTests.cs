@@ -3,10 +3,11 @@ using System.Text;
 using WardogsRadio.Core;
 using WardogsRadio.Playback;
 using Xunit;
+using Xunit.Abstractions;
 
 namespace WardogsRadio.Core.Tests;
 
-public sealed class MpvPlaylistIntegrationTests
+public sealed class MpvPlaylistIntegrationTests(ITestOutputHelper output)
 {
     [Fact]
     public async Task OneLocalFileCanLoadAsMultipleNamedSongRangesInSavedOrder()
@@ -158,23 +159,32 @@ public sealed class MpvPlaylistIntegrationTests
             await headset.LoadAsync(new Station { Source = tone });
             await game.LoadAsync(new Station { Source = tone });
             await headset.SetVolumeAsync(.10);
-            await game.SetVolumeAsync(.10);
+            // The direct headset only needs a quiet confirmation. The game path
+            // crosses the configured B1 meter, so exercise it at a representative
+            // station gain instead of mistaking a sub-threshold test stimulus for
+            // a broken Voicemeeter route.
+            await game.SetVolumeAsync(.50);
             using var headsetMeter = new WindowsAudioPeakMeter();
             using var b1Meter = new WindowsAudioCapturePeakMeter();
             await Task.WhenAll(headset.PlayAsync(), game.PlayAsync());
 
             var headsetPeak = 0f;
             var b1Peak = 0f;
+            WindowsAudioEndpointMeterState headsetState = new(0, 0, false);
             for (var attempt = 0; attempt < 24; attempt++)
             {
-                if (headsetMeter.TryRead(configuration.MonitorDeviceId, out var headsetSample)) headsetPeak = Math.Max(headsetPeak, headsetSample);
+                if (headsetMeter.TryReadState(configuration.MonitorDeviceId, out headsetState)) headsetPeak = Math.Max(headsetPeak, headsetState.Peak);
                 Assert.True(b1Meter.TryRead(b1.Id, out var b1Sample), "The Voicemeeter B1 capture endpoint could not be opened.");
                 b1Peak = Math.Max(b1Peak, b1Sample);
                 await Task.Delay(100);
             }
 
-            Assert.True(headsetPeak > .001f, $"The selected headset endpoint stayed silent (peak {headsetPeak:0.0000}).");
-            Assert.True(b1Peak > .001f, $"The Voicemeeter B1 endpoint stayed silent (peak {b1Peak:0.0000}).");
+            var headsetPlayback = await headset.RefreshAsync();
+            var gamePlayback = await game.RefreshAsync();
+            var detail = $"headset mpv device={await headset.ReadAudioDeviceAsync()}; volume={await headset.ReadVolumeAsync():0.000}; mute={await headset.ReadMuteAsync()}; playing={headsetPlayback.IsPlaying}; endpoint volume={headsetState.Volume:0.000}; endpoint mute={headsetState.Muted}; game mpv device={await game.ReadAudioDeviceAsync()}; volume={await game.ReadVolumeAsync():0.000}; mute={await game.ReadMuteAsync()}; playing={gamePlayback.IsPlaying}; headset peak={headsetPeak:0.0000}; B1 peak={b1Peak:0.0000}";
+            output.WriteLine(detail);
+            Assert.True(headsetPeak > .001f, "The selected headset endpoint stayed silent. " + detail);
+            Assert.True(b1Peak > .001f, "The Voicemeeter B1 endpoint stayed silent. " + detail);
         }
         finally { Directory.Delete(folder, true); }
     }
