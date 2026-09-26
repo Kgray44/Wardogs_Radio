@@ -32,9 +32,9 @@ Macros are editable named action definitions with multiple keyboard and controll
 
 ## Install and updates
 
-Current version: **v0.1.0**
+Current version: **v0.2.0**
 
-Normal Windows users should download [WARDOGS-Radio-Setup-v0.1.0.exe](https://github.com/Kgray44/Wardogs_Radio/releases/download/v0.1.0/WARDOGS-Radio-Setup-v0.1.0.exe) from GitHub Releases. The per-user installer places the app in `%LOCALAPPDATA%\Programs\WARDOGS Radio` and creates a Start Menu shortcut to **WARDOGS Radio Launcher**. The launcher checks only official stable GitHub Releases, verifies the release manifest and installer SHA-256, and always starts the installed app if checking fails. It never requires an internet connection to use an installed copy.
+Normal Windows users should download [WARDOGS-Radio-Setup-v0.2.0.exe](https://github.com/Kgray44/Wardogs_Radio/releases/download/v0.2.0/WARDOGS-Radio-Setup-v0.2.0.exe) from GitHub Releases. The per-user installer places the app in `%LOCALAPPDATA%\Programs\WARDOGS Radio` and creates a Start Menu shortcut to **WARDOGS Radio Launcher**. The launcher checks only official stable GitHub Releases, verifies the release manifest and installer SHA-256, and always starts the installed app if checking fails. It never requires an internet connection to use an installed copy.
 
 The installer does not bundle or alter Voicemeeter, mpv, WebView2, account credentials, or provider setup. Existing WARDOGS Radio settings remain under `%LOCALAPPDATA%\WARDOGS Radio` and are deliberately separate from the installed program files.
 

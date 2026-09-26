@@ -128,7 +128,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         shell: pwsh
-        run: gh release create '${{ steps.version.outputs.tag }}' release/WARDOGS-Radio-Setup-v${{ steps.version.outputs.version }}.exe release/update-manifest.json release/SHA256SUMS.txt --title 'WARDOGS Radio v${{ steps.version.outputs.version }}' --notes-file docs/ReleaseNotes-v0.1.0.md --latest
+        run: gh release create '${{ steps.version.outputs.tag }}' release/WARDOGS-Radio-Setup-v${{ steps.version.outputs.version }}.exe release/update-manifest.json release/SHA256SUMS.txt --title 'WARDOGS Radio v${{ steps.version.outputs.version }}' --notes-file docs/ReleaseNotes-v${{ steps.version.outputs.version }}.md --latest
       - name: Verify published updater chain
         if: github.event_name == 'push' || inputs.dry_run == false
         shell: pwsh

@@ -271,7 +271,7 @@ public partial class MainWindow : Window, IMacroActionHandler
 
     async void Window_Loaded(object sender, RoutedEventArgs e)
     {
-        ApplicationVersionText.Text = "Version " + (File.Exists(Path.Combine(AppContext.BaseDirectory, "VERSION")) ? File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "VERSION")).Trim() : "development build");
+        ApplicationVersionText.Text = "WARDOGS Radio v" + (File.Exists(Path.Combine(AppContext.BaseDirectory, "VERSION")) ? File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "VERSION")).Trim() : "development build");
         _config = await _store.LoadAsync();
         InitializeNowPlayingSurface();
         // WebView startup must not wait for optional MPV audio-device discovery.
