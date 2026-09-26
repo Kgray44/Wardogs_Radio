@@ -1,0 +1,28 @@
+using WardogsRadio.Core;
+using WardogsRadio.Playback;
+using Xunit;
+namespace WardogsRadio.Core.Tests;
+public sealed class TimelineTests
+{
+ sealed class Clock(DateTimeOffset now):IClock { public DateTimeOffset UtcNow {get;set;}=now; }
+ static (Station,Dictionary<string,YouTubeTrackMetadata>,Clock) Fixture(){var c=new Clock(DateTimeOffset.Parse("2026-09-25T12:00:00Z"));var s=new Station{Loop=true,Runtime=new(){Sequence=["a","b","c"],SequenceIndex=0,PositionSeconds=20,VirtualRunning=true,VirtualStartUtc=c.UtcNow,WasPlaying=true}};return(s,new(){["a"]=new(){VideoId="a",DurationSeconds=100},["b"]=new(){VideoId="b",DurationSeconds=80},["c"]=new(){VideoId="c",DurationSeconds=60}},c);}
+ [Fact] public void ResolvesWithinSameTrack(){var(s,d,c)=Fixture();c.UtcNow=c.UtcNow.AddSeconds(30);var r=new VirtualPlaybackTimeline(c).Resolve(s,d);Assert.Equal(0,r.SequenceIndex);Assert.Equal(50,r.PositionSeconds);}
+ [Fact] public void CrossesBoundaries(){var(s,d,c)=Fixture();c.UtcNow=c.UtcNow.AddSeconds(190);var r=new VirtualPlaybackTimeline(c).Resolve(s,d);Assert.Equal(2,r.SequenceIndex);Assert.Equal(30,r.PositionSeconds);}
+ [Fact] public void WrapsLoop(){var(s,d,c)=Fixture();c.UtcNow=c.UtcNow.AddSeconds(230);var r=new VirtualPlaybackTimeline(c).Resolve(s,d);Assert.Equal(0,r.SequenceIndex);Assert.Equal(10,r.PositionSeconds);}
+ [Fact] public void StopsAtEndWithoutLoop(){var(s,d,c)=Fixture();s.Loop=false;c.UtcNow=c.UtcNow.AddSeconds(500);var r=new VirtualPlaybackTimeline(c).Resolve(s,d);Assert.True(r.Ended);Assert.Equal(2,r.SequenceIndex);}
+ [Fact] public void PausedStationDoesNotAdvance(){var(s,d,c)=Fixture();var t=new VirtualPlaybackTimeline(c);t.Pause(s,d);c.UtcNow=c.UtcNow.AddMinutes(20);var r=t.Resolve(s,d);Assert.Equal(20,r.PositionSeconds);}
+ [Fact] public void ReportsUnknownDuration(){var(s,d,c)=Fixture();d.Remove("a");c.UtcNow=c.UtcNow.AddSeconds(100);Assert.True(new VirtualPlaybackTimeline(c).Resolve(s,d).NeedsDuration);}
+ [Fact] public void ResumeStartsVirtualClockAtResumeTime(){var(s,d,c)=Fixture();var timeline=new VirtualPlaybackTimeline(c);timeline.Pause(s,d);c.UtcNow=c.UtcNow.AddMinutes(2);timeline.Resume(s);c.UtcNow=c.UtcNow.AddSeconds(15);var r=timeline.Resolve(s,d);Assert.Equal(35,r.PositionSeconds);}
+ [Fact] public void InactiveSeekResetsVirtualClock(){var(s,d,c)=Fixture();var timeline=new VirtualPlaybackTimeline(c);c.UtcNow=c.UtcNow.AddSeconds(20);timeline.Seek(s,40);c.UtcNow=c.UtcNow.AddSeconds(10);var r=timeline.Resolve(s,d);Assert.Equal(50,r.PositionSeconds);}
+ [Fact] public void InactiveNavigationStartsAtRequestedTrack(){var(s,d,c)=Fixture();var timeline=new VirtualPlaybackTimeline(c);timeline.Navigate(s,1);c.UtcNow=c.UtcNow.AddSeconds(12);var r=timeline.Resolve(s,d);Assert.Equal(1,r.SequenceIndex);Assert.Equal(12,r.PositionSeconds);}
+ [Fact] public void NegativeClockChangeDoesNotMoveBackward(){var(s,d,c)=Fixture();c.UtcNow=c.UtcNow.AddSeconds(-90);var r=new VirtualPlaybackTimeline(c).Resolve(s,d);Assert.Equal(20,r.PositionSeconds);}
+ [Fact] public void UsesEqualPowerTransition(){var(outgoing,incoming)=TransitionMath.Gains(.5,TransitionCurve.EqualPower);Assert.InRange(outgoing,.70,.71);Assert.InRange(incoming,.70,.71);}
+ [Theory][InlineData("https://www.youtube.com/playlist?list=PL123")][InlineData("https://music.youtube.com/playlist?list=PL123")] public void NormalizesPlaylist(string url){var r=WardogsRadio.Playback.YouTubeUrl.Normalize(url);Assert.True(r.IsValid);Assert.Contains("PL123",r.CanonicalSource);}
+ [Theory][InlineData("https://music.apple.com/us/playlist/example/pl.u-test")][InlineData("https://music.apple.com/us/album/example/123")] public void RecognizesAppleMusicSources(string url){Assert.True(AppleMusicUrl.Normalize(url).IsValid);}
+ [Theory][InlineData("https://soundcloud.com/artist/track")][InlineData("https://soundcloud.com/artist/sets/playlist")] public void RecognizesSoundCloudSources(string url){Assert.True(SoundCloudUrl.Normalize(url).IsValid);}
+ [Fact] public void ExternalSessionUsesDurableExecutableIdentity(){var target=new ExternalSourceIdentity(null,"C:\\Apps\\Player.exe",null,null);var found=ExternalSessionMatcher.Resolve(target,[new("one","Other",null,12,"C:\\Apps\\Other.exe",true,true,true,true,true,true,true,false),new("two","Player",null,88,"C:\\Apps\\Player.exe",true,true,true,true,true,true,true,false)]);Assert.Equal("two",found?.SessionId);}
+ [Fact] public async Task ExternalProviderOnlyAdvertisesBackendCapabilities(){var backend=new FakeExternalBackend(new("session","Player","app",44,"C:\\Player.exe",true,true,true,true,true,true,false,false,new("Track","Artist"),10,100));var provider=new ExternalAudioProvider(backend,new("app",null,null,null));await provider.LoadAsync(new Station());Assert.True(provider.Capabilities.Seek);Assert.True(provider.Capabilities.VirtualRadioTimeline);Assert.False(provider.Capabilities.TrueRadioPlayback);Assert.Equal(ProviderHealth.Warning,provider.Snapshot.Health);}
+ [Fact] public async Task WindowsMediaSessionDiscoveryReturnsARealInventory(){var sessions=await new PowerShellMediaSessionBackend().DiscoverAsync();Assert.NotNull(sessions);}
+ [Fact] public async Task ProcessLoopbackActivationPerformsAControlledNativeProbe(){var result=await new ProcessLoopbackActivator().TryActivateAsync((uint)Environment.ProcessId);Assert.False(string.IsNullOrWhiteSpace(result.Detail));}
+ sealed class FakeExternalBackend(ExternalSessionDescriptor descriptor):IExternalMediaSessionBackend { public Task<IReadOnlyList<ExternalSessionDescriptor>> DiscoverAsync(CancellationToken ct=default)=>Task.FromResult<IReadOnlyList<ExternalSessionDescriptor>>([descriptor]); public Task<bool> TryCommandAsync(string sessionId,string command,object? value=null,CancellationToken ct=default)=>Task.FromResult(true); }
+}

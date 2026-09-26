@@ -1,0 +1,348 @@
+<Window x:Class="WardogsRadio.App.MainWindow" xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" xmlns:wv2="clr-namespace:Microsoft.Web.WebView2.Wpf;assembly=Microsoft.Web.WebView2.Wpf" Title="WARDOGS Radio" Width="1660" Height="860" MinWidth="1360" MinHeight="680" Background="{StaticResource InkBrush}" Foreground="{StaticResource TextBrush}" FontFamily="Segoe UI" Loaded="Window_Loaded" Closing="Window_Closing" Deactivated="Window_Deactivated" PreviewKeyDown="Window_PreviewKeyDown">
+  <Grid>
+    <Grid.ColumnDefinitions><ColumnDefinition Width="238" MinWidth="210"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+    <Border Background="#0C1110" BorderBrush="{StaticResource LineBrush}" BorderThickness="0,0,1,0">
+      <DockPanel Margin="18,20"><StackPanel DockPanel.Dock="Top">
+        <TextBlock Text="WARDOGS" FontSize="24" FontWeight="Bold" Foreground="{StaticResource OliveBrush}"/><TextBlock Text="RADIO" FontSize="24" FontWeight="Light"/><TextBlock Text="AIRBORNE AUDIO CONTROL" FontSize="9" Opacity=".65" Margin="0,3,0,24"/>
+        <Button x:Name="DashboardNav" Style="{StaticResource Nav}" Content="DASHBOARD" Click="Dashboard_Click"/><Button x:Name="StationsNav" Style="{StaticResource Nav}" Content="STATIONS" Click="Stations_Click"/><Button x:Name="MacrosNav" Style="{StaticResource Nav}" Content="MACROS" Click="Macros_Click"/><Button x:Name="AudioNav" Style="{StaticResource Nav}" Content="AUDIO &amp; ROUTING" Click="Audio_Click"/><Button x:Name="SettingsNav" Style="{StaticResource Nav}" Content="SETTINGS" Click="Settings_Click"/><Button x:Name="DiagnosticsNav" Style="{StaticResource Nav}" Content="DIAGNOSTICS" Click="Diagnostics_Click"/><Button x:Name="SetupNav" Style="{StaticResource Nav}" Content="SETUP WIZARD" Click="Setup_Click"/>
+      </StackPanel><StackPanel DockPanel.Dock="Bottom"><Separator Background="{StaticResource LineBrush}"/><TextBlock Text="SYSTEM HEALTH" FontSize="10" Opacity=".6" Margin="0,14,0,4"/><TextBlock x:Name="HealthText" Text="CHECKING…" Foreground="{StaticResource AmberBrush}" FontWeight="Bold" TextWrapping="Wrap"/></StackPanel></DockPanel>
+    </Border>
+    <Grid Grid.Column="1" Margin="28,20"><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+      <Grid><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><StackPanel><TextBlock x:Name="PageTitle" Text="DASHBOARD" FontSize="11" Foreground="{StaticResource OliveBrush}" FontWeight="Bold"/><TextBlock x:Name="PageCaption" Text="Your stations and sound" FontSize="20" FontWeight="SemiBold"/></StackPanel><StackPanel Grid.Column="1" Orientation="Horizontal"><Border Background="#253128" CornerRadius="12" Padding="10,4" Margin="4"><TextBlock x:Name="VmStatus" Text="VOICEMEETER: CHECKING" FontSize="11"/></Border><Border Background="#253128" CornerRadius="12" Padding="10,4" Margin="4"><TextBlock x:Name="RouteStatus" Text="GAME VOICE: NOT VERIFIED" FontSize="11"/></Border></StackPanel></Grid>
+      <Grid Grid.Row="1">
+        <Grid x:Name="DashboardView"><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+          <Border Margin="0,18,0,12" Background="#121A18" BorderBrush="{StaticResource LineBrush}" BorderThickness="1" CornerRadius="5" Padding="10">
+            <DockPanel><TextBlock Text="RADIO PRESETS" Foreground="{StaticResource OliveBrush}" FontSize="11" FontWeight="Bold" VerticalAlignment="Center" Margin="5"/>
+              <Button DockPanel.Dock="Right" Content="+  CREATE STATION" Click="AddStation_Click"/>
+              <ScrollViewer HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Disabled" Margin="15,0,10,0">
+                <ItemsControl x:Name="StationRail"><ItemsControl.ItemsPanel><ItemsPanelTemplate><StackPanel Orientation="Horizontal"/></ItemsPanelTemplate></ItemsControl.ItemsPanel>
+                  <ItemsControl.ItemTemplate><DataTemplate>
+                    <Button Tag="{Binding}" Click="Station_Click" Padding="0" Margin="4" ToolTip="Tune station">
+                      <Border Width="168" Height="116" CornerRadius="4" Padding="12"><Border.Style><Style TargetType="Border"><Setter Property="Background" Value="{StaticResource PanelBrush}"/><Setter Property="BorderBrush" Value="{Binding AccentColor}"/><Setter Property="BorderThickness" Value="2,1,1,1"/><Style.Triggers><DataTrigger Binding="{Binding Runtime.IsOnAir}" Value="True"><Setter Property="Background" Value="#304638"/><Setter Property="BorderThickness" Value="4,2,2,2"/></DataTrigger></Style.Triggers></Style></Border.Style>
+                        <StackPanel><DockPanel><TextBlock Text="{Binding Order, Converter={StaticResource ChannelNumber}}" FontSize="10" Opacity=".65"/><TextBlock DockPanel.Dock="Right" Text="● ON AIR" Foreground="{Binding AccentColor}" FontSize="9" Visibility="{Binding Runtime.IsOnAir, Converter={StaticResource BoolToVisibility}}"/></DockPanel>
+                          <Path Data="{Binding IconId, Converter={StaticResource IconGeometry}}" Fill="{Binding AccentColor}" Width="24" Height="24" Stretch="Uniform" HorizontalAlignment="Left" Margin="0,5,0,2"/>
+                          <TextBlock Text="{Binding Name}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis"/>
+                          <TextBlock Text="{Binding ProviderId, Converter={StaticResource ProviderName}}" FontSize="10" Foreground="{Binding AccentColor}"/>
+                          <TextBlock Text="{Binding Converter={StaticResource StationSourceSummary}}" FontSize="10" Opacity=".6" TextTrimming="CharacterEllipsis"/>
+                        </StackPanel>
+                      </Border>
+                    </Button>
+                  </DataTemplate></ItemsControl.ItemTemplate>
+                </ItemsControl>
+              </ScrollViewer>
+            </DockPanel>
+          </Border>
+          <Grid Grid.Row="1"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="285"/><ColumnDefinition Width="310"/></Grid.ColumnDefinitions>
+            <Border Background="{StaticResource PanelBrush}" BorderBrush="{StaticResource LineBrush}" BorderThickness="1" CornerRadius="5" Padding="16" Margin="0,0,16,0">
+              <Grid><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+                <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                  <StackPanel><TextBlock x:Name="NowStation" Text="SELECT A STATION" FontSize="22" FontWeight="SemiBold"/><TextBlock x:Name="NowDetail" Text="Choose a radio preset above." Opacity=".65" TextTrimming="CharacterEllipsis"/></StackPanel>
+                  <TextBlock Grid.Column="1" x:Name="ProviderBadge" Text="NO PROVIDER" Foreground="{StaticResource OliveBrush}" VerticalAlignment="Top" Margin="16,3,0,0"/>
+                </Grid>
+                <Grid Grid.Row="1" Margin="0,14"><wv2:WebView2 x:Name="YouTubeView" Visibility="Collapsed"/>
+                  <Border x:Name="NativePanel" Background="#111817" CornerRadius="4"><StackPanel HorizontalAlignment="Center" VerticalAlignment="Center">
+                    <Path x:Name="HeroIcon" Data="M 11,10 L 13,10 13,22 11,22 Z M 8,22 L 16,22 16,24 8,24 Z M 4,8 Q 12,-1 20,8 L 18,9 Q 12,3 6,9 Z" Fill="{StaticResource OliveBrush}" Width="58" Height="58" Stretch="Uniform" Margin="0,0,0,12"/>
+                    <TextBlock x:Name="NativeStatus" Text="Choose a radio preset" FontSize="16" HorizontalAlignment="Center" TextAlignment="Center" TextWrapping="Wrap"/>
+                    <TextBlock x:Name="NativeHint" Text="Select a preset above to start." Opacity=".65" HorizontalAlignment="Center" TextAlignment="Center" TextWrapping="Wrap" Margin="0,7"/>
+                    <Button x:Name="ConfigureStationButton" Content="CONFIGURE STATION" Click="ConfigureActiveStation_Click" Visibility="Collapsed" Margin="0,16,0,0"/>
+                  </StackPanel></Border>
+                </Grid>
+                <StackPanel Grid.Row="2"><Grid x:Name="TimelineSurface" Height="22" Background="Transparent" Cursor="Hand" MouseMove="Timeline_MouseMove" MouseLeave="Timeline_MouseLeave" MouseLeftButtonDown="Timeline_MouseLeftButtonDown" MouseLeftButtonUp="Timeline_MouseLeftButtonUp" ContextMenuOpening="Timeline_ContextMenuOpening">
+                    <ProgressBar x:Name="Progress" Height="7" Value="0" Maximum="100" VerticalAlignment="Center" IsHitTestVisible="False"/>
+                    <Grid.ContextMenu><ContextMenu><MenuItem Header="Create New Song…" Click="CreateSong_Click"/></ContextMenu></Grid.ContextMenu>
+                  </Grid>
+                  <Popup x:Name="TimelineHover" PlacementTarget="{Binding ElementName=TimelineSurface}" Placement="Relative" AllowsTransparency="True" IsHitTestVisible="False" StaysOpen="True"><Border Background="#304638" BorderBrush="{StaticResource OliveBrush}" BorderThickness="1" CornerRadius="3" Padding="6,3"><TextBlock x:Name="TimelineHoverText" Text="00:00"/></Border></Popup>
+                  <DockPanel Margin="0,10,0,0"><TextBlock x:Name="TimeText" Text="00:00 / --:--" Opacity=".65"/>
+                    <StackPanel DockPanel.Dock="Right" Orientation="Horizontal"><Button Content="◀◀" Click="Previous_Click"/><Button x:Name="PlayButton" Content="▶  PLAY" Click="Play_Click"/><Button Content="▶▶" Click="Next_Click"/><Button x:Name="RepeatButton" Content="↻ STATION" Click="Repeat_Click" IsEnabled="False" ToolTip="Repeat the selected station or playlist"/></StackPanel>
+                  </DockPanel>
+                </StackPanel>
+              </Grid>
+            </Border>
+             <ScrollViewer Grid.Column="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled"><StackPanel>
+               <Border Background="#17211C" BorderBrush="{StaticResource LineBrush}" BorderThickness="1" CornerRadius="5" Padding="12" Margin="0,0,0,12"><StackPanel>
+                 <TextBlock Text="MUSIC LEVELS" Foreground="{StaticResource OliveBrush}" FontSize="11" FontWeight="Bold"/>
+                 <TextBlock Text="HEADSET MASTER" Margin="0,8,0,0" FontWeight="SemiBold" FontSize="11"/>
+                 <Slider x:Name="DashboardHeadsetMasterVolume" Minimum="0" Maximum="1" Value=".8" ValueChanged="MasterVolume_ValueChanged" AutoToolTipPlacement="TopLeft"/>
+                 <TextBlock x:Name="DashboardHeadsetMasterVolumeText" Text="80% · Station music you hear" Opacity=".65" FontSize="10"/>
+                 <TextBlock Text="GAME MASTER" Margin="0,8,0,0" FontWeight="SemiBold" FontSize="11"/>
+                 <Slider x:Name="DashboardGameMasterVolume" Minimum="0" Maximum="1" Value=".8" ValueChanged="GameMasterVolume_ValueChanged" AutoToolTipPlacement="TopLeft"/>
+                 <TextBlock x:Name="DashboardGameMasterVolumeText" Text="80% · Game feed when connected" Opacity=".65" FontSize="10" TextWrapping="Wrap"/>
+                 <TextBlock Text="MICROPHONE" Margin="0,8,0,0" FontWeight="SemiBold" FontSize="11"/>
+                 <Slider x:Name="DashboardMicrophoneVolume" Minimum="0" Maximum="1.6" Value="1" ValueChanged="MicrophoneVolume_ValueChanged" AutoToolTipPlacement="TopLeft" AutoToolTipPrecision="2"/>
+                 <TextBlock x:Name="DashboardMicrophoneVolumeText" Text="100% · Voicemeeter mic strip → game voice" Opacity=".65" FontSize="10" TextWrapping="Wrap"/>
+               </StackPanel></Border>
+               <Border Background="{StaticResource PanelBrush}" CornerRadius="5" Padding="16" Margin="0,0,0,12"><StackPanel><TextBlock Text="LIVE SIGNAL" FontSize="11" Foreground="{StaticResource OliveBrush}"/><TextBlock x:Name="HeadsetPlayerSignal" Text="HEADSET PLAYER · no station" Margin="0,12,0,0" TextWrapping="Wrap"/><TextBlock x:Name="GamePlayerSignal" Text="GAME MUSIC · output off" Margin="0,5,0,0" TextWrapping="Wrap"/><TextBlock x:Name="MicMeterLabel" Text="MICROPHONE · CHOOSE INPUT" Margin="0,14,0,3" TextWrapping="Wrap"/><ProgressBar x:Name="MicMeter" Height="7" Value="0"/><TextBlock x:Name="MusicMeterLabel" Text="VOICEMEETER MUSIC INPUT · CHOOSE INPUT" Margin="0,14,0,3" TextWrapping="Wrap"/><ProgressBar x:Name="MusicMeter" Height="7" Value="0"/><TextBlock x:Name="GameMeterLabel" Text="GAME VOICE BUS · CONNECT VOICEMEETER" Margin="0,14,0,3" TextWrapping="Wrap"/><ProgressBar x:Name="GameMeter" Height="7" Value="0"/><TextBlock x:Name="MonitorMeterLabel" Text="HEADSET OUTPUT · CHOOSE HEADPHONES" Margin="0,14,0,3" TextWrapping="Wrap"/><ProgressBar x:Name="MonitorMeter" Height="7" Value="0"/><TextBlock Text="Mic, game music, and game voice show Voicemeeter signal. Headset output shows the selected Windows headphones. These meters cannot confirm what a game receives." Opacity=".6" TextWrapping="Wrap" Margin="0,12,0,0"/></StackPanel></Border>
+               <Border Background="{StaticResource PanelBrush}" CornerRadius="5" Padding="16"><StackPanel><TextBlock Text="TRANSITION" FontSize="11" Foreground="{StaticResource OliveBrush}"/><TextBlock x:Name="TransitionText" Text="Ready to tune" Margin="0,9,0,0"/></StackPanel></Border>
+             </StackPanel></ScrollViewer>
+             <Border Grid.Column="2" x:Name="DashboardPlaylistCard" Background="#17211C" BorderBrush="{StaticResource LineBrush}" BorderThickness="1" CornerRadius="5" Padding="12" Margin="16,0,0,0">
+               <Grid><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
+                 <StackPanel><DockPanel><TextBlock Text="PLAYLIST" Foreground="{StaticResource OliveBrush}" FontSize="11" FontWeight="Bold" VerticalAlignment="Center"/><Button DockPanel.Dock="Right" x:Name="DashboardShuffleButton" Content="⤨ SHUFFLE" Click="DashboardShuffle_Click" Padding="7,4" ToolTip="Mix the visible order again and play in that order"/></DockPanel><TextBlock x:Name="DashboardPlaylistHint" Text="Choose a station to see its songs." TextWrapping="Wrap" Opacity=".65" FontSize="10" Margin="0,7,0,9"/></StackPanel>
+                 <ListBox Grid.Row="1" x:Name="DashboardPlaylist" AllowDrop="True" PreviewMouseLeftButtonDown="DashboardPlaylist_PreviewMouseLeftButtonDown" PreviewMouseMove="DashboardPlaylist_PreviewMouseMove" PreviewMouseRightButtonDown="DashboardPlaylist_PreviewMouseRightButtonDown" ContextMenuOpening="DashboardPlaylist_ContextMenuOpening" DragOver="DashboardPlaylist_DragOver" Drop="DashboardPlaylist_Drop" MouseDoubleClick="DashboardPlaylist_DoubleClick" Background="#111817" BorderBrush="{StaticResource LineBrush}" ScrollViewer.HorizontalScrollBarVisibility="Disabled">
+                   <ListBox.ContextMenu><ContextMenu><MenuItem x:Name="PlaylistCreateSongMenuItem" Header="Create New Song at Current Time…" Click="CreateSong_Click"/><MenuItem x:Name="PlaylistEditSongMenuItem" Header="Edit Song Name &amp; Times…" Click="DashboardPlaylist_EditSong_Click"/></ContextMenu></ListBox.ContextMenu>
+                   <ListBox.ItemTemplate><DataTemplate><Grid Margin="4,3"><Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><TextBlock Text="{Binding Number}" Foreground="{StaticResource OliveBrush}" Margin="0,0,9,0"/><StackPanel Grid.Column="1"><TextBlock Text="{Binding Name}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis"/><TextBlock Text="{Binding Detail}" Opacity=".6" FontSize="10" TextTrimming="CharacterEllipsis"/></StackPanel></Grid></DataTemplate></ListBox.ItemTemplate>
+                 </ListBox>
+               </Grid>
+             </Border>
+          </Grid>
+          <Border Grid.Row="2" Background="{StaticResource PanelBrush}" BorderBrush="{StaticResource LineBrush}" BorderThickness="1" CornerRadius="5" Padding="12" Margin="0,16,0,8">
+            <DockPanel><TextBlock Text="MACROS" Foreground="{StaticResource OliveBrush}" FontSize="11" FontWeight="Bold" VerticalAlignment="Center" Margin="4"/>
+              <Button DockPanel.Dock="Right" Content="OPEN MACROS" Click="Macros_Click"/>
+              <ItemsControl x:Name="MacroRail"><ItemsControl.ItemsPanel><ItemsPanelTemplate><WrapPanel/></ItemsPanelTemplate></ItemsControl.ItemsPanel>
+                <ItemsControl.ItemTemplate><DataTemplate><Button Tag="{Binding Macro}" Click="Macro_Click" MinWidth="118"><StackPanel>
+                  <Path Data="{Binding Macro.IconId, Converter={StaticResource IconGeometry}}" Fill="{Binding AccentColor}" Width="20" Height="20" Stretch="Uniform" HorizontalAlignment="Left"/>
+                  <TextBlock Text="{Binding Macro.Name}"/><TextBlock Text="{Binding BindingSummary}" FontSize="9" Opacity=".55"/><TextBlock Text="{Binding StateSummary}" FontSize="9" Foreground="{StaticResource OliveBrush}"/>
+                </StackPanel></Button></DataTemplate></ItemsControl.ItemTemplate>
+              </ItemsControl>
+            </DockPanel>
+          </Border>
+          <Border Grid.Row="3" Background="#111817" Padding="10"><TextBlock x:Name="OperationalStatus" Text="ROUTE STATUS · CHECKING" Opacity=".65"/></Border>
+        </Grid>
+        <Grid x:Name="StationsView" Visibility="Collapsed">
+          <Grid.RowDefinitions><RowDefinition Height="*"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+           <ListBox x:Name="StationList" Background="{StaticResource PanelBrush}" BorderBrush="{StaticResource LineBrush}" PreviewMouseLeftButtonDown="StationList_PreviewMouseLeftButtonDown" SelectionChanged="StationList_SelectionChanged">
+            <ListBox.ItemTemplate><DataTemplate>
+              <Border Padding="12" Margin="2,3"><Border.Style><Style TargetType="Border"><Setter Property="BorderBrush" Value="{Binding AccentColor}"/><Setter Property="BorderThickness" Value="3,0,0,1"/><Setter Property="Background" Value="{StaticResource PanelBrush}"/><Style.Triggers><DataTrigger Binding="{Binding IsSelected, RelativeSource={RelativeSource AncestorType=ListBoxItem}}" Value="True"><Setter Property="Background" Value="#304638"/><Setter Property="BorderThickness" Value="5,2,2,2"/></DataTrigger></Style.Triggers></Style></Border.Style>
+                <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="68"/><ColumnDefinition Width="*"/><ColumnDefinition Width="160"/><ColumnDefinition Width="145"/></Grid.ColumnDefinitions>
+                  <StackPanel><TextBlock Text="{Binding Order, Converter={StaticResource ChannelNumber}}" FontSize="10" Opacity=".65"/><Path Data="{Binding IconId, Converter={StaticResource IconGeometry}}" Fill="{Binding AccentColor}" Width="28" Height="28" Stretch="Uniform" HorizontalAlignment="Left" Margin="0,6,0,0"/></StackPanel>
+                  <StackPanel Grid.Column="1"><TextBlock Text="{Binding Name}" FontSize="17" FontWeight="SemiBold"/><TextBlock Text="{Binding ProviderId, Converter={StaticResource ProviderName}}" Foreground="{Binding AccentColor}"/><TextBlock Text="{Binding Converter={StaticResource StationSourceSummary}}" Opacity=".6" TextTrimming="CharacterEllipsis"/></StackPanel>
+                  <StackPanel Grid.Column="2" VerticalAlignment="Center"><TextBlock Text="● SELECTED" Foreground="#D5E8B4" FontWeight="Bold" FontSize="11" Visibility="{Binding IsSelected, RelativeSource={RelativeSource AncestorType=ListBoxItem}, Converter={StaticResource BoolToVisibility}}"/><TextBlock Text="{Binding Converter={StaticResource StationStatus}}" Foreground="{Binding AccentColor}" FontWeight="SemiBold"/></StackPanel>
+                   <StackPanel Grid.Column="3" Orientation="Horizontal" VerticalAlignment="Center"><Button Content="TUNE" Tag="{Binding}" Click="Station_Click"/><Button Content="EDIT" Tag="{Binding}" Click="EditStationCard_Click"/></StackPanel>
+                </Grid>
+              </Border>
+            </DataTemplate></ListBox.ItemTemplate>
+          </ListBox>
+          <Border Grid.Row="1" Background="{StaticResource PanelBrush}" Padding="12" Margin="0,12,0,0"><WrapPanel><Button Content="+ CREATE STATION" Click="AddStation_Click"/><Button Content="SCAN MUSIC APPS" Click="ScanExternal_Click"/><Button Content="DUPLICATE SELECTED" Click="Duplicate_Click"/><Button Content="REMOVE SELECTED" Click="Remove_Click"/></WrapPanel></Border>
+          <Border Grid.Row="2" Background="{StaticResource PanelBrush}" Padding="12" Margin="0,8,0,0"><StackPanel><DockPanel><TextBlock Text="AVAILABLE MUSIC APPS" Foreground="{StaticResource OliveBrush}" FontWeight="Bold"/><Button DockPanel.Dock="Right" Content="CREATE FROM SELECTED" Click="CreateExternal_Click"/></DockPanel><ListBox x:Name="ExternalSessionList" DisplayMemberPath="ApplicationName" MaxHeight="120"/></StackPanel></Border>
+        </Grid>
+        <ScrollViewer x:Name="MacrosView" Visibility="Collapsed"><StackPanel><DockPanel LastChildFill="False" Margin="0,8,0,12"><StackPanel><TextBlock Text="RADIO CONTROLS" Foreground="{StaticResource OliveBrush}" FontWeight="Bold" FontSize="11"/><TextBlock Text="Create shortcuts for your stations and audio controls." Opacity=".7"/></StackPanel><Button DockPanel.Dock="Right" Content="+ CREATE MACRO" Click="CreateMacro_Click"/></DockPanel>
+          <StackPanel Orientation="Horizontal" Margin="0,0,0,12"><TextBox x:Name="MacroSearchBox" Width="240" ToolTip="Search macros by name" TextChanged="MacroFilter_Changed"/><ComboBox x:Name="MacroFilterBox" Width="160" Margin="8,0,0,0" SelectionChanged="MacroFilter_Changed"><ComboBoxItem Tag="All" Content="All states" IsSelected="True"/><ComboBoxItem Tag="Ready" Content="Ready"/><ComboBoxItem Tag="Warning" Content="Warning"/><ComboBoxItem Tag="Broken" Content="Broken"/><ComboBoxItem Tag="Disabled" Content="Disabled"/></ComboBox></StackPanel>
+          <ItemsControl x:Name="MacroPageList"><ItemsControl.ItemsPanel><ItemsPanelTemplate><WrapPanel/></ItemsPanelTemplate></ItemsControl.ItemsPanel><ItemsControl.ItemTemplate><DataTemplate>
+            <Border Width="280" MinHeight="205" Background="{StaticResource PanelBrush}" BorderBrush="{Binding AccentColor}" BorderThickness="2,1,1,1" CornerRadius="4" Padding="16" Margin="0,0,12,12"><StackPanel>
+              <DockPanel LastChildFill="False"><Path DockPanel.Dock="Left" Data="{Binding Macro.IconId, Converter={StaticResource IconGeometry}}" Fill="{Binding AccentColor}" Width="26" Height="26" Stretch="Uniform" HorizontalAlignment="Left"/><TextBlock DockPanel.Dock="Right" Text="{Binding Tag}" Foreground="{Binding HealthColor}" FontSize="10"/></DockPanel>
+              <TextBlock Text="{Binding Macro.Name}" FontWeight="SemiBold" FontSize="18" Margin="0,8,0,0"/><TextBlock Text="{Binding Macro.Description}" Opacity=".6" TextTrimming="CharacterEllipsis"/>
+              <CheckBox Content="SHOW ON DASHBOARD" IsChecked="{Binding Macro.ShowOnDashboard, Mode=OneWay}" Tag="{Binding Macro}" Click="MacroDashboardVisibility_Click" Margin="0,8,0,0"/>
+              <TextBlock Text="{Binding ActionCountLabel}" Foreground="{StaticResource OliveBrush}" FontSize="11" Margin="0,12,0,0"/><TextBlock Text="{Binding ActionSummary}" TextTrimming="CharacterEllipsis"/><TextBlock Text="{Binding BindingSummary}" Opacity=".65"/><TextBlock Text="{Binding ActivationSummary}" Opacity=".55" FontSize="10"/><TextBlock Text="{Binding StateSummary}" Foreground="{StaticResource OliveBrush}" FontSize="10"/>
+              <Button Tag="{Binding}" Click="MacroIssue_Click" Visibility="{Binding HealthSummary, Converter={StaticResource NonEmptyVisibility}}" HorizontalAlignment="Left" Background="Transparent" BorderThickness="0" Padding="0" Margin="0,8,0,0" ToolTip="Open this macro at the issue"><TextBlock Text="{Binding HealthSummary}" Foreground="{StaticResource AmberBrush}" FontSize="11" TextWrapping="Wrap" MaxWidth="242"/></Button>
+              <WrapPanel Margin="0,10,0,0"><Button Content="{Binding RunLabel}" Tag="{Binding Macro}" Click="Macro_Click"/><Button Content="TEST" Tag="{Binding Macro}" Click="TestMacro_Click"/><Button Content="EDIT" Tag="{Binding Macro}" Click="EditMacro_Click"/><Button Content="CANCEL" Tag="{Binding Macro}" Click="CancelMacro_Click" Visibility="{Binding CanCancel, Converter={StaticResource BoolToVisibility}}"/></WrapPanel>
+            </StackPanel></Border>
+          </DataTemplate></ItemsControl.ItemTemplate></ItemsControl>
+        </StackPanel></ScrollViewer>
+        <ScrollViewer x:Name="AudioView" Visibility="Collapsed" VerticalScrollBarVisibility="Auto"><StackPanel MaxWidth="1250" HorizontalAlignment="Left">
+          <DockPanel LastChildFill="False" Margin="0,0,0,14"><TextBlock Text="YOUR LIVE AUDIO PATH" Foreground="{StaticResource OliveBrush}" FontSize="11" FontWeight="Bold" VerticalAlignment="Center"/><Button DockPanel.Dock="Right" Content="REFRESH DEVICE LISTS" Click="RefreshAudioEndpoints_Click"/></DockPanel>
+          <TextBlock Text="Choose a device at the point where its sound enters or leaves the path. A changed selection takes effect immediately and saves automatically. A moving meter proves signal at that point—not that a game received it." TextWrapping="Wrap" Opacity=".75" Margin="0,0,0,16"/>
+
+          <Border Background="{StaticResource PanelBrush}" BorderBrush="{StaticResource LineBrush}" BorderThickness="1" Padding="18" CornerRadius="5" Margin="0,0,0,12"><StackPanel>
+            <TextBlock Text="MICROPHONE → GAME VOICE" Foreground="{StaticResource OliveBrush}" FontWeight="Bold" Margin="0,0,0,12"/>
+            <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="2*"/><ColumnDefinition Width="42"/><ColumnDefinition Width="1.5*"/><ColumnDefinition Width="42"/><ColumnDefinition Width="1.4*"/></Grid.ColumnDefinitions>
+              <StackPanel><TextBlock Text="1 · MICROPHONE DEVICE" Margin="0,0,0,5"/><Button Content="CHOOSE MICROPHONE" Click="AudioPickMicrophone_Click" HorizontalAlignment="Left"/><ComboBox x:Name="MicrophoneBox" Visibility="Collapsed" ItemTemplate="{StaticResource AudioEndpointChoice}" SelectionChanged="MicrophoneBox_SelectionChanged"/><TextBlock x:Name="MicrophoneRouteText" Text="Not selected" TextWrapping="Wrap" Opacity=".65" Margin="0,7,0,0"/></StackPanel>
+              <TextBlock Grid.Column="1" Text="→" Foreground="{StaticResource OliveBrush}" FontSize="24" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+              <StackPanel Grid.Column="2"><TextBlock Text="2 · VOICEMEETER INPUT" Margin="0,0,0,5"/><TextBlock x:Name="AudioMicStripNode" Text="Not assigned" FontWeight="SemiBold" TextWrapping="Wrap"/><TextBlock Text="Mic goes in; headphone self-monitoring stays off." TextWrapping="Wrap" Opacity=".65" Margin="0,7,0,0"/></StackPanel>
+              <TextBlock Grid.Column="3" Text="→" Foreground="{StaticResource OliveBrush}" FontSize="24" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+              <StackPanel Grid.Column="4"><TextBlock Text="3 · GAME VOICE OUTPUT" Margin="0,0,0,5"/><TextBlock x:Name="GameRouteText" Text="B1 needs verification" FontWeight="SemiBold" TextWrapping="Wrap"/><TextBlock Text="Choose Voicemeeter Out B1 as your game's microphone." TextWrapping="Wrap" Opacity=".65" Margin="0,7,0,0"/><ProgressBar x:Name="AudioMicMeter" Height="7" Margin="0,9,0,0"/></StackPanel>
+            </Grid>
+            <TextBlock Text="MICROPHONE LEVEL · 100% is normal, up to 160% boosts the mic and can clip" Margin="0,14,0,4" TextWrapping="Wrap"/>
+            <Slider x:Name="AudioMicrophoneVolume" Minimum="0" Maximum="1.6" Value="1" ValueChanged="MicrophoneVolume_ValueChanged" AutoToolTipPlacement="TopLeft" AutoToolTipPrecision="2"/>
+            <TextBlock x:Name="AudioMicrophoneVolumeText" Text="100% · Applies to the selected Voicemeeter mic strip immediately" Opacity=".65" TextWrapping="Wrap"/>
+          </StackPanel></Border>
+
+          <Border Background="{StaticResource PanelBrush}" BorderBrush="{StaticResource LineBrush}" BorderThickness="1" Padding="18" CornerRadius="5" Margin="0,0,0,12"><StackPanel>
+            <TextBlock Text="STATION AUDIO → YOUR HEADPHONES" Foreground="{StaticResource OliveBrush}" FontWeight="Bold" Margin="0,0,0,12"/>
+            <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="1.3*"/><ColumnDefinition Width="42"/><ColumnDefinition Width="2*"/><ColumnDefinition Width="42"/><ColumnDefinition Width="1.4*"/></Grid.ColumnDefinitions>
+              <StackPanel><TextBlock Text="1 · ACTIVE STATION" Margin="0,0,0,5"/><TextBlock x:Name="MusicRouteText" Text="No station selected" TextWrapping="Wrap" FontWeight="SemiBold"/><TextBlock Text="Local tracks play through the headset music player." TextWrapping="Wrap" Opacity=".65" Margin="0,7,0,0"/></StackPanel>
+              <TextBlock Grid.Column="1" Text="→" Foreground="{StaticResource OliveBrush}" FontSize="24" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+              <StackPanel Grid.Column="2"><TextBlock Text="2 · HEADPHONES / SPEAKERS" Margin="0,0,0,5"/><Button Content="CHOOSE HEADPHONES" Click="AudioPickMonitor_Click" HorizontalAlignment="Left"/><ComboBox x:Name="MonitorBox" Visibility="Collapsed" ItemTemplate="{StaticResource AudioEndpointChoice}" SelectionChanged="MonitorBox_SelectionChanged"/><TextBlock x:Name="MonitorRouteText" Text="Not selected" TextWrapping="Wrap" Opacity=".65" Margin="0,7,0,0"/></StackPanel>
+              <TextBlock Grid.Column="3" Text="→" Foreground="{StaticResource OliveBrush}" FontSize="24" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+              <StackPanel Grid.Column="4"><TextBlock Text="3 · WHAT YOU HEAR" Margin="0,0,0,5"/><TextBlock x:Name="AudioListeningNodeText" Text="Selected headphones" FontWeight="SemiBold" TextWrapping="Wrap"/><TextBlock Text="Meter at the actual listening output." TextWrapping="Wrap" Opacity=".65" Margin="0,7,0,0"/><ProgressBar x:Name="AudioHeadsetMeter" Height="7" Margin="0,9,0,0"/></StackPanel>
+            </Grid>
+          </StackPanel></Border>
+
+          <Border Background="{StaticResource PanelBrush}" BorderBrush="{StaticResource LineBrush}" BorderThickness="1" Padding="18" CornerRadius="5"><StackPanel>
+            <TextBlock Text="SEPARATE MUSIC FEED → GAME VOICE" Foreground="{StaticResource OliveBrush}" FontWeight="Bold" Margin="0,0,0,12"/>
+            <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="2*"/><ColumnDefinition Width="42"/><ColumnDefinition Width="1.5*"/><ColumnDefinition Width="42"/><ColumnDefinition Width="1.4*"/></Grid.ColumnDefinitions>
+              <StackPanel><TextBlock Text="1 · GAME MUSIC OUTPUT" Margin="0,0,0,5"/><ComboBox x:Name="GameMpvOutputBox" ItemTemplate="{StaticResource MpvOutputChoice}" SelectionChanged="GameMpvOutputBox_SelectionChanged" MinHeight="40"/><TextBlock x:Name="GameMpvOutputState" Text="Game music output is off." TextWrapping="Wrap" Opacity=".65" Margin="0,7,0,0"/></StackPanel>
+              <TextBlock Grid.Column="1" Text="→" Foreground="{StaticResource OliveBrush}" FontSize="24" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+              <StackPanel Grid.Column="2"><TextBlock Text="2 · VOICEMEETER MUSIC INPUT" Margin="0,0,0,5"/><TextBlock x:Name="AudioMusicStripNode" Text="Not assigned" FontWeight="SemiBold" TextWrapping="Wrap"/><TextBlock x:Name="MusicStripState" Text="No music strip selected." TextWrapping="Wrap" Opacity=".65" Margin="0,7,0,0"/></StackPanel>
+              <TextBlock Grid.Column="3" Text="→" Foreground="{StaticResource OliveBrush}" FontSize="24" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+              <StackPanel Grid.Column="4"><TextBlock Text="3 · GAME VOICE OUTPUT" Margin="0,0,0,5"/><TextBlock Text="Voicemeeter Out B1" FontWeight="SemiBold"/><TextBlock Text="A1 stays off to avoid doubled music in your headphones." TextWrapping="Wrap" Opacity=".65" Margin="0,7,0,0"/><TextBlock Text="Live B1 mix level" Foreground="{StaticResource OliveBrush}" FontSize="11" Margin="0,9,0,0"/><ProgressBar x:Name="AudioGameMeter" Height="7" Margin="0,4,0,0"/></StackPanel>
+            </Grid>
+          </StackPanel></Border>
+
+          <Border Background="{StaticResource PanelBrush}" BorderBrush="{StaticResource LineBrush}" BorderThickness="1" Padding="18" CornerRadius="5" Margin="0,12,0,0"><StackPanel>
+            <TextBlock Text="HEAR THE GAME VOICE MIX" Foreground="{StaticResource OliveBrush}" FontWeight="Bold"/>
+            <TextBlock Text="Hold the button to hear Voicemeeter's actual B1 output at 50% preview level. Direct station listening is muted while held, so you hear the B1 mix alone; release to restore it. YouTube isolation requires its temporary Voicemeeter headset route. Use headphones at a comfortable level; saved routes do not change." TextWrapping="Wrap" Opacity=".7" Margin="0,6,0,10"/>
+            <Button x:Name="AudioAuditionB1Button" Content="HOLD TO TEST B1" PreviewMouseLeftButtonDown="B1Hold_MouseDown" PreviewMouseLeftButtonUp="B1Hold_MouseUp" LostMouseCapture="B1Hold_LostCapture" PreviewKeyDown="B1Hold_KeyDown" PreviewKeyUp="B1Hold_KeyUp" HorizontalAlignment="Left"/>
+            <TextBlock x:Name="AudioAuditionB1State" Text="Ready when B1 and your headphones are connected." TextWrapping="Wrap" Margin="0,7,0,0"/>
+          </StackPanel></Border>
+
+          <Expander Header="ADVANCED · EXACT PLAYER DEVICE AND ROUTE DETAILS" Margin="0,14,0,0"><StackPanel Margin="0,12,0,0">
+            <TextBlock Text="Headset player's exact output · changing it applies immediately"/><ComboBox x:Name="MpvOutputBox" ItemTemplate="{StaticResource MpvOutputChoice}" SelectionChanged="MpvOutputBox_SelectionChanged" MinHeight="40" Margin="0,5,0,0"/>
+            <TextBlock x:Name="MpvOutputState" Text="Checking headset player output…" TextWrapping="Wrap" Opacity=".7" Margin="0,7,0,0"/>
+            <TextBlock Text="Mic-strip meter source · selection updates live meter immediately; use the microphone device selector above to connect a mic" Margin="0,14,0,5" TextWrapping="Wrap"/><ComboBox x:Name="MicrophoneStripBox" DisplayMemberPath="Label" SelectionChanged="MicrophoneStripBox_SelectionChanged" MinHeight="40"/>
+            <TextBlock Text="Music-strip meter source · selection updates live meter immediately; B1 route state is shown below" Margin="0,14,0,5" TextWrapping="Wrap"/><ComboBox x:Name="MusicStripBox" DisplayMemberPath="Label" SelectionChanged="MusicStripBox_SelectionChanged" MinHeight="40"/>
+            <TextBlock x:Name="RoutingDetail" Text="Checking Voicemeeter…" TextWrapping="Wrap" Opacity=".7" Margin="0,14,0,0"/>
+            <Button Content="REFRESH MPV OUTPUT LIST" Click="RefreshMpvOutputs_Click" HorizontalAlignment="Left" Margin="0,10,0,0"/>
+          </StackPanel></Expander>
+          <WrapPanel Margin="0,15,0,20"><Button Content="RECONNECT VOICEMEETER" Click="Reconnect_Click"/><Button Content="TEST MUSIC" Click="TestMusic_Click"/><Button Content="TEST MICROPHONE" Click="TestMicrophone_Click"/><Button Content="UNDO WIZARD ROUTES" Click="RestoreRoute_Click"/><Button Content="OPEN VOICEMEETER" Click="OpenVm_Click"/></WrapPanel>
+        </StackPanel></ScrollViewer>
+        <ScrollViewer x:Name="SettingsView" Visibility="Collapsed" VerticalScrollBarVisibility="Auto"><StackPanel MaxWidth="900" HorizontalAlignment="Left">
+          <Border Background="{StaticResource PanelBrush}" BorderBrush="{StaticResource LineBrush}" BorderThickness="1" Padding="24" CornerRadius="5"><StackPanel>
+            <TextBlock Text="PLAYBACK" FontSize="11" FontWeight="Bold" Foreground="{StaticResource OliveBrush}"/>
+            <TextBlock Text="Choose what happens when you return to a station. Local music supports all three modes." Opacity=".7" TextWrapping="Wrap" Margin="0,6,0,12"/>
+            <WrapPanel><RadioButton x:Name="RadioMode" Content="RADIO · keeps time while away" GroupName="PlaybackMode" Checked="PlaybackMode_Changed" Margin="0,4,20,4"/><RadioButton x:Name="PlayerMode" Content="PLAYER · resumes where you left off" GroupName="PlaybackMode" Checked="PlaybackMode_Changed" Margin="0,4,20,4"/><RadioButton x:Name="RestartTrackMode" Content="RESTART TRACK · last song from 00:00" GroupName="PlaybackMode" Checked="PlaybackMode_Changed" Margin="0,4"/></WrapPanel>
+             <TextBlock Text="Headset master music level" Margin="0,24,0,4"/><Slider x:Name="MasterVolume" Minimum="0" Maximum="1" Value=".8" ValueChanged="MasterVolume_ValueChanged"/><TextBlock x:Name="MasterVolumeText" Text="80% · Applies now and saves automatically." Opacity=".7" Margin="0,4,0,0"/>
+             <TextBlock Text="Game master music level" Margin="0,22,0,4"/><Slider x:Name="GameMasterVolume" Minimum="0" Maximum="1" Value=".8" ValueChanged="GameMasterVolume_ValueChanged"/><TextBlock x:Name="GameMasterVolumeText" Text="80% · Applies when game music is connected and saves automatically." Opacity=".7" TextWrapping="Wrap" Margin="0,4,0,0"/>
+             <TextBlock Text="Microphone level into Voicemeeter B1" Margin="0,22,0,4"/><Slider x:Name="MicrophoneVolume" Minimum="0" Maximum="1.6" Value="1" ValueChanged="MicrophoneVolume_ValueChanged" AutoToolTipPlacement="TopLeft" AutoToolTipPrecision="2"/><TextBlock x:Name="MicrophoneVolumeText" Text="100% · Normal mic level; up to 160% can clip." Opacity=".7" TextWrapping="Wrap" Margin="0,4,0,0"/>
+            <CheckBox x:Name="CrossfadeCheck" Content="Crossfade between local stations" IsChecked="True" Checked="CrossfadeSettings_Changed" Unchecked="CrossfadeSettings_Changed" Margin="0,22,0,4"/>
+            <TextBlock Text="Local-station crossfade duration · 0.05–5 seconds" Margin="0,12,0,4"/>
+            <Slider x:Name="CrossfadeDurationSlider" Minimum="0.05" Maximum="5" Value="0.65" ValueChanged="CrossfadeDuration_Changed" AutoToolTipPlacement="TopLeft" AutoToolTipPrecision="2"/>
+            <TextBlock Text="Transition curve" Margin="0,12,0,4"/>
+            <ComboBox x:Name="CrossfadeCurveBox" SelectionChanged="CrossfadeCurve_Changed" Width="220" HorizontalAlignment="Left"/>
+            <Expander Header="ADVANCED · NATIVE PLAYBACK" Margin="0,24,0,0"><StackPanel><TextBlock Text="MPV is found automatically. Choose an executable only if it was not found. The path saves when you finish editing it." TextWrapping="Wrap" Opacity=".7" Margin="0,0,0,8"/><TextBox x:Name="MpvPathBox" LostFocus="MpvPathBox_LostFocus" MinHeight="38"/></StackPanel></Expander>
+          </StackPanel></Border>
+          <Border Background="{StaticResource PanelBrush}" BorderBrush="{StaticResource LineBrush}" BorderThickness="1" Padding="24" CornerRadius="5" Margin="0,12,0,0"><StackPanel>
+            <TextBlock Text="MUSIC SERVICES" FontSize="11" FontWeight="Bold" Foreground="{StaticResource OliveBrush}" Margin="0,0,0,12"/>
+            <WrapPanel><Border Style="{StaticResource ProviderCard}"><StackPanel><TextBlock Text="LOCAL MUSIC" FontWeight="Bold"/><TextBlock Text="Files and radio streams" Opacity=".65"/><TextBlock x:Name="MpvProviderState" Text="CHECKING" Foreground="{StaticResource OliveBrush}" Margin="0,7,0,0"/><Button Content="CHOOSE OUTPUT" Click="Audio_Click"/></StackPanel></Border>
+              <Border Style="{StaticResource ProviderCard}"><StackPanel><TextBlock Text="YOUTUBE" FontWeight="Bold"/><TextBlock Text="Visible video player" Opacity=".65"/><TextBlock x:Name="YouTubeProviderState" Text="CHECKING" Foreground="{StaticResource OliveBrush}" Margin="0,7,0,0"/></StackPanel></Border>
+              <Border Style="{StaticResource ProviderCard}"><StackPanel><TextBlock Text="EXTERNAL APPS" FontWeight="Bold"/><TextBlock Text="Control a music app" Opacity=".65"/><Button Content="VIEW MUSIC APPS" Click="Stations_Click" Margin="0,12,0,0"/></StackPanel></Border>
+              <Border Style="{StaticResource ProviderCard}"><StackPanel><TextBlock Text="SOUNDCLOUD" FontWeight="Bold"/><TextBlock Text="Account not connected" Opacity=".65"/><Button Content="WHY UNAVAILABLE" Click="OpenSoundCloudSetup_Click" Margin="0,12,0,0"/></StackPanel></Border>
+              <Border Style="{StaticResource ProviderCard}"><StackPanel><TextBlock Text="APPLE MUSIC" FontWeight="Bold"/><TextBlock Text="Account not connected" Opacity=".65"/><Button Content="WHY UNAVAILABLE" Click="OpenAppleSetup_Click" Margin="0,12,0,0"/></StackPanel></Border>
+            </WrapPanel>
+          </StackPanel></Border>
+          <Border Background="{StaticResource PanelBrush}" BorderBrush="{StaticResource LineBrush}" BorderThickness="1" Padding="24" CornerRadius="5" Margin="0,12,0,0"><StackPanel>
+            <TextBlock Text="CONTROLS" FontSize="11" FontWeight="Bold" Foreground="{StaticResource OliveBrush}"/>
+            <TextBlock Text="Press Enter or Space on any page to play or pause. Your keyboard and controller shortcuts live in Macros." TextWrapping="Wrap" Opacity=".7" Margin="0,8,0,12"/>
+            <Button Content="MANAGE MACROS" Click="ManageMacros_Click" HorizontalAlignment="Left"/>
+          </StackPanel></Border>
+          <Border Background="{StaticResource PanelBrush}" BorderBrush="{StaticResource LineBrush}" BorderThickness="1" Padding="24" CornerRadius="5" Margin="0,12,0,0"><StackPanel>
+            <TextBlock Text="ABOUT &amp; UPDATES" FontSize="11" FontWeight="Bold" Foreground="{StaticResource OliveBrush}"/>
+            <TextBlock x:Name="ApplicationVersionText" Text="Version" Margin="0,8,0,10"/>
+            <TextBlock Text="Updates are securely checked by WARDOGS Radio Launcher. If the update service is unavailable, your installed application still starts normally." Opacity=".7" TextWrapping="Wrap" Margin="0,0,0,12"/>
+            <Button Content="CHECK FOR UPDATES" Click="CheckForUpdates_Click" HorizontalAlignment="Left"/>
+          </StackPanel></Border>
+          <TextBlock Text="Playback and level changes apply and save automatically." Opacity=".6" Margin="0,16,0,20"/>
+        </StackPanel></ScrollViewer>
+        <ScrollViewer x:Name="DiagnosticsView" Visibility="Collapsed"><StackPanel><WrapPanel><Button Content="RUN CHECKS" Click="RunDiagnostics_Click"/><Button Content="SCAN EXTERNAL AUDIO" Click="ScanExternalDiagnostics_Click"/><Button Content="EXPORT DIAGNOSTIC REPORT" Click="ExportDiagnostics_Click"/></WrapPanel><ItemsControl x:Name="DiagnosticList" Margin="0,12"><ItemsControl.ItemTemplate><DataTemplate><Border Background="{StaticResource PanelBrush}" BorderBrush="{StaticResource LineBrush}" BorderThickness="1" Padding="14" Margin="0,3"><Grid><Grid.ColumnDefinitions><ColumnDefinition Width="105"/><ColumnDefinition Width="100"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><TextBlock Text="{Binding Area}" Foreground="{StaticResource OliveBrush}"/><TextBlock Grid.Column="1" Text="{Binding Status}" FontWeight="Bold"/><StackPanel Grid.Column="2"><TextBlock Text="{Binding Summary}"/><Expander Header="TECHNICAL DETAILS" Margin="0,6,0,0"><TextBlock Text="{Binding Detail}" Opacity=".6" TextWrapping="Wrap"/></Expander></StackPanel></Grid></Border></DataTemplate></ItemsControl.ItemTemplate></ItemsControl></StackPanel></ScrollViewer>
+        <ScrollViewer x:Name="SetupView" Visibility="Collapsed" VerticalScrollBarVisibility="Auto"><StackPanel MaxWidth="840" HorizontalAlignment="Left">
+          <TextBlock Text="SYSTEM → DEVICES → ROUTES → TEST → STATIONS → CONTROLS" FontSize="11" Foreground="{StaticResource OliveBrush}" FontWeight="Bold" Margin="0,4,0,7"/>
+          <TextBlock Text="Get your radio ready" FontSize="26" FontWeight="SemiBold"/>
+          <TextBlock Text="Choose your devices here, connect the game feed, then test what you hear and send. You can leave and return at any time; setup is only verified after the live checks pass." TextWrapping="Wrap" Opacity=".7" Margin="0,10,0,18"/>
+          <TextBlock x:Name="SetupStepTitle" Text="STEP 1 OF 10 · SYSTEM CHECK" Foreground="{StaticResource OliveBrush}" FontWeight="Bold" Margin="0,0,0,6"/>
+          <ProgressBar x:Name="SetupProgress" Minimum="0" Maximum="10" Value="1" Height="7" Margin="0,0,0,16"/>
+          <Border x:Name="SetupStepSystem" Background="{StaticResource PanelBrush}" Padding="20" CornerRadius="5" Margin="0,0,0,10"><StackPanel>
+            <TextBlock Text="1 · SYSTEM CHECK" Foreground="{StaticResource OliveBrush}" FontWeight="Bold"/>
+            <TextBlock Text="WARDOGS checks the essentials before making audio changes." TextWrapping="Wrap" Opacity=".7" Margin="0,6,0,12"/>
+            <TextBlock x:Name="SetupSystemChecks" Text="Checking…" TextWrapping="Wrap" FontSize="15" Margin="0,0,0,10"/>
+            <Button Content="RUN SYSTEM CHECK" Click="SetupSystemCheck_Click" HorizontalAlignment="Left"/>
+          </StackPanel></Border>
+          <Border x:Name="SetupStepConnect" Background="{StaticResource PanelBrush}" Padding="20" CornerRadius="5" Margin="0,0,0,10"><StackPanel>
+            <TextBlock Text="2 · CONNECT VOICEMEETER" Foreground="{StaticResource OliveBrush}" FontWeight="Bold"/>
+            <TextBlock x:Name="SetupVmState" Text="Checking engine…" TextWrapping="Wrap" Margin="0,9,0,9"/>
+            <WrapPanel><Button Content="CONNECT VOICEMEETER" Click="Reconnect_Click"/><Button Content="OPEN VOICEMEETER" Click="OpenVm_Click"/></WrapPanel>
+          </StackPanel></Border>
+          <Border x:Name="SetupStepDevices" Background="{StaticResource PanelBrush}" Padding="20" CornerRadius="5" Margin="0,0,0,10"><StackPanel>
+            <TextBlock Text="3 · MICROPHONE" Foreground="{StaticResource OliveBrush}" FontWeight="Bold"/>
+            <TextBlock Text="Choose the mic your game should hear. Selecting it connects it to a Voicemeeter input and B1 immediately." TextWrapping="Wrap" Opacity=".7" Margin="0,6,0,12"/>
+            <TextBlock Text="MICROPHONE DEVICE" Margin="0,0,0,5"/><Button Content="CHOOSE MICROPHONE" Click="SetupPickMicrophone_Click" HorizontalAlignment="Left"/><ComboBox x:Name="SetupMicrophoneBox" Visibility="Collapsed" ItemTemplate="{StaticResource AudioEndpointChoice}" SelectionChanged="SetupMicrophoneBox_SelectionChanged"/>
+            <TextBlock Text="A Bluetooth headset mic can lower that headset's music quality. A separate microphone keeps stereo listening available." TextWrapping="Wrap" Opacity=".65" Margin="0,7,0,10"/>
+            <TextBlock x:Name="SetupMicChoiceState" Text="Choose a microphone." TextWrapping="Wrap" Margin="0,0,0,8"/>
+            <TextBlock Text="MIC LEVEL" Margin="0,4,0,4"/><ProgressBar x:Name="SetupMicSelectionMeter" Height="9"/>
+            <TextBlock Text="MICROPHONE VOLUME · 100% normal; 160% maximum boost" Margin="0,12,0,4" TextWrapping="Wrap"/>
+            <Slider x:Name="SetupMicrophoneVolume" Minimum="0" Maximum="1.6" Value="1" ValueChanged="MicrophoneVolume_ValueChanged" AutoToolTipPlacement="TopLeft" AutoToolTipPrecision="2"/>
+            <TextBlock x:Name="SetupMicrophoneVolumeText" Text="100% · Changes Voicemeeter mic strip immediately" Opacity=".65" TextWrapping="Wrap"/>
+            <WrapPanel Margin="0,10,0,0"><Button Content="TEST MICROPHONE" Click="TestMicrophone_Click"/><Button Content="REFRESH MICROPHONES" Click="RefreshAudioEndpoints_Click"/></WrapPanel>
+            <TextBlock x:Name="SetupMicTestState" Text="Speak after pressing Test Microphone." TextWrapping="Wrap" Margin="0,8,0,0"/>
+          </StackPanel></Border>
+          <Border x:Name="SetupStepMonitor" Background="{StaticResource PanelBrush}" Padding="20" CornerRadius="5" Margin="0,0,0,10"><StackPanel>
+            <TextBlock Text="4 · LISTENING OUTPUT" Foreground="{StaticResource OliveBrush}" FontWeight="Bold"/>
+            <TextBlock Text="Choose the headphones or speakers that should play local stations. The change applies immediately." TextWrapping="Wrap" Opacity=".7" Margin="0,6,0,12"/>
+            <TextBlock Text="HEADPHONES / SPEAKERS" Margin="0,0,0,5"/><Button Content="CHOOSE HEADPHONES" Click="SetupPickMonitor_Click" HorizontalAlignment="Left"/><ComboBox x:Name="SetupMonitorBox" Visibility="Collapsed" ItemTemplate="{StaticResource AudioEndpointChoice}" SelectionChanged="SetupMonitorBox_SelectionChanged"/>
+            <TextBlock x:Name="SetupDeviceState" Text="Choose your listening output." TextWrapping="Wrap" Margin="0,10,0,0"/>
+            <TextBlock Text="LISTENING LEVEL" Margin="0,10,0,4"/><ProgressBar x:Name="SetupMonitorSelectionMeter" Height="9"/>
+            <WrapPanel Margin="0,10,0,0"><Button Content="PLAY TEST SOUND" Click="SetupPlayTestSound_Click"/><Button Content="REFRESH OUTPUTS" Click="RefreshAudioEndpoints_Click"/></WrapPanel>
+            <TextBlock x:Name="SetupSoundTestState" Text="Play a short test sound, then confirm it reached your headphones." TextWrapping="Wrap" Margin="0,8,0,0"/>
+            <Expander Header="ADVANCED · EXACT HEADSET PLAYER OUTPUT" Margin="0,12,0,0"><StackPanel Margin="0,9,0,0">
+              <TextBlock Text="Use this only if the headphone selector cannot match an MPV device. This selector also applies immediately." TextWrapping="Wrap" Opacity=".7" Margin="0,0,0,6"/>
+              <ComboBox x:Name="SetupMpvOutputBox" ItemTemplate="{StaticResource MpvOutputChoice}" SelectionChanged="SetupMpvOutputBox_SelectionChanged" MinHeight="36"/>
+              <TextBlock x:Name="SetupMpvOutputState" Text="Current output: Windows default until changed." TextWrapping="Wrap" Margin="0,7,0,0"/>
+            </StackPanel></Expander>
+            <Button Content="REFRESH PLAYER OUTPUTS" Click="RefreshMpvOutputs_Click" HorizontalAlignment="Left" Margin="0,10,0,0"/>
+          </StackPanel></Border>
+          <Border x:Name="SetupStepRouting" Background="{StaticResource PanelBrush}" Padding="20" CornerRadius="5" Margin="0,0,0,10"><StackPanel>
+            <TextBlock Text="5 · GAME VOICE OUTPUT" Foreground="{StaticResource OliveBrush}" FontWeight="Bold"/>
+            <TextBlock x:Name="SetupRoutingDevices" Text="Chosen mic and headphones appear here." TextWrapping="Wrap" Margin="0,9,0,12"/>
+            <Border BorderBrush="{StaticResource LineBrush}" BorderThickness="1" CornerRadius="4" Padding="14"><StackPanel>
+              <TextBlock Text="STATION MUSIC → VOICEMEETER MUSIC INPUT → GAME VOICE B1" Foreground="{StaticResource OliveBrush}" FontWeight="Bold" TextWrapping="Wrap" Margin="0,0,0,8"/>
+              <TextBlock Text="1 · SECOND PLAYER OUTPUT" Margin="0,0,0,5"/><ComboBox x:Name="SetupGameMpvOutputBox" ItemTemplate="{StaticResource MpvOutputChoice}" SelectionChanged="SetupGameMpvOutputBox_SelectionChanged" MinHeight="40"/>
+              <TextBlock Text="Changing this output applies immediately. Choose Voicemeeter AUX Input for the separate game feed from local files and YouTube; Off leaves game music out of B1." TextWrapping="Wrap" Opacity=".65" Margin="0,7,0,0"/>
+              <TextBlock Text="2 · VOICEMEETER MUSIC INPUT → B1" Margin="0,13,0,5"/><TextBlock x:Name="SetupGameRouteState" Text="Checking music route…" TextWrapping="Wrap"/>
+              <TextBlock Text="3 · GAME / VOICE APP INPUT" Margin="0,13,0,5"/><TextBlock x:Name="SetupGameOutputEndpointName" Text="Voicemeeter Out B1 · select this as the microphone in your game or voice app" TextWrapping="Wrap"/>
+            </StackPanel></Border>
+            <TextBlock Text="AUTO-CONNECT MUSIC TO HEADPHONES AND GAME VOICE" Foreground="{StaticResource OliveBrush}" FontWeight="Bold" Margin="0,15,0,5"/>
+            <TextBlock Text="This action sets your selected headphones for listening, Voicemeeter AUX for the second player, AUX → B1 on, and AUX → A1 off so the headset does not hear a duplicate. It can briefly interrupt active music." TextWrapping="Wrap" Opacity=".75" Margin="0,0,0,7"/>
+            <Button Content="CONNECT STATION MUSIC TO HEADPHONES + B1" Click="SetupAutomaticMusic_Click" HorizontalAlignment="Left" Background="#33452E" Margin="0,0,0,10"/>
+            <Button Content="VERIFY B1 OUTPUT" Click="SetupVerifyB1_Click" HorizontalAlignment="Left" Margin="0,0,0,10"/>
+            <TextBlock x:Name="SetupB1TestState" Text="Play a station, then verify the B1 output." TextWrapping="Wrap" Margin="0,0,0,10"/>
+            <Button Content="UNDO WIZARD DEVICE AND ROUTE CHANGES" Click="RestoreRoute_Click" HorizontalAlignment="Left"/>
+            <Expander Header="ADVANCED · CHECK OR CHANGE INDIVIDUAL MIXER STRIPS" Margin="0,12,0,0"><StackPanel Margin="0,10,0,0">
+              <TextBlock Text="A strip is a Voicemeeter mixer channel. These selectors identify strips only; the buttons below change B1/A1 route switches, not the input device." TextWrapping="Wrap" Opacity=".7" Margin="0,0,0,10"/>
+              <TextBlock Text="Microphone hardware strip"/><ComboBox x:Name="SetupMicStripBox" DisplayMemberPath="Label" SelectionChanged="SetupMicStripBox_SelectionChanged" MinHeight="36" Margin="0,4,0,10"/>
+              <TextBlock Text="Game-music virtual strip"/><ComboBox x:Name="SetupMusicStripBox" DisplayMemberPath="Label" SelectionChanged="SetupMusicStripBox_SelectionChanged" MinHeight="36" Margin="0,4,0,10"/>
+              <TextBlock x:Name="SetupStripState" Text="Choose strips and watch the live meters." TextWrapping="Wrap" Margin="0,4,0,0"/>
+              <WrapPanel Margin="0,10,0,0"><Button Content="SEND MIC TO B1" Click="SetupRouteMic_Click"/><Button x:Name="SetupRouteMusicButton" Content="SEND MUSIC TO B1 + A1" Click="SetupRouteMusic_Click"/></WrapPanel>
+            </StackPanel></Expander>
+            <TextBlock Text="Selected mic's live level" Margin="0,14,0,3"/><ProgressBar x:Name="SetupMicMeter" Height="8"/>
+            <TextBlock Text="Voicemeeter game-music input's live level" Margin="0,10,0,3"/><ProgressBar x:Name="SetupMusicMeter" Height="8"/>
+          </StackPanel></Border>
+          <Border x:Name="SetupStepVerify" Background="{StaticResource PanelBrush}" Padding="20" CornerRadius="5" Margin="0,0,0,10"><StackPanel>
+            <TextBlock Text="6 · TEST THE SIGNAL CHAIN" Foreground="{StaticResource OliveBrush}" FontWeight="Bold"/>
+            <TextBlock x:Name="SetupVerifyDescription" Text="B1 is the game-voice output. The lower meter shows your chosen listening output." TextWrapping="Wrap" Opacity=".7" Margin="0,6,0,10"/>
+            <TextBlock x:Name="SetupBusState" Text="Checking B1 and A1…" TextWrapping="Wrap"/>
+            <TextBlock Text="Game voice bus B1" Margin="0,10,0,3"/><ProgressBar x:Name="SetupGameMeter" Height="8"/>
+            <TextBlock x:Name="SetupB1EndpointLabel" Text="Voicemeeter Out B1 · Windows output" Margin="0,10,0,3"/><ProgressBar x:Name="SetupB1EndpointMeter" Height="8"/>
+            <TextBlock x:Name="SetupListeningMeterLabel" Text="Selected listening output" Margin="0,10,0,3"/><ProgressBar x:Name="SetupMonitorMeter" Height="8"/>
+            <WrapPanel Margin="0,12,0,0"><Button Content="TEST MICROPHONE" Click="TestMicrophone_Click"/><Button Content="TEST MUSIC INPUT" Click="TestMusic_Click"/><Button Content="PLAY TEST SOUND" Click="SetupPlayTestSound_Click"/><Button Content="VERIFY B1" Click="SetupVerifyB1_Click"/></WrapPanel>
+            <TextBlock x:Name="SetupChainTestState" Text="Run each test while your microphone and a station are active." TextWrapping="Wrap" Margin="0,8,0,0"/>
+            <Border BorderBrush="{StaticResource LineBrush}" BorderThickness="1" CornerRadius="4" Padding="12" Margin="0,16,0,0"><StackPanel>
+              <TextBlock Text="HEAR THE ACTUAL B1 OUTPUT" Foreground="{StaticResource OliveBrush}" FontWeight="Bold"/>
+              <TextBlock Text="Hold to hear the real B1 mix at 50% preview level. Direct station listening is muted while held and restored when released, including YouTube when its isolated Voicemeeter route is available. Speak to hear your mic too; use headphones at a comfortable level." TextWrapping="Wrap" Opacity=".7" Margin="0,5,0,8"/>
+              <Button x:Name="SetupAuditionB1Button" Content="HOLD TO TEST B1" PreviewMouseLeftButtonDown="B1Hold_MouseDown" PreviewMouseLeftButtonUp="B1Hold_MouseUp" LostMouseCapture="B1Hold_LostCapture" PreviewKeyDown="B1Hold_KeyDown" PreviewKeyUp="B1Hold_KeyUp" HorizontalAlignment="Left"/>
+              <TextBlock x:Name="SetupAuditionB1State" Text="Ready when B1 and your headphones are connected." TextWrapping="Wrap" Margin="0,7,0,0"/>
+            </StackPanel></Border>
+            <CheckBox x:Name="SetupHeardMusic" Content="I heard WARDOGS music in my selected headphones" Checked="SetupConfirmation_Changed" Unchecked="SetupConfirmation_Changed" Margin="0,16,0,4"/>
+            <CheckBox x:Name="SetupGameHeard" Content="I verified a game/voice app receives the B1 mix" Checked="SetupConfirmation_Changed" Unchecked="SetupConfirmation_Changed"/>
+          </StackPanel></Border>
+          <Border x:Name="SetupStepProviders" Background="{StaticResource PanelBrush}" Padding="20" CornerRadius="5" Margin="0,0,0,10"><StackPanel>
+            <TextBlock Text="7 · MUSIC SERVICES" Foreground="{StaticResource OliveBrush}" FontWeight="Bold"/>
+            <TextBlock Text="Local files and YouTube work without account setup. Other services need their own access; you can skip them now." TextWrapping="Wrap" Opacity=".7" Margin="0,6,0,12"/>
+            <TextBlock x:Name="SetupProviderState" Text="Checking music services…" TextWrapping="Wrap" Margin="0,0,0,10"/>
+            <WrapPanel><Button Content="CHECK EXTERNAL MUSIC APPS" Click="SetupScanExternal_Click"/><Button Content="SOUNDCLOUD STATUS" Click="OpenSoundCloudSetup_Click"/><Button Content="APPLE MUSIC STATUS" Click="OpenAppleSetup_Click"/></WrapPanel>
+            <TextBlock Text="Provider setup is optional for the local radio path. Unavailable services cannot be called Ready until an authorized connection is supplied." TextWrapping="Wrap" Opacity=".65" Margin="0,10,0,0"/>
+          </StackPanel></Border>
+          <Border x:Name="SetupStepStations" Background="{StaticResource PanelBrush}" Padding="20" CornerRadius="5" Margin="0,0,0,10"><StackPanel>
+            <TextBlock Text="8 · STATIONS" Foreground="{StaticResource OliveBrush}" FontWeight="Bold"/>
+            <TextBlock Text="Create a station with the real editor, or tune one you've already made. Canceling the editor creates nothing." TextWrapping="Wrap" Opacity=".7" Margin="0,6,0,12"/>
+            <TextBlock x:Name="SetupStationsState" Text="Choose a station to test." TextWrapping="Wrap" Margin="0,0,0,10"/>
+            <Button Content="CREATE STATION" Click="SetupCreateStation_Click" HorizontalAlignment="Left" Margin="0,0,0,10"/>
+            <TextBlock Text="STATION TO TEST" Margin="0,0,0,4"/><ComboBox x:Name="SetupStationBox" DisplayMemberPath="Name" MinHeight="40" Margin="0,0,0,8"/>
+            <Button Content="TUNE SELECTED STATION" Click="SetupTuneStation_Click" HorizontalAlignment="Left"/>
+          </StackPanel></Border>
+          <Border x:Name="SetupStepControls" Background="{StaticResource PanelBrush}" Padding="20" CornerRadius="5" Margin="0,0,0,10"><StackPanel>
+            <TextBlock Text="9 · RADIO CONTROLS" Foreground="{StaticResource OliveBrush}" FontWeight="Bold"/>
+            <TextBlock Text="Make a keyboard or controller shortcut in the Macro editor, then test it there. Controller binding needs the actual device connected." TextWrapping="Wrap" Opacity=".7" Margin="0,6,0,12"/>
+            <TextBlock x:Name="SetupControlsState" Text="No control test recorded yet." TextWrapping="Wrap" Margin="0,0,0,10"/>
+            <WrapPanel><Button Content="CREATE MACRO" Click="CreateMacro_Click"/><Button Content="EDIT MACROS" Click="ManageMacros_Click"/></WrapPanel>
+          </StackPanel></Border>
+          <Border x:Name="SetupStepFinish" Background="{StaticResource PanelBrush}" Padding="20" CornerRadius="5" Margin="0,0,0,10"><StackPanel>
+            <TextBlock Text="10 · READY CHECK" Foreground="{StaticResource OliveBrush}" FontWeight="Bold"/>
+            <TextBlock Text="Start a local station, speak into your microphone, listen in your headphones, and verify the game receives Voicemeeter Out B1. WARDOGS won't mark setup verified until the live checks and your listening confirmations are complete." TextWrapping="Wrap" Opacity=".7" Margin="0,6,0,10"/>
+            <Button Content="OPEN DASHBOARD / PLAY" Click="Dashboard_Click" HorizontalAlignment="Left"/>
+            <TextBlock x:Name="SetupReadiness" Text="Run checks to see what remains." TextWrapping="Wrap" Margin="0,12,0,8"/>
+            <WrapPanel><Button Content="RECHECK EVERYTHING" Click="SetupRecheck_Click"/><Button Content="FINISH VERIFIED SETUP" Click="SetupFinish_Click" Background="#33452E"/><Button Content="LEAVE UNFINISHED" Click="Dashboard_Click"/></WrapPanel>
+          </StackPanel></Border>
+          <WrapPanel Margin="0,12,0,20"><Button x:Name="SetupBackButton" Content="← BACK" Click="SetupBack_Click"/><Button x:Name="SetupNextButton" Content="NEXT →" Click="SetupNext_Click" Background="#33452E"/></WrapPanel>
+        </StackPanel></ScrollViewer>
+      </Grid>
+      <TextBlock Grid.Row="2" x:Name="Footer" Text="Ready for setup" FontSize="10" Opacity=".65" Margin="0,14,0,0"/>
+    </Grid>
+  </Grid>
+</Window>

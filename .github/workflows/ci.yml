@@ -1,0 +1,33 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  validate:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with: { dotnet-version: 10.0.x }
+      - name: Verify release version source
+        shell: pwsh
+        run: |
+          $version = (Get-Content WARDOGS_VERSION -Raw).Trim()
+          if ($version -notmatch '^\d+\.\d+\.\d+$') { throw 'WARDOGS_VERSION must be major.minor.patch.' }
+      - name: Restore, build, and test
+        shell: pwsh
+        run: |
+          dotnet restore WardogsRadio.sln -r win-x64
+          dotnet build WardogsRadio.sln -c Release --no-restore
+          dotnet test WardogsRadio.sln -c Release --no-restore
+          node tests/youtube-player.behavior.test.cjs
+      - name: Stage package and verify startup health
+        shell: pwsh
+        run: |
+          .\scripts\stage-package.ps1 -StageDir "$PWD\.release\stage"
+          $app = Start-Process -FilePath "$PWD\.release\stage\WARDOGS Radio.exe" -ArgumentList '--startup-health-check' -WorkingDirectory "$PWD\.release\stage" -Wait -PassThru
+          if ($app.ExitCode -ne 0) { throw 'Staged application startup health failed.' }
+          foreach ($file in @('WARDOGS Radio Launcher.exe','WARDOGS Radio Update Agent.exe','VERSION','PACKAGE_CONTENTS.sha256','WebView2Loader.dll')) { if (-not (Test-Path "$PWD\.release\stage\$file")) { throw "Staged package is missing $file." } }

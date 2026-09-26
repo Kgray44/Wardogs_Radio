@@ -1,0 +1,4 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup><OutputType>Exe</OutputType><ApplicationIcon>..\..\assets\icons\WARDOGS-Radio.ico</ApplicationIcon><AssemblyName>WARDOGS Radio Update Agent</AssemblyName></PropertyGroup>
+  <ItemGroup><ProjectReference Include="..\WardogsRadio.Update\WardogsRadio.Update.csproj" /></ItemGroup>
+</Project>

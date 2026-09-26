@@ -1,0 +1,14 @@
+<Window x:Class="WardogsRadio.App.EditSongWindow" xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" Title="Edit Song" Width="460" SizeToContent="Height" MinWidth="460" WindowStartupLocation="CenterOwner" ResizeMode="NoResize" Background="{StaticResource InkBrush}" Foreground="{StaticResource TextBrush}" FontFamily="Segoe UI">
+  <Grid Margin="24"><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+    <StackPanel><TextBlock Text="EDIT SONG" Foreground="{StaticResource OliveBrush}" FontSize="12" FontWeight="Bold"/><TextBlock Text="Name and playback range" FontSize="20" FontWeight="SemiBold" Margin="0,7,0,0"/><TextBlock Text="Adjust this playlist entry without changing the original file or video. Other songs keep their own times." TextWrapping="Wrap" Opacity=".7" Margin="0,7,0,0"/></StackPanel>
+    <StackPanel Grid.Row="1" Margin="0,18,0,0"><TextBlock Text="Song name"/><TextBox x:Name="SongName" Margin="0,5,0,0" MaxLength="120"/>
+      <Grid Margin="0,16,0,0"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="14"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+        <StackPanel><TextBlock Text="Start time"/><TextBox x:Name="StartTime" Margin="0,5,0,0"/></StackPanel>
+        <StackPanel Grid.Column="2"><TextBlock Text="Stop time"/><TextBox x:Name="StopTime" Margin="0,5,0,0"/></StackPanel>
+      </Grid>
+      <TextBlock Text="Use MM:SS, H:MM:SS, or seconds. Leave stop blank to play to the end." Opacity=".65" FontSize="11" TextWrapping="Wrap" Margin="0,9,0,0"/>
+      <TextBlock x:Name="ErrorText" Foreground="{StaticResource AmberBrush}" TextWrapping="Wrap" Margin="0,10,0,0"/>
+    </StackPanel>
+    <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,18,0,0"><Button Content="CANCEL" Click="Cancel_Click"/><Button Content="SAVE SONG" Click="Save_Click" Background="#33452E" Margin="8,0,0,0"/></StackPanel>
+  </Grid>
+</Window>

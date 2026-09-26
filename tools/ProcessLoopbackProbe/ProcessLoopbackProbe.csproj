@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup><OutputType>Exe</OutputType></PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="NAudio" Version="3.1.0" />
+    <ProjectReference Include="..\..\src\WardogsRadio.Core\WardogsRadio.Core.csproj" />
+    <ProjectReference Include="..\..\src\WardogsRadio.Voicemeeter\WardogsRadio.Voicemeeter.csproj" />
+    <Compile Include="..\..\src\WardogsRadio.App\YouTubeGameFeed.cs" Link="YouTubeGameFeed.cs" />
+    <Compile Include="..\..\src\WardogsRadio.App\B1Audition.cs" Link="B1Audition.cs" />
+    <Compile Include="..\..\src\WardogsRadio.App\WindowsDefaultRender.cs" Link="WindowsDefaultRender.cs" />
+    <Compile Include="..\..\src\WardogsRadio.App\TemporaryYouTubeRoute.cs" Link="TemporaryYouTubeRoute.cs" />
+  </ItemGroup>
+</Project>

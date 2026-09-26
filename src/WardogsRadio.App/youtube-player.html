@@ -1,0 +1,162 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="referrer" content="strict-origin-when-cross-origin">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>WARDOGS Radio · YouTube</title>
+  <style>html,body,#player{width:100%;height:100%;margin:0;background:#000;overflow:hidden}</style>
+</head>
+<body>
+  <div id="player"></div>
+  <script>
+    const query = new URLSearchParams(location.search);
+    const video = query.get('v') || '';
+    const list = query.get('list') || '';
+    const instance = query.get('instance') || '';
+    const requestedStart = Number(query.get('start') || 0);
+    const start = Number.isFinite(requestedStart) && requestedStart > 0 ? Math.min(Math.floor(requestedStart), 86400) : 0;
+    let repeatMode = ['off', 'playlist', 'track'].includes(query.get('repeat')) ? query.get('repeat') : 'playlist';
+    const valid = value => /^[A-Za-z0-9_-]{5,128}$/.test(value);
+    const send = (type, detail = '') => window.chrome?.webview?.postMessage(JSON.stringify({type, detail, instance}));
+    if ((!valid(video) && !valid(list)) || (video && !valid(video)) || (list && !valid(list))) {
+      send('error', 'Invalid YouTube video or playlist identifier.');
+    } else {
+      let player;
+      let resumeSeekPending = start > 0;
+      let ended = false;
+      let segments = [];
+      let segmentIndex = 0;
+      let boundaryPending = false;
+      const currentVideoId = () => player?.getVideoData?.()?.video_id || video;
+      const selectSegment = (index, autoPlay = true) => {
+        if (!segments.length || index < 0 || index >= segments.length || !player) return;
+        segmentIndex = index;
+        const segment = segments[index];
+        boundaryPending = true;
+        if (currentVideoId() !== segment.source || player.getPlayerState?.() === YT.PlayerState.ENDED)
+          player.loadVideoById({videoId: segment.source, startSeconds: segment.start});
+        else {
+          player.seekTo(segment.start, true);
+          if (autoPlay) player.playVideo();
+        }
+        ended = false;
+        setTimeout(() => { boundaryPending = false; }, 650);
+      };
+      const advanceSegment = () => {
+        if (!segments.length) return false;
+        if (repeatMode === 'track') { selectSegment(segmentIndex); return true; }
+        const next = segmentIndex + 1;
+        if (next < segments.length) { selectSegment(next); return true; }
+        if (repeatMode === 'playlist') { selectSegment(0); return true; }
+        ended = true;
+        player.pauseVideo();
+        send('state', '0');
+        return true;
+      };
+      const restart = (firstInPlaylist = false) => {
+        if (!player) return;
+        if (segments.length) { selectSegment(ended || firstInPlaylist ? 0 : segmentIndex); return; }
+        const playlist = player.getPlaylist?.();
+        if (playlist?.length) {
+          const index = firstInPlaylist ? 0 : Math.max(0, player.getPlaylistIndex?.() ?? 0);
+          player.playVideoAt(index);
+        } else {
+          const currentId = player.getVideoData?.()?.video_id || video;
+          if (valid(currentId)) player.loadVideoById({videoId: currentId, startSeconds: 0});
+          else { player.seekTo(0, true); player.playVideo(); }
+        }
+        ended = false;
+      };
+      window.onYouTubeIframeAPIReady = function () {
+        player = new YT.Player('player', {
+          width: '100%', height: '100%',
+          videoId: valid(video) ? video : undefined,
+          playerVars: {
+            playsinline: 1, controls: 1,
+            origin: location.origin,
+            ...(start ? {start} : {}),
+            ...(valid(list) ? {listType: 'playlist', list} : {})
+          },
+          events: {
+            onReady: () => {
+              player.setLoop(repeatMode === 'playlist' && valid(list) && !segments.length);
+              send('ready');
+            },
+            onStateChange: event => {
+              if (event.data === YT.PlayerState.ENDED) {
+                ended = true;
+                if (advanceSegment()) return;
+                send('state', '0');
+                if (repeatMode === 'track' || (repeatMode === 'playlist' && !valid(list))) restart();
+                return;
+              }
+              if (event.data === YT.PlayerState.PLAYING) ended = false;
+              if (event.data === YT.PlayerState.PLAYING && resumeSeekPending) {
+                resumeSeekPending = false;
+                if (player.getCurrentTime() < start - 2) player.seekTo(start, true);
+              }
+              send('state', String(event.data));
+            },
+            onError: event => send('error', String(event.data))
+          }
+        });
+      };
+      window.wardogs = {
+        play: () => ended || player?.getPlayerState?.() === YT.PlayerState.ENDED
+          ? restart(repeatMode === 'playlist') : player?.playVideo(),
+        pause: () => player?.pauseVideo(),
+        next: () => segments.length ? selectSegment(Math.min(segmentIndex + 1, segments.length - 1)) : player?.nextVideo(),
+        previous: () => segments.length
+          ? selectSegment(player?.getCurrentTime?.() > segments[segmentIndex].start + 5 ? segmentIndex : Math.max(0, segmentIndex - 1))
+          : player?.getCurrentTime?.() > 5 || !valid(list) ? restart() : player?.previousVideo(),
+        seek: seconds => {
+          if (segments.length) {
+            const index = segments.findIndex(segment => segment.source === currentVideoId() && seconds >= segment.start && (segment.end == null || seconds < segment.end));
+            if (index >= 0) segmentIndex = index;
+          }
+          player?.seekTo(seconds, true);
+          ended = false;
+        },
+        setSegments: (items, index) => {
+          segments = Array.isArray(items) ? items.filter(item => valid(item.source) && Number.isFinite(item.start) && (item.end == null || Number.isFinite(item.end))) : [];
+          segmentIndex = segments.length ? Math.max(0, Math.min(Number(index) || 0, segments.length - 1)) : 0;
+          if (segments.length) {
+            const position = player?.getCurrentTime?.() ?? 0;
+            const matching = segments.findIndex(segment => segment.source === currentVideoId() && position >= segment.start && (segment.end == null || position < segment.end));
+            if (matching >= 0) segmentIndex = matching;
+          }
+          player?.setLoop(repeatMode === 'playlist' && valid(list) && !segments.length);
+        },
+        selectSegment,
+        repeat: mode => {
+          if (!['off', 'playlist', 'track'].includes(mode)) return;
+          repeatMode = mode;
+          player?.setLoop(mode === 'playlist' && valid(list) && !segments.length);
+        },
+        volume: volume => player?.setVolume(volume),
+        getVolume: () => player?.getVolume()
+      };
+      let progressTicks = 0;
+      setInterval(() => {
+        if (player?.getCurrentTime) {
+          const position = player.getCurrentTime();
+          const duration = player.getDuration();
+          if (Number.isFinite(position) && Number.isFinite(duration)) {
+            if (segments.length && !boundaryPending && player.getPlayerState?.() === YT.PlayerState.PLAYING &&
+                segments[segmentIndex]?.end != null && position >= segments[segmentIndex].end - 0.08) {
+              advanceSegment();
+            }
+            if (++progressTicks % 4 === 0)
+              send('progress', JSON.stringify({position, duration, segmentIndex, videoId: currentVideoId()}));
+          }
+        }
+      }, 250);
+      const script = document.createElement('script');
+      script.src = 'https://www.youtube.com/iframe_api';
+      script.onerror = () => send('error', 'YouTube IFrame API could not load. Check your connection.');
+      document.head.appendChild(script);
+    }
+  </script>
+</body>
+</html>

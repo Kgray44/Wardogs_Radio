@@ -1,0 +1,12 @@
+<Project>
+  <PropertyGroup>
+    <WardogsVersion>$([System.IO.File]::ReadAllText('$(MSBuildThisFileDirectory)WARDOGS_VERSION').Trim())</WardogsVersion>
+    <Version>$(WardogsVersion)</Version>
+    <AssemblyVersion>$(WardogsVersion).0</AssemblyVersion>
+    <FileVersion>$(WardogsVersion).0</FileVersion>
+    <InformationalVersion>$(WardogsVersion)</InformationalVersion>
+    <TargetFramework>net10.0-windows10.0.19041.0</TargetFramework>
+    <Nullable>enable</Nullable><ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion><TreatWarningsAsErrors>false</TreatWarningsAsErrors>
+  </PropertyGroup>
+</Project>

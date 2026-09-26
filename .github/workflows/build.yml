@@ -1,0 +1,24 @@
+name: Build and test
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+      - name: Test solution
+        run: dotnet test WardogsRadio.sln -c Release
+      - name: Test visible YouTube controller
+        run: node tests/youtube-player.behavior.test.cjs
+      - name: Publish Windows x64 app
+        run: dotnet publish src/WardogsRadio.App/WardogsRadio.App.csproj -c Release -r win-x64 --self-contained true -o artifacts/win-x64
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wardogs-radio-win-x64
+          path: artifacts/win-x64/

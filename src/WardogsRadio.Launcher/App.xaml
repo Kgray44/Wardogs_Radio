@@ -1,0 +1,3 @@
+<Application x:Class="WardogsRadio.Launcher.App" xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+  <Application.Resources><SolidColorBrush x:Key="Ink" Color="#101514"/><SolidColorBrush x:Key="Panel" Color="#19201E"/><SolidColorBrush x:Key="Olive" Color="#9FB672"/><Style TargetType="TextBlock"><Setter Property="Foreground" Value="#E5E9DF"/></Style></Application.Resources>
+</Application>

@@ -1,0 +1,7 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType><UseWPF>true</UseWPF>
+    <ApplicationIcon>..\..\assets\icons\WARDOGS-Radio.ico</ApplicationIcon><AssemblyName>WARDOGS Radio Launcher</AssemblyName>
+  </PropertyGroup>
+  <ItemGroup><ProjectReference Include="..\WardogsRadio.Update\WardogsRadio.Update.csproj" /></ItemGroup>
+</Project>

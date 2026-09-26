@@ -1,0 +1,11 @@
+<Window x:Class="WardogsRadio.App.ActionPickerWindow" xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" Title="Add Macro Action" Width="580" Height="640" MinWidth="480" MinHeight="480" WindowStartupLocation="CenterOwner" Background="{StaticResource InkBrush}" Foreground="{StaticResource TextBrush}">
+  <Grid Margin="24"><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+    <StackPanel><TextBlock Text="ACTION LIBRARY" Foreground="{StaticResource OliveBrush}" FontSize="11" FontWeight="Bold"/><TextBlock Text="Choose what this macro should do" FontSize="23" FontWeight="SemiBold" Margin="0,4,0,14"/></StackPanel>
+    <TextBox x:Name="SearchBox" Grid.Row="1" ToolTip="Search actions" TextChanged="SearchBox_TextChanged" Margin="0,0,0,12"/>
+    <ListBox x:Name="ActionList" Grid.Row="2" MouseDoubleClick="ActionList_DoubleClick">
+      <ListBox.GroupStyle><GroupStyle><GroupStyle.HeaderTemplate><DataTemplate><TextBlock Text="{Binding Name}" Foreground="{StaticResource OliveBrush}" FontWeight="Bold" Margin="8,14,0,5"/></DataTemplate></GroupStyle.HeaderTemplate></GroupStyle></ListBox.GroupStyle>
+      <ListBox.ItemTemplate><DataTemplate><Border Padding="10" Margin="2,2" BorderBrush="{StaticResource LineBrush}" BorderThickness="0,0,0,1"><StackPanel><TextBlock Text="{Binding Name}" FontWeight="SemiBold"/><TextBlock Text="{Binding Description}" Opacity=".65" TextWrapping="Wrap" Margin="0,3,0,0"/></StackPanel></Border></DataTemplate></ListBox.ItemTemplate>
+    </ListBox>
+    <StackPanel Grid.Row="3" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,14,0,0"><Button Content="CANCEL" IsCancel="True"/><Button Content="ADD ACTION" Click="Add_Click" Background="#33452E"/></StackPanel>
+  </Grid>
+</Window>

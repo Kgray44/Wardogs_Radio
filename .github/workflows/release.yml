@@ -1,0 +1,126 @@
+name: Release WARDOGS Radio
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Build and qualify without publishing a GitHub Release
+        required: true
+        default: true
+        type: boolean
+
+permissions:
+  contents: write
+  id-token: write
+
+jobs:
+  package:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - uses: actions/setup-dotnet@v4
+        with: { dotnet-version: 10.0.x }
+      - name: Verify version and select release tag
+        id: version
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $version = (Get-Content WARDOGS_VERSION -Raw).Trim()
+          if ($version -notmatch '^\d+\.\d+\.\d+$') { throw 'WARDOGS_VERSION must be major.minor.patch.' }
+          $tag = if ($env:GITHUB_EVENT_NAME -eq 'push') { $env:GITHUB_REF_NAME } else { "v$version" }
+          if ($tag -ne "v$version") { throw "Tag $tag does not match WARDOGS_VERSION $version." }
+          "tag=$tag" >> $env:GITHUB_OUTPUT
+          "version=$version" >> $env:GITHUB_OUTPUT
+      - name: Restore, build, and test
+        shell: pwsh
+        run: |
+          dotnet restore WardogsRadio.sln -r win-x64
+          dotnet build WardogsRadio.sln -c Release --no-restore
+          dotnet test WardogsRadio.sln -c Release --no-restore
+          node tests/youtube-player.behavior.test.cjs
+      - name: Stage complete self-contained package
+        shell: pwsh
+        run: .\scripts\stage-package.ps1 -StageDir "$PWD\release\stage"
+      - name: Verify staged binaries have icon resources
+        shell: pwsh
+        run: |
+          Add-Type -AssemblyName System.Drawing
+          foreach ($binary in @('WARDOGS Radio.exe','WARDOGS Radio Launcher.exe','WARDOGS Radio Update Agent.exe')) {
+            $icon = [Drawing.Icon]::ExtractAssociatedIcon("$PWD\release\stage\$binary")
+            if ($null -eq $icon) { throw "Missing usable icon: $binary" }
+            $icon.Dispose()
+          }
+      - name: Record unsigned build when signing is disabled
+        if: vars.ARTIFACT_SIGNING_ENABLED != 'true'
+        shell: pwsh
+        run: Add-Content $env:GITHUB_STEP_SUMMARY '## UNSIGNED RELEASE BUILD`nNo configured trusted signing service; release continues unsigned.'
+      - name: Azure login for optional Artifact Signing
+        if: vars.ARTIFACT_SIGNING_ENABLED == 'true'
+        uses: Azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      - name: Sign package files when configured
+        if: vars.ARTIFACT_SIGNING_ENABLED == 'true'
+        uses: Azure/artifact-signing-action@v2
+        with:
+          endpoint: ${{ vars.ARTIFACT_SIGNING_ENDPOINT }}
+          signing-account-name: ${{ vars.ARTIFACT_SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ vars.ARTIFACT_SIGNING_PROFILE }}
+          files: |
+            ${{ github.workspace }}\release\stage\WARDOGS Radio.exe
+            ${{ github.workspace }}\release\stage\WARDOGS Radio Launcher.exe
+            ${{ github.workspace }}\release\stage\WARDOGS Radio Update Agent.exe
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+      - name: Refresh signed package inventory
+        shell: pwsh
+        run: .\scripts\refresh-package-inventory.ps1 -StageDir "$PWD\release\stage"
+      - name: Install Inno Setup 6
+        shell: pwsh
+        run: choco install innosetup --version=6.7.3 --yes --no-progress
+      - name: Build installer
+        shell: pwsh
+        run: .\scripts\build-installer.ps1 -StageDir "$PWD\release\stage" -OutputDir "$PWD\release" -Iscc 'C:\Program Files (x86)\Inno Setup 6\ISCC.exe'
+      - name: Sign installer when configured
+        if: vars.ARTIFACT_SIGNING_ENABLED == 'true'
+        uses: Azure/artifact-signing-action@v2
+        with:
+          endpoint: ${{ vars.ARTIFACT_SIGNING_ENDPOINT }}
+          signing-account-name: ${{ vars.ARTIFACT_SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ vars.ARTIFACT_SIGNING_PROFILE }}
+          files: ${{ github.workspace }}\release\WARDOGS-Radio-Setup-v${{ steps.version.outputs.version }}.exe
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+      - name: Smoke install, health check, and uninstall
+        shell: pwsh
+        run: |
+          $target = Join-Path $env:RUNNER_TEMP 'wardogs-radio-installer-smoke'
+          .\scripts\verify-installer-upgrade.ps1 -InstallerPath "$PWD\release\WARDOGS-Radio-Setup-v${{ steps.version.outputs.version }}.exe" -InstallDir $target
+          $uninstall = Start-Process -FilePath "$target\unins000.exe" -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART' -Wait -PassThru
+          if ($uninstall.ExitCode -ne 0 -or (Test-Path "$target\WARDOGS Radio.exe")) { throw 'Installer uninstall smoke test failed.' }
+      - name: Generate manifest and checksums
+        shell: pwsh
+        run: .\scripts\generate-release-assets.ps1 -InstallerPath "$PWD\release\WARDOGS-Radio-Setup-v${{ steps.version.outputs.version }}.exe" -OutputDir "$PWD\release" -ReleaseTag '${{ steps.version.outputs.tag }}'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: WARDOGS-Radio-v${{ steps.version.outputs.version }}
+          path: |
+            release/WARDOGS-Radio-Setup-v${{ steps.version.outputs.version }}.exe
+            release/update-manifest.json
+            release/SHA256SUMS.txt
+      - name: Publish stable GitHub Release
+        if: github.event_name == 'push' || inputs.dry_run == false
+        env: { GH_TOKEN: ${{ github.token }} }
+        shell: pwsh
+        run: gh release create '${{ steps.version.outputs.tag }}' release/WARDOGS-Radio-Setup-v${{ steps.version.outputs.version }}.exe release/update-manifest.json release/SHA256SUMS.txt --title 'WARDOGS Radio v${{ steps.version.outputs.version }}' --notes-file docs/ReleaseNotes-v0.1.0.md --latest
+      - name: Verify published updater chain
+        if: github.event_name == 'push' || inputs.dry_run == false
+        shell: pwsh
+        run: .\scripts\verify-published-updater.ps1 -ReleaseTag '${{ steps.version.outputs.tag }}'

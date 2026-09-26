@@ -1,0 +1,3 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup><AssemblyName>WardogsRadio.Update</AssemblyName></PropertyGroup>
+</Project>
