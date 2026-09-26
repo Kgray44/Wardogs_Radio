@@ -13,7 +13,8 @@ try {
     $releaseRoot = "https://github.com/Kgray44/Wardogs_Radio/releases/download/$ReleaseTag"
     $manifestFile = Join-Path $env:TEMP 'wardogs-update-manifest.json'
     Invoke-WebRequest -Uri "$releaseRoot/update-manifest.json" -OutFile $manifestFile -TimeoutSec 30
-    $sums = (Invoke-WebRequest -Uri "$releaseRoot/SHA256SUMS.txt" -TimeoutSec 30).Content
+    $sumResponse = Invoke-WebRequest -Uri "$releaseRoot/SHA256SUMS.txt" -TimeoutSec 30
+    $sums = if ($sumResponse.Content -is [byte[]]) { [Text.Encoding]::UTF8.GetString($sumResponse.Content) } else { [string]$sumResponse.Content }
     $manifestHash = (Get-FileHash -LiteralPath $manifestFile -Algorithm SHA256).Hash.ToLowerInvariant()
     if ($sums -notmatch "(?m)^$manifestHash \*update-manifest\.json$") { throw 'Published SHA256SUMS does not match the manifest.' }
     Invoke-WebRequest -Uri $manifest.installer_url -OutFile $temp -TimeoutSec 120
