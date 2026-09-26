@@ -83,10 +83,14 @@ jobs:
         run: .\scripts\refresh-package-inventory.ps1 -StageDir "$PWD\release\stage"
       - name: Install Inno Setup 6
         shell: pwsh
-        run: choco install innosetup --version=6.7.3 --yes --no-progress
+        run: |
+          winget install --id JRSoftware.InnoSetup --exact --silent --accept-package-agreements --accept-source-agreements
+          $entry = Get-ItemProperty 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*','HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*','HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*' -ErrorAction SilentlyContinue | Where-Object { $_.DisplayName -like 'Inno Setup version 6*' } | Select-Object -First 1
+          if ($null -eq $entry -or -not (Test-Path (Join-Path $entry.InstallLocation 'ISCC.exe'))) { throw 'Inno Setup 6 compiler was not installed.' }
+          "INNO_ISCC=$(Join-Path $entry.InstallLocation 'ISCC.exe')" >> $env:GITHUB_ENV
       - name: Build installer
         shell: pwsh
-        run: .\scripts\build-installer.ps1 -StageDir "$PWD\release\stage" -OutputDir "$PWD\release" -Iscc 'C:\Program Files (x86)\Inno Setup 6\ISCC.exe'
+        run: .\scripts\build-installer.ps1 -StageDir "$PWD\release\stage" -OutputDir "$PWD\release" -Iscc $env:INNO_ISCC
       - name: Sign installer when configured
         if: vars.ARTIFACT_SIGNING_ENABLED == 'true'
         uses: Azure/artifact-signing-action@v2
