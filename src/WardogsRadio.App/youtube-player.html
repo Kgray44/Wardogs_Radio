@@ -137,7 +137,6 @@
         volume: volume => player?.setVolume(volume),
         getVolume: () => player?.getVolume()
       };
-      let progressTicks = 0;
       setInterval(() => {
         if (player?.getCurrentTime) {
           const position = player.getCurrentTime();
@@ -147,8 +146,9 @@
                 segments[segmentIndex]?.end != null && position >= segments[segmentIndex].end - 0.08) {
               advanceSegment();
             }
-            if (++progressTicks % 4 === 0)
-              send('progress', JSON.stringify({position, duration, segmentIndex, videoId: currentVideoId()}));
+            // The desktop UI projects this live telemetry directly.  Send at
+            // 4 Hz so a healthy player never looks like it updates in multi-second jumps.
+            send('progress', JSON.stringify({position, duration, segmentIndex, videoId: currentVideoId()}));
           }
         }
       }, 250);

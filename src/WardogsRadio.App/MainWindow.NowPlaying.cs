@@ -27,7 +27,9 @@ public partial class MainWindow
     double? _nowPlayingDurationSeconds;
     double _nowPlayingLevelTarget;
     List<Station> _dockStationChoices = [];
-    readonly DispatcherTimer _nowPlayingVisualizerTimer = new() { Interval = TimeSpan.FromMilliseconds(33) };
+    // Scalar level display only (not an FFT/spectrum).  Keep it deliberately
+    // cheap while restoring reliable playback.
+    readonly DispatcherTimer _nowPlayingVisualizerTimer = new() { Interval = TimeSpan.FromMilliseconds(100) };
 
     void InitializeNowPlayingSurface()
     {
@@ -195,13 +197,16 @@ public partial class MainWindow
         DockTimeline.IsEnabled = DrawerTimeline.IsEnabled = timeline.CanSeek;
     }
 
-    void UpdateNowPlayingVisualizer(SignalLevel music)
+    void UpdateNowPlayingVisualizer(SignalLevel music, SignalLevel monitor)
     {
-        // This method is invoked by the existing 10 Hz Voicemeeter polling loop.
-        // Rendering is deliberately decoupled below at 30 FPS, so the mixer is never
-        // polled at UI-frame rate.
-        _nowPlayingLevelTarget = _active?.ProviderId == "youtube" && !_youtubePlayerReady
-            ? 0 : music.Available ? VoicemeeterSignalMonitor.BarValue(music) / 100d : 0;
+        // Prefer the station's Voicemeeter strip when it is available, otherwise
+        // use the selected listening endpoint for direct local playback.
+        var source = music.Available ? music : monitor;
+        var loadingOrSwitching = _activationGate.CurrentCount == 0 ||
+            _active?.ProviderId == "youtube" && (!_youtubePlayerReady || _youtubePlayerErrorDetail is not null) ||
+            _youtubeRouteRecoveryBlocked;
+        _nowPlayingLevelTarget = loadingOrSwitching ? 0 : source.Available
+            ? VoicemeeterSignalMonitor.BarValue(source) / 100d : 0;
     }
 
     void RenderNowPlayingVisualizer()

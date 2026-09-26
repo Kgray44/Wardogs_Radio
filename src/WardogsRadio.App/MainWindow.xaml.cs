@@ -61,7 +61,9 @@ public partial class MainWindow : Window, IMacroActionHandler
         readonly Dictionary<string, long> _events = [];
         public string StationName { get; } = stationName;
         public string? HeadsetDevice { get; private set; }
+        public string? HeadsetReportedDevice { get; private set; }
         public string? GameDevice { get; private set; }
+        public string? GameReportedDevice { get; private set; }
         public double RequestedVolume { get; private set; }
         public double? ReportedVolume { get; private set; }
         public bool? ReportedMute { get; private set; }
@@ -69,6 +71,9 @@ public partial class MainWindow : Window, IMacroActionHandler
         public float HeadsetPeak { get; private set; }
         public float MusicStripPeak { get; private set; }
         public float B1Peak { get; private set; }
+        long _uiTickCount;
+        double _uiTickTotalMilliseconds;
+        double _uiTickMaxMilliseconds;
         public void Mark(string stage) => _events.TryAdd(stage, _clock.ElapsedMilliseconds);
         public void RecordHeadsetSetup(string? device, double requested)
         {
@@ -81,16 +86,30 @@ public partial class MainWindow : Window, IMacroActionHandler
             ReportedMute ??= mute;
             ReportedPlaying ??= playing;
         }
-        public void RecordGameDevice(string? device) => GameDevice = device;
+        public void RecordReportedDevice(string? device) => HeadsetReportedDevice ??= device;
+        public void RecordGameDevice(string? configured, string? reported)
+        {
+            GameDevice = configured;
+            GameReportedDevice ??= reported;
+        }
+        public void RecordUiTick(TimeSpan elapsed)
+        {
+            _uiTickCount++;
+            _uiTickTotalMilliseconds += elapsed.TotalMilliseconds;
+            _uiTickMaxMilliseconds = Math.Max(_uiTickMaxMilliseconds, elapsed.TotalMilliseconds);
+        }
         public void RecordPeaks(SignalLevel headset, SignalLevel music, SignalLevel b1)
         {
             HeadsetPeak = Math.Max(HeadsetPeak, headset.Peak);
             MusicStripPeak = Math.Max(MusicStripPeak, music.Peak);
             B1Peak = Math.Max(B1Peak, b1.Peak);
+            if (headset.Peak > .001f) Mark("first headset endpoint signal");
+            if (b1.Peak > .001f) Mark("first B1 endpoint signal");
         }
         public string Describe() => $"{string.Join(" · ", _events.Select(entry => $"{entry.Key} {entry.Value} ms"))}\n" +
-            $"headset={HeadsetDevice ?? "not selected"}; requested={RequestedVolume:P0}; reported volume={ReportedVolume?.ToString("P0") ?? "—"}; mute={ReportedMute?.ToString() ?? "—"}; playing={ReportedPlaying?.ToString() ?? "—"}\n" +
-            $"game device={GameDevice ?? "off"}; endpoint peaks headset={HeadsetPeak:0.0000}, music strip={MusicStripPeak:0.0000}, B1={B1Peak:0.0000}";
+            $"headset configured={HeadsetDevice ?? "not selected"}; mpv={HeadsetReportedDevice ?? "—"}; requested={RequestedVolume:P0}; reported volume={ReportedVolume?.ToString("P0") ?? "—"}; mute={ReportedMute?.ToString() ?? "—"}; playing={ReportedPlaying?.ToString() ?? "—"}\n" +
+            $"game configured={GameDevice ?? "off"}; mpv={GameReportedDevice ?? "—"}; endpoint peaks headset={HeadsetPeak:0.0000}, music strip={MusicStripPeak:0.0000}, B1={B1Peak:0.0000}\n" +
+            $"signal timer avg {(_uiTickCount == 0 ? 0 : _uiTickTotalMilliseconds / _uiTickCount):0.0} ms, max {_uiTickMaxMilliseconds:0.0} ms";
     }
     readonly ConfigurationStore _store;
     readonly WrRadioPackageService _backupTransfer;
@@ -159,10 +178,9 @@ public partial class MainWindow : Window, IMacroActionHandler
     readonly MacroExecutionContext _setupRouteContext = new();
     readonly List<(int Strip, string Route)> _setupChangedRoutes = [];
     readonly DispatcherTimer _playbackTimer = new() { Interval = TimeSpan.FromSeconds(1) };
-    // The meters remain visibly live at 10 Hz, while leaving enough UI-thread time for
-    // WebView2 navigation and player startup. The signal sample already represents the
-    // latest Voicemeeter peak; a 20 Hz full-page text/layout refresh delayed YouTube load.
-    readonly DispatcherTimer _signalTimer = new() { Interval = TimeSpan.FromMilliseconds(100) };
+    // Keep normal mixer telemetry at the known-good 5 Hz cadence.  Diagnostics
+    // performs the expensive raw scans only while its page is visible.
+    readonly DispatcherTimer _signalTimer = new() { Interval = TimeSpan.FromMilliseconds(200) };
     readonly DispatcherTimer _volumeSaveTimer = new() { Interval = TimeSpan.FromMilliseconds(600) };
     readonly SemaphoreSlim _b1AuditionGate = new(1, 1);
     B1Audition? _b1Audition;
@@ -176,9 +194,6 @@ public partial class MainWindow : Window, IMacroActionHandler
     bool _refreshingCollections;
     bool _syncingMasterVolumeSliders;
     bool _loadingClipGuardControls;
-    bool _applyingClipGuardGain;
-    double _lastAppliedClipGuardGain = 1;
-    DateTime _lastClipGuardGainApplyUtc;
     DateTime _nextSetupSignalRefresh;
     DateTime _nextSignalPresentation;
     DateTime _nextMeterForensicsCapture;
@@ -240,7 +255,9 @@ public partial class MainWindow : Window, IMacroActionHandler
         {
             var started = Stopwatch.GetTimestamp();
             RefreshSignalMeters();
-            if (_active?.ProviderId == "youtube") _youtubeStartupForensics?.RecordUiTick(Stopwatch.GetElapsedTime(started));
+            var elapsed = Stopwatch.GetElapsedTime(started);
+            if (_active?.ProviderId == "youtube") _youtubeStartupForensics?.RecordUiTick(elapsed);
+            else _localStartupForensics?.RecordUiTick(elapsed);
         };
         _volumeSaveTimer.Tick += async (_, _) =>
         {
@@ -277,11 +294,10 @@ public partial class MainWindow : Window, IMacroActionHandler
         await LoadAudioEndpointsAsync();
         await LoadMpvOutputsAsync();
         _vm.TryLogin(out _);
-        if (_config.ClipGuard.LimiterEnabled)
-        {
-            ReconcileVoicemeeterLimiter();
-            await _store.SaveAsync(_config);
-        }
+        // Stabilization: release any old limiter lease. Clip Guard remains
+        // telemetry-only and is not allowed to alter the playback path.
+        ReconcileVoicemeeterLimiter();
+        await _store.SaveAsync(_config);
         if (!EnsureYouTubeRouteHealthy(out var routeRecovery))
         {
             Footer.Text = routeRecovery;
@@ -1099,6 +1115,11 @@ public partial class MainWindow : Window, IMacroActionHandler
     async Task ActivateAsync(Station station, bool forceCrossfade = false, TimeSpan? fadeDuration = null,
         TransitionCurve? fadeCurve = null, bool startPaused = false)
     {
+        if (station.ProviderId.Equals("mpv", StringComparison.OrdinalIgnoreCase))
+        {
+            _localStartupForensics = new LocalPlaybackForensics(station.Name);
+            _localStartupForensics.Mark("T0 station click");
+        }
         _transitionCancellation?.Cancel();
         await _activationGate.WaitAsync();
         try
@@ -1157,9 +1178,7 @@ public partial class MainWindow : Window, IMacroActionHandler
             old.Runtime.WasPlaying = false;
         }
         _active = station;
-        _localStartupForensics = station.ProviderId.Equals("mpv", StringComparison.OrdinalIgnoreCase)
-            ? new LocalPlaybackForensics(station.Name) : null;
-        _localStartupForensics?.Mark("station selected");
+        _localStartupForensics?.Mark("T1 provider setup started");
         _localPlaylistEnded = false;
         station.Runtime.IsOnAir = false;
         station.Runtime.WasPlaying = false;
@@ -1534,6 +1553,7 @@ public partial class MainWindow : Window, IMacroActionHandler
             _localStartupForensics?.Mark("audio device selected / requested volume set");
             _localStartupForensics?.RecordReportedState(
                 await _mpvProvider.ReadVolumeAsync(), await _mpvProvider.ReadMuteAsync(), _mpvProvider.Snapshot.IsPlaying);
+            _localStartupForensics?.RecordReportedDevice(await _mpvProvider.ReadAudioDeviceAsync());
             NativeStatus.Text = _mpvProvider.Snapshot.Track?.Title ?? station.Name;
             NativeHint.Text = "Starting playback…";
             Footer.Text = $"{station.Name} is ready. Check your headphones and voice chat output.";
@@ -1634,7 +1654,7 @@ public partial class MainWindow : Window, IMacroActionHandler
             var playback = await headset.RefreshAsync();
             await game.SelectTrackAsync(Math.Clamp(headset.CurrentPlaylistIndex, 0, game.LoadedFiles.Count - 1), playback.PositionSeconds);
             _gameMpvProvider = game;
-            _localStartupForensics?.RecordGameDevice(device);
+            _localStartupForensics?.RecordGameDevice(device, await game.ReadAudioDeviceAsync());
             _localStartupForensics?.Mark("game MPV process started / media loaded");
             GameMpvOutputState.Text = $"Game music player ready on {device}. Check its Voicemeeter strip and game bus.";
         }
@@ -1703,7 +1723,7 @@ public partial class MainWindow : Window, IMacroActionHandler
             try
             {
                 _youtubeRoute.Begin(_config.MonitorDeviceId ?? "", _config.MasterVolume * station.Volume);
-                _youtubeStartupForensics.Mark("T2 temporary route begin complete");
+                _youtubeStartupForensics.Mark($"T2 temporary route begin complete ({_youtubeRoute.LastBeginDuration.TotalMilliseconds:0} ms)");
             }
             catch (Exception error)
             {
@@ -2744,35 +2764,14 @@ public partial class MainWindow : Window, IMacroActionHandler
 
     void ReconcileVoicemeeterLimiter()
     {
-        var settings = _config.ClipGuard;
-        string detail;
-        var wantsLease = settings.LimiterEnabled && settings.Mode == ClipGuardMode.Protect;
-        if (wantsLease)
-        {
-            if (!_voicemeeterStripLimiter.TryApply(_config.MusicStripIndex, settings.SafetyCeilingDbfs, out detail))
-            {
-                // A control is never allowed to imply a live protection path that could not
-                // be read back from this exact mixer/strip.
-                settings.LimiterEnabled = _voicemeeterStripLimiter.IsActive;
-                _loadingClipGuardControls = true;
-                try { ClipGuardLimiter.IsChecked = settings.LimiterEnabled; }
-                finally { _loadingClipGuardControls = false; }
-            }
-        }
-        else
-        {
-            var restored = _voicemeeterStripLimiter.TryRestore(out detail);
-            if (!restored && _voicemeeterStripLimiter.IsActive)
-            {
-                settings.LimiterEnabled = true;
-                _loadingClipGuardControls = true;
-                try { ClipGuardLimiter.IsChecked = true; }
-                finally { _loadingClipGuardControls = false; }
-            }
-            if (!_voicemeeterStripLimiter.IsActive)
-                detail = wantsLease ? detail : "Limiter is off. Enable it to lease the selected Voicemeeter music-strip limiter; WARDOGS will restore the prior mixer value when released.";
-        }
-        ClipGuardLimitStatus.Text = detail;
+        var restored = _voicemeeterStripLimiter.TryRestore(out var detail);
+        _config.ClipGuard.LimiterEnabled = false;
+        _loadingClipGuardControls = true;
+        try { ClipGuardLimiter.IsChecked = false; }
+        finally { _loadingClipGuardControls = false; }
+        ClipGuardLimitStatus.Text = restored
+            ? "STABILIZATION MODE · Clip Guard is telemetry-only; no Voicemeeter limiter is controlled."
+            : "STABILIZATION MODE · Could not release a prior limiter lease: " + detail;
     }
 
     void ClipGuardClearLatch_Click(object sender, RoutedEventArgs e)
@@ -2824,8 +2823,9 @@ public partial class MainWindow : Window, IMacroActionHandler
         }
     }
 
-    double GamePlayerGain(Station station) => ClipGuardMath.EffectiveGameGain(_config.GameMasterVolume, station.GameVolume,
-        _outputHealth?.ProtectionGain ?? 1);
+    // During stabilization, master and station gain are the only playback-gain
+    // authorities. Clip Guard samples are display telemetry, never an actuator.
+    double GamePlayerGain(Station station) => Math.Clamp(_config.GameMasterVolume * station.GameVolume, 0, 1);
 
     bool HasActiveGameMusicFeed() => _active?.ProviderId == "youtube"
         ? _youtubeGameFeed is not null
@@ -2843,45 +2843,6 @@ public partial class MainWindow : Window, IMacroActionHandler
             await _gameMpvProvider.SetVolumeAsync(GamePlayerGain(station), cancellationToken);
     }
 
-    bool CanAutomaticallyAttenuateGameMusic(SignalLevel music) =>
-        HasActiveGameMusicFeed() && music.Available && music.Peak > .005f &&
-        (_active?.ProviderId == "youtube"
-            ? _youtubeGameFeed is { HasRecentSignal: true, Fault: null } && _active.Runtime.WasPlaying
-            : _gameMpvProvider?.Snapshot.IsPlaying == true);
-
-    void ApplyClipGuardGainIfNeeded()
-    {
-        if (_applyingClipGuardGain || _active is not { } station || _outputHealth is not { } health) return;
-        if (Math.Abs(health.ProtectionGain - _lastAppliedClipGuardGain) < .002) return;
-        // Metering remains at 20 Hz, but an IPC player must not receive a volume
-        // and mute command for every frame.  Eight coalesced gain updates per
-        // second are still comfortably faster than the guard's 125 ms sustained
-        // overload decision and avoid racing ordinary play/seek/crossfade calls.
-        if (DateTime.UtcNow - _lastClipGuardGainApplyUtc < TimeSpan.FromMilliseconds(125)) return;
-        _lastClipGuardGainApplyUtc = DateTime.UtcNow;
-        _ = ApplyClipGuardGainAsync(station, health.ProtectionGain);
-    }
-
-    async Task ApplyClipGuardGainAsync(Station station, double gain)
-    {
-        _applyingClipGuardGain = true;
-        try
-        {
-            if (!ReferenceEquals(station, _active)) return;
-            if (station.ProviderId == "youtube" && _youtubeGameFeed is not null)
-                _youtubeGameFeed.SetVolume(GamePlayerGain(station));
-            else if (_gameMpvProvider is not null)
-                await _gameMpvProvider.SetVolumeAsync(GamePlayerGain(station));
-            else return;
-            _lastAppliedClipGuardGain = gain;
-        }
-        catch (Exception error)
-        {
-            Footer.Text = "CLIP GUARD COULD NOT UPDATE THE GAME-MUSIC FEED · " + error.Message;
-        }
-        finally { _applyingClipGuardGain = false; }
-    }
-
     void UpdateOutputHealthUi(OutputHealthSnapshot health)
     {
         var gamePeak = health.GameBus.PeakDbfs is { } db && !double.IsNegativeInfinity(db) ? $"{db:0.0} dBFS" : "—";
@@ -2889,21 +2850,12 @@ public partial class MainWindow : Window, IMacroActionHandler
         var telemetryVerified = _outputTelemetry.CanControlClipGuard;
         ClipGuardDashboardBadge.Text = telemetryVerified ? $"CLIP GUARD · {health.State.ToString().ToUpperInvariant()}" :
             _outputTelemetry.Confidence == OutputTelemetryConfidence.Conflicting ? "OUTPUT TELEMETRY MISMATCH" : "PROTECTION MONITORING NEEDS VERIFICATION";
-        ClipGuardDashboardDetail.Text = !telemetryVerified ? _outputTelemetry.Detail : health.State == OutputHealthState.Protected
-            ? $"B1 {gamePeak}{headroom} · reducing game music {health.ProtectionReductionDb:0.0} dB · headphone and mic levels unchanged"
-            : $"B1 {gamePeak}{headroom} · {health.Diagnosis}";
+        ClipGuardDashboardDetail.Text = !telemetryVerified ? _outputTelemetry.Detail :
+            $"B1 {gamePeak}{headroom} · telemetry-only during playback stabilization · {health.Diagnosis}";
         ClipGuardStateText.Text = telemetryVerified ? $"{health.State.ToString().ToUpperInvariant()} · B1 {gamePeak} · peak hold {(health.GamePeakHoldDbfs is { } hold && !double.IsNegativeInfinity(hold) ? hold.ToString("0.0") + " dBFS" : "—")}" :
             $"{_outputTelemetry.Confidence.ToString().ToUpperInvariant()} · automatic protection paused";
-        ClipGuardRuntimeText.Text = !telemetryVerified
-            ? _outputTelemetry.Detail + " The separate game-music gain is neutral."
-            : !health.GameBus.Available
-            ? "PROTECTION MONITORING UNAVAILABLE · B1 telemetry is missing, so Clip Guard returned the runtime game-music gain to neutral."
-            : !health.IndependentGameMusicPathAvailable
-                ? "Monitor-only for this playback path: no independent game-music feed is active, so Clip Guard will not reduce your headphones or microphone."
-                : !health.AutoProtectionAvailable
-                    ? $"{_config.ClipGuard.Mode.ToString().ToUpperInvariant()} mode is observing the separate game-music feed; automatic gain is not active."
-                    : health.ProtectionReductionDb > .05 ? $"Runtime game-music reduction: {health.ProtectionReductionDb:0.0} dB. It clears gradually after the mix is safe."
-                        : "Separate game-music feed detected. Protection is ready; no user volume slider is being changed.";
+        ClipGuardRuntimeText.Text = "STABILIZATION MODE · Clip Guard reports telemetry only. " +
+            "It does not change player gain, YouTube feed gain, Voicemeeter limiter, routing, or station lifecycle.";
         OutputMusicMeter.Value = Math.Clamp(VoicemeeterSignalMonitor.BarValue(new SignalLevel(health.Music.Available, (float)health.Music.LinearPeak)), 0, 100);
         OutputMicrophoneMeter.Value = Math.Clamp(VoicemeeterSignalMonitor.BarValue(new SignalLevel(health.Microphone.Available, (float)health.Microphone.LinearPeak)), 0, 100);
         OutputGameMeter.Value = Math.Clamp(VoicemeeterSignalMonitor.BarValue(new SignalLevel(health.GameBus.Available, (float)health.GameBus.LinearPeak)), 0, 100);
@@ -2921,7 +2873,7 @@ public partial class MainWindow : Window, IMacroActionHandler
             ? DescribeLevel("Game mix / B1", health.GameBus, health.GamePeakHoldDbfs) + protectionHeadroom + $" · {health.State.ToString().ToUpperInvariant()}"
             : "Game mix / B1: protection telemetry needs verification · " + _outputTelemetry.Detail;
         OutputHealthDiagnosis.Text = telemetryVerified ? health.Diagnosis : _outputTelemetry.Detail;
-        OutputProtectionDetails.Text = $"Requested game music: {_config.GameMasterVolume:P0} × {(_active?.GameVolume ?? 1):P0} · runtime reduction {health.ProtectionReductionDb:0.0} dB · effective {GamePlayerGain(_active ?? new Station { GameVolume = 1 }):P0}\nSession peak: {DisplayLevel(health.SessionPeakDbfs)} · max reduction {health.SessionMaximumReductionDb:0.0} dB · near clips {health.NearClipEvents} · clips {health.ClipEvents} · interventions {health.ProtectionInterventions}";
+        OutputProtectionDetails.Text = $"Requested game music: {_config.GameMasterVolume:P0} × {(_active?.GameVolume ?? 1):P0} · effective {GamePlayerGain(_active ?? new Station { GameVolume = 1 }):P0} · telemetry-only\nSession peak: {DisplayLevel(health.SessionPeakDbfs)} · near clips {health.NearClipEvents} · clips {health.ClipEvents}";
         var latest = health.RecentEvents.LastOrDefault();
         if (latest is not null && latest.Timestamp != _lastOutputEventAt)
         {
@@ -3002,7 +2954,6 @@ public partial class MainWindow : Window, IMacroActionHandler
         var microphone = status.Connected ? signals.ReadStrip(status.Edition, _config.MicrophoneStripIndex) : new SignalLevel(false, 0);
         var music = status.Connected ? signals.ReadStrip(status.Edition, _config.MusicStripIndex) : new SignalLevel(false, 0);
         var game = status.Connected ? signals.ReadBus(status.Edition, _config.GameBus) : new SignalLevel(false, 0);
-        UpdateNowPlayingVisualizer(music);
         var gameEndpointAvailable = _gameBusEndpointPeakMeter.TryRead(_gameOutputEndpointId, out var gameEndpointPeak);
         var gameEndpoint = new SignalLevel(gameEndpointAvailable, gameEndpointPeak);
         _outputTelemetry = OutputTelemetryAssessor.Assess(game.Available, game.Peak, gameEndpoint.Available, gameEndpoint.Peak);
@@ -3022,14 +2973,14 @@ public partial class MainWindow : Window, IMacroActionHandler
             AudioLevelSnapshot.FromLinear(music.Available, music.Peak),
             AudioLevelSnapshot.FromLinear(microphone.Available, microphone.Peak),
             AudioLevelSnapshot.FromLinear(controlGame.Available, controlGame.Peak),
-            _outputTelemetry.CanControlClipGuard && CanAutomaticallyAttenuateGameMusic(music), DateTimeOffset.UtcNow);
+            canAutomaticallyAttenuateMusic: false, now: DateTimeOffset.UtcNow);
         _broadcastLevelTest.Observe(_outputHealth);
-        ApplyClipGuardGainIfNeeded();
         var directHeadset = HeadsetPlayerTargetsSelectedOutput();
         // This is the selected physical listening endpoint, regardless of whether
         // the station reaches it directly or through Voicemeeter A1.
         var headsetAvailable = _headsetPeakMeter.TryRead(_config.MonitorDeviceId, out var headsetPeak);
         var monitor = new SignalLevel(headsetAvailable, headsetPeak);
+        UpdateNowPlayingVisualizer(music, monitor);
         if (_youtubeGameFeed is { HasRecentSignal: true }) _youtubeStartupForensics?.Mark("T10 B1 signal");
         _localStartupForensics?.RecordPeaks(monitor, music, gameEndpoint);
         _sawMicSignal |= microphone.Available && microphone.Peak > .005f;
@@ -4637,6 +4588,7 @@ public partial class MainWindow : Window, IMacroActionHandler
     {
         if (_youtubeRoute.TryEnd(out var message))
         {
+            _youtubeStartupForensics?.Mark($"temporary route restore ({_youtubeRoute.LastRestoreDuration.TotalMilliseconds:0} ms)");
             _youtubeRouteRecoveryBlocked = false;
             _youtubeHeadsetRouteError = null;
             return true;

@@ -21,6 +21,12 @@ internal sealed class TemporaryYouTubeRoute(VoicemeeterRemote mixer) : IDisposab
     Snapshot? _snapshot;
     bool _auditioning;
 
+    // The route is intentionally best-effort during stabilization.  The setter
+    // return codes below are still checked, but confirmation polling used to
+    // sleep on the WPF station-selection path for up to four seconds.
+    public TimeSpan LastBeginDuration { get; private set; }
+    public TimeSpan LastRestoreDuration { get; private set; }
+
     internal sealed record Snapshot(string PriorConsole, string PriorMultimedia, string VirtualOutput,
         float PriorA1, float PriorB1, float PriorVirtualGain, string PriorA1Device, string? PriorA1Driver,
         string ChosenHeadsetName);
@@ -50,6 +56,9 @@ internal sealed class TemporaryYouTubeRoute(VoicemeeterRemote mixer) : IDisposab
     public void Begin(string headsetEndpointId, double headsetGain)
     {
         if (IsActive) return;
+        var stopwatch = Stopwatch.StartNew();
+        try
+        {
         if (mixer.Probe() is not { Connected: true, Edition: "Banana" })
             throw new InvalidOperationException("Isolated YouTube B1 testing requires connected Voicemeeter Banana.");
         if (!mixer.TryGetParameterFloat($"Strip[{DefaultVirtualStrip}].A1", out var priorA1) ||
@@ -86,12 +95,9 @@ internal sealed class TemporaryYouTubeRoute(VoicemeeterRemote mixer) : IDisposab
         {
             // Never expose general Windows-default playback to the game bus.
             Require(mixer.TrySetParameterFloat($"Strip[{DefaultVirtualStrip}].B1", 0), "Could not isolate VAIO from B1.");
-            WaitFloat($"Strip[{DefaultVirtualStrip}].B1", 0);
             Require(mixer.TrySetParameterString("Bus[0].device." + headsetChoice.InterfaceName.ToLowerInvariant(), headsetChoice.Name),
                 "Could not choose your headphones as Voicemeeter A1.");
-            WaitString("Bus[0].device.name", headsetChoice.Name);
             Require(mixer.TrySetParameterFloat($"Strip[{DefaultVirtualStrip}].A1", 1), "Could not send VAIO to the headset bus.");
-            WaitFloat($"Strip[{DefaultVirtualStrip}].A1", 1);
             SetHeadsetGain(headsetGain);
             WindowsDefaultRender.Set(virtualOutput.ID, Role.Console);
             WindowsDefaultRender.Set(virtualOutput.ID, Role.Multimedia);
@@ -101,6 +107,8 @@ internal sealed class TemporaryYouTubeRoute(VoicemeeterRemote mixer) : IDisposab
             try { End(); } catch { /* Recovery file remains for next startup. */ }
             throw;
         }
+        }
+        finally { LastBeginDuration = stopwatch.Elapsed; }
     }
 
     public void SetAuditioning(bool enabled)
@@ -109,7 +117,6 @@ internal sealed class TemporaryYouTubeRoute(VoicemeeterRemote mixer) : IDisposab
         if (_auditioning == enabled) return;
         Require(mixer.TrySetParameterFloat($"Strip[{DefaultVirtualStrip}].A1", enabled ? 0 : 1),
             enabled ? "Could not mute direct YouTube listening." : "Could not restore direct YouTube listening.");
-        WaitFloat($"Strip[{DefaultVirtualStrip}].A1", enabled ? 0 : 1);
         _auditioning = enabled;
     }
 
@@ -120,7 +127,6 @@ internal sealed class TemporaryYouTubeRoute(VoicemeeterRemote mixer) : IDisposab
         var normalized = Math.Clamp(gain, 0, 1);
         var db = normalized == 0 ? -60f : (float)(20 * Math.Log10(normalized));
         Require(mixer.TrySetParameterFloat($"Strip[{DefaultVirtualStrip}].Gain", db), "Could not set the YouTube headset level in Voicemeeter.");
-        WaitFloat($"Strip[{DefaultVirtualStrip}].Gain", db);
     }
 
     /// <summary>
@@ -131,6 +137,9 @@ internal sealed class TemporaryYouTubeRoute(VoicemeeterRemote mixer) : IDisposab
     /// </summary>
     public bool TryEnd(out string message)
     {
+        var stopwatch = Stopwatch.StartNew();
+        try
+        {
         var snapshot = _snapshot;
         if (snapshot is null)
         {
@@ -159,6 +168,8 @@ internal sealed class TemporaryYouTubeRoute(VoicemeeterRemote mixer) : IDisposab
         if (File.Exists(_recoveryPath)) File.Delete(_recoveryPath);
         message = "Temporary YouTube route restored.";
         return true;
+        }
+        finally { LastRestoreDuration = stopwatch.Elapsed; }
     }
 
     // Keep cleanup callers exception-safe; detailed handling should use TryEnd.
@@ -167,11 +178,8 @@ internal sealed class TemporaryYouTubeRoute(VoicemeeterRemote mixer) : IDisposab
     void RestoreMixer(Snapshot snapshot)
     {
         Require(mixer.TrySetParameterFloat($"Strip[{DefaultVirtualStrip}].A1", snapshot.PriorA1), "Could not restore VAIO A1 route.");
-        WaitFloat($"Strip[{DefaultVirtualStrip}].A1", snapshot.PriorA1);
         Require(mixer.TrySetParameterFloat($"Strip[{DefaultVirtualStrip}].B1", snapshot.PriorB1), "Could not restore VAIO B1 route.");
-        WaitFloat($"Strip[{DefaultVirtualStrip}].B1", snapshot.PriorB1);
         Require(mixer.TrySetParameterFloat($"Strip[{DefaultVirtualStrip}].Gain", snapshot.PriorVirtualGain), "Could not restore VAIO gain.");
-        WaitFloat($"Strip[{DefaultVirtualStrip}].Gain", snapshot.PriorVirtualGain);
         if (string.IsNullOrWhiteSpace(snapshot.PriorA1Device))
         {
             // Clear the interface we selected first. Some Voicemeeter builds
@@ -179,8 +187,7 @@ internal sealed class TemporaryYouTubeRoute(VoicemeeterRemote mixer) : IDisposab
             foreach (var driver in new[] { "mme", "wdm", "ks" })
             {
                 mixer.TrySetParameterString("Bus[0].device." + driver, "");
-                if (mixer.TryGetParameterString("Bus[0].device.name", out var current) &&
-                    string.IsNullOrWhiteSpace(current)) return;
+                return;
             }
             throw new InvalidOperationException("Could not clear the temporary A1 headphones.");
         }
@@ -188,7 +195,6 @@ internal sealed class TemporaryYouTubeRoute(VoicemeeterRemote mixer) : IDisposab
         {
             Require(mixer.TrySetParameterString("Bus[0].device." + snapshot.PriorA1Driver, snapshot.PriorA1Device),
                 "Could not restore the prior A1 output device.");
-            WaitString("Bus[0].device.name", snapshot.PriorA1Device);
         }
     }
 
@@ -218,29 +224,6 @@ internal sealed class TemporaryYouTubeRoute(VoicemeeterRemote mixer) : IDisposab
     static void Require(bool success, string error)
     {
         if (!success) throw new InvalidOperationException(error);
-    }
-
-    void WaitFloat(string parameter, float target)
-    {
-        var started = Stopwatch.GetTimestamp();
-        while (Stopwatch.GetElapsedTime(started) < TimeSpan.FromSeconds(4))
-        {
-            if (mixer.TryGetParameterFloat(parameter, out var actual) && Math.Abs(actual - target) < .1f) return;
-            Thread.Sleep(50);
-        }
-        throw new InvalidOperationException($"Voicemeeter did not confirm {parameter} = {target}.");
-    }
-
-    void WaitString(string parameter, string target)
-    {
-        var started = Stopwatch.GetTimestamp();
-        while (Stopwatch.GetElapsedTime(started) < TimeSpan.FromSeconds(4))
-        {
-            if (mixer.TryGetParameterString(parameter, out var actual) &&
-                actual.Equals(target, StringComparison.OrdinalIgnoreCase)) return;
-            Thread.Sleep(50);
-        }
-        throw new InvalidOperationException($"Voicemeeter did not confirm {parameter} = '{target}'.");
     }
 
     public void Dispose() => End();
