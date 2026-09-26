@@ -2492,10 +2492,10 @@ public partial class MainWindow : Window, IMacroActionHandler
 
     async void Window_PreviewKeyDown(object sender, KeyEventArgs e)
     {
-        if (e.Key == Key.Escape && NowPlayingDrawer.Visibility == Visibility.Visible)
+        if (e.Key == Key.Escape && IsNowPlayingSurfaceExpanded)
         {
             e.Handled = true;
-            CloseNowPlayingDrawer();
+            RequestNowPlayingSurface(false);
             return;
         }
         if (e.Key is not (Key.Return or Key.Space) || e.IsRepeat || !IsActive || !IsEnabled) return;

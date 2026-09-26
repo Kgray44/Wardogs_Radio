@@ -4,6 +4,7 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
 using System.Windows.Input;
+using System.Windows.Media;
 using System.Windows.Media.Animation;
 using System.Windows.Threading;
 using WardogsRadio.Core;
@@ -27,6 +28,8 @@ public partial class MainWindow
     double? _nowPlayingDurationSeconds;
     double _nowPlayingLevelTarget;
     List<Station> _dockStationChoices = [];
+    readonly NowPlayingSurfaceStateMachine _nowPlayingSurfaceState = new();
+    bool _nowPlayingTransitionTargetExpanded;
     // Scalar level display only (not an FFT/spectrum).  Keep it deliberately
     // cheap while restoring reliable playback.
     readonly DispatcherTimer _nowPlayingVisualizerTimer = new() { Interval = TimeSpan.FromMilliseconds(100) };
@@ -34,10 +37,10 @@ public partial class MainWindow
     void InitializeNowPlayingSurface()
     {
         DockVisualizerBars.ItemsSource = _nowPlayingBars;
-        DrawerVisualizerBars.ItemsSource = _nowPlayingBars;
         ReducedMotionCheck.IsChecked = _config.ReduceMotion;
         _nowPlayingVisualizerTimer.Tick += (_, _) => RenderNowPlayingVisualizer();
         _nowPlayingVisualizerTimer.Start();
+        Dispatcher.BeginInvoke(ApplyCompactNowPlayingSurface, DispatcherPriority.Loaded);
         RefreshNowPlayingPresentation();
     }
 
@@ -64,12 +67,11 @@ public partial class MainWindow
 
         if (station is null)
         {
-            DockTrackText.Text = DrawerTrackText.Text = "SELECT A STATION";
-            DockArtistText.Text = DrawerArtistText.Text = "Your active radio channel will appear here.";
-            DrawerStationText.Text = "NO STATION";
-            DrawerStateText.Text = "AWAITING SIGNAL";
-            DrawerUpNextText.Text = "No queued track";
-            DrawerRouteText.Text = "ROUTE IDLE";
+            DockTrackText.Text = "SELECT A STATION";
+            DockArtistText.Text = "Your active radio channel will appear here.";
+            SurfaceStationState.Text = "AWAITING SIGNAL";
+            SurfaceUpNextText.Text = "No queued track";
+            SurfaceRouteText.Text = "ROUTE IDLE";
             SetNowPlayingTimeline(new NowPlayingTimeline(0, null));
             SetNowPlayingTransport(false);
             return;
@@ -86,16 +88,12 @@ public partial class MainWindow
         var artist = song is null ? null : _config.MusicLibrary.Songs.FirstOrDefault(candidate => candidate.Id == song.Id)?.Artist;
         if (string.IsNullOrWhiteSpace(artist)) artist = providerSnapshot?.Track?.Artist;
         if (string.IsNullOrWhiteSpace(artist)) artist = string.IsNullOrWhiteSpace(station.Source) ? station.ProviderId : station.Source;
-        DockTrackText.Text = DrawerTrackText.Text = title;
-        DockArtistText.Text = DrawerArtistText.Text = artist;
-        DrawerStationText.Text = $"CH-{station.Order + 1:00} // {station.Name.ToUpperInvariant()}";
-        DrawerStationIcon.Data = IconCatalog.Get(station.IconId).Shape;
-        try { DrawerStationIcon.Fill = (System.Windows.Media.Brush)new System.Windows.Media.BrushConverter().ConvertFromString(station.AccentColor)!; }
-        catch { DrawerStationIcon.Fill = (System.Windows.Media.Brush)FindResource("OliveBrush"); }
-        DrawerStateText.Text = NowPlayingState(presentation);
-        DrawerRouteText.Text = _outputTelemetry.Confidence == OutputTelemetryConfidence.Unavailable ? "ROUTE UNAVAILABLE" :
+        DockTrackText.Text = title;
+        DockArtistText.Text = artist;
+        SurfaceStationState.Text = NowPlayingState(presentation);
+        SurfaceRouteText.Text = _outputTelemetry.Confidence == OutputTelemetryConfidence.Unavailable ? "ROUTE UNAVAILABLE" :
             _outputTelemetry.Confidence == OutputTelemetryConfidence.Conflicting ? "ROUTE NEEDS CHECK" : "ROUTE MONITORED";
-        DrawerUpNextText.Text = NextSongText(station, index);
+        SurfaceUpNextText.Text = NextSongText(station, index);
         SetNowPlayingTimeline(presentation.LogicalSongPosition is { } position
             ? new NowPlayingTimeline(position, presentation.LogicalSongDuration) : new NowPlayingTimeline(0, null));
         SetNowPlayingTransport(presentation.IsPlaying);
@@ -177,9 +175,8 @@ public partial class MainWindow
 
     void SetNowPlayingTransport(bool playing)
     {
-        var label = playing ? "Ⅱ  PAUSE" : "▶  PLAY";
-        DockPlayButton.Content = playing ? "Ⅱ" : "▶";
-        DrawerPlayButton.Content = label;
+        SurfacePlayIcon.Text = playing ? "Ⅱ" : "▶";
+        SurfacePlayLabel.Text = playing ? "  PAUSE" : "  PLAY";
     }
 
     void SetNowPlayingTimeline(NowPlayingTimeline timeline)
@@ -187,14 +184,11 @@ public partial class MainWindow
         _nowPlayingDurationSeconds = timeline.DurationSeconds;
         var elapsed = DisplayTime(timeline.PositionSeconds);
         var duration = timeline.DurationSeconds is { } known ? DisplayTime(known) : "--:--";
-        DockElapsedText.Text = DrawerElapsedText.Text = elapsed;
-        DockDurationText.Text = DrawerDurationText.Text = duration;
+        DockElapsedText.Text = elapsed;
+        DockDurationText.Text = duration;
         if (!_nowPlayingTimelineInteraction)
-        {
             DockTimeline.Value = timeline.ProgressPercent;
-            DrawerTimeline.Value = timeline.ProgressPercent;
-        }
-        DockTimeline.IsEnabled = DrawerTimeline.IsEnabled = timeline.CanSeek;
+        DockTimeline.IsEnabled = timeline.CanSeek;
     }
 
     void UpdateNowPlayingVisualizer(SignalLevel music, SignalLevel monitor)
@@ -230,7 +224,11 @@ public partial class MainWindow
         RefreshNowPlayingPresentation();
     }
 
-    void NowPlayingExpand_Click(object sender, RoutedEventArgs e) => ToggleNowPlayingDrawer();
+    void NowPlayingExpand_Click(object sender, RoutedEventArgs e)
+    {
+        e.Handled = true;
+        ToggleNowPlayingSurface();
+    }
 
     static bool IsNowPlayingInteractiveTarget(object source) => source is DependencyObject node &&
         (FindAncestor<ButtonBase>(node) is not null || FindAncestor<ComboBox>(node) is not null ||
@@ -243,39 +241,217 @@ public partial class MainWindow
         return null;
     }
 
-    void NowPlayingDock_MouseLeftButtonUp(object sender, MouseButtonEventArgs e)
+    void NowPlayingSurface_MouseLeftButtonUp(object sender, MouseButtonEventArgs e)
     {
-        if (!IsNowPlayingInteractiveTarget(e.OriginalSource)) ToggleNowPlayingDrawer();
+        if (!IsNowPlayingInteractiveTarget(e.OriginalSource)) ToggleNowPlayingSurface();
     }
 
-    void NowPlayingDrawerHeader_MouseLeftButtonUp(object sender, MouseButtonEventArgs e)
+    void NowPlayingBackdrop_MouseLeftButtonUp(object sender, MouseButtonEventArgs e)
     {
-        if (!IsNowPlayingInteractiveTarget(e.OriginalSource)) ToggleNowPlayingDrawer();
+        e.Handled = true;
+        RequestNowPlayingSurface(false);
     }
 
-    void ToggleNowPlayingDrawer()
+    void NowPlayingOverlay_SizeChanged(object sender, SizeChangedEventArgs e)
     {
-        if (NowPlayingDrawer.Visibility == Visibility.Visible) CloseNowPlayingDrawer();
-        else OpenNowPlayingDrawer();
+        if (_nowPlayingSurfaceState.State is NowPlayingSurfaceState.Compact or NowPlayingSurfaceState.Expanded)
+            ApplyNowPlayingSurfaceLayout(_nowPlayingSurfaceState.State == NowPlayingSurfaceState.Expanded, animate: false, TimeSpan.Zero);
     }
 
-    void OpenNowPlayingDrawer()
+    bool IsNowPlayingSurfaceExpanded => _nowPlayingSurfaceState.State is not NowPlayingSurfaceState.Compact;
+
+    void ToggleNowPlayingSurface() => RequestNowPlayingSurface(_nowPlayingSurfaceState.State is NowPlayingSurfaceState.Compact or NowPlayingSurfaceState.Collapsing);
+
+    void RequestNowPlayingSurface(bool expanded)
     {
-        NowPlayingDrawer.Visibility = Visibility.Visible;
-        NowPlayingDrawer.BeginAnimation(OpacityProperty, null);
-        if (_config.ReduceMotion) NowPlayingDrawer.Opacity = 1;
-        else NowPlayingDrawer.BeginAnimation(OpacityProperty, new DoubleAnimation(0, 1, TimeSpan.FromMilliseconds(180)));
-        RefreshNowPlayingPresentation();
+        var before = _nowPlayingSurfaceState.State;
+        var after = _nowPlayingSurfaceState.Request(expanded);
+        if (before == after) return;
+
+        if (_config.ReduceMotion)
+        {
+            StopNowPlayingSurfaceAnimations();
+            _nowPlayingSurfaceState.SetImmediately(expanded);
+            ApplyNowPlayingSurfaceLayout(expanded, animate: false, TimeSpan.Zero);
+            SetNowPlayingBackdrop(expanded, animate: false, TimeSpan.Zero);
+            RefreshNowPlayingPresentation();
+            return;
+        }
+
+        BeginNowPlayingSurfaceTransition(expanded);
     }
 
-    void NowPlayingCollapse_Click(object sender, RoutedEventArgs e) => CloseNowPlayingDrawer();
-
-    void CloseNowPlayingDrawer()
+    void BeginNowPlayingSurfaceTransition(bool expanded)
     {
-        if (_config.ReduceMotion) { NowPlayingDrawer.Visibility = Visibility.Collapsed; return; }
-        var close = new DoubleAnimation(1, 0, TimeSpan.FromMilliseconds(140));
-        close.Completed += (_, _) => { NowPlayingDrawer.Visibility = Visibility.Collapsed; NowPlayingDrawer.Opacity = 1; };
-        NowPlayingDrawer.BeginAnimation(OpacityProperty, close);
+        _nowPlayingTransitionTargetExpanded = expanded;
+        var duration = TimeSpan.FromMilliseconds(expanded ? 300 : 230);
+        if (expanded) NowPlayingBackdrop.Visibility = Visibility.Visible;
+        NowPlayingSurface.IsHitTestVisible = true;
+        ApplyNowPlayingSurfaceLayout(expanded, animate: true, duration);
+        SetNowPlayingBackdrop(expanded, animate: true, duration);
+
+        NowPlayingSurface.BeginAnimation(FrameworkElement.HeightProperty, null);
+        var resize = new DoubleAnimation(NowPlayingSurface.ActualHeight, SurfaceHeight(expanded), duration)
+        {
+            EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut }
+        };
+        resize.Completed += (_, _) => CompleteNowPlayingSurfaceTransition();
+        NowPlayingSurface.BeginAnimation(FrameworkElement.HeightProperty, resize);
+    }
+
+    void CompleteNowPlayingSurfaceTransition()
+    {
+        var completedExpanded = _nowPlayingTransitionTargetExpanded;
+        ApplyNowPlayingSurfaceLayout(completedExpanded, animate: false, TimeSpan.Zero);
+        SetNowPlayingBackdrop(completedExpanded, animate: false, TimeSpan.Zero);
+        var next = _nowPlayingSurfaceState.CompleteTransition();
+        if (next is NowPlayingSurfaceState.Expanding or NowPlayingSurfaceState.Collapsing)
+            BeginNowPlayingSurfaceTransition(_nowPlayingSurfaceState.RequestedExpanded);
+        else
+            NowPlayingSurface.IsHitTestVisible = true;
+    }
+
+    void ApplyCompactNowPlayingSurface() => ApplyNowPlayingSurfaceLayout(expanded: false, animate: false, TimeSpan.Zero);
+
+    double SurfaceHeight(bool expanded) => expanded
+        ? Math.Clamp(NowPlayingOverlay.ActualHeight * .52, 330, 420)
+        : 64;
+
+    void ApplyNowPlayingSurfaceLayout(bool expanded, bool animate, TimeSpan duration)
+    {
+        var width = NowPlayingSurface.ActualWidth;
+        if (width < 1) return;
+
+        var height = SurfaceHeight(expanded);
+        if (!animate) NowPlayingSurface.Height = height;
+        NowPlayingSurface.CornerRadius = new CornerRadius(expanded ? 12 : 8);
+
+        var trackWidth = expanded ? Math.Min(580, width - 260) : Math.Clamp(width * .23, 180, 250);
+        var timelineWidth = expanded ? Math.Max(280, width - 108) : Math.Max(180, width - 690);
+        SetSurfaceElementLayout(DockStationSelector, expanded ? 18 : 14, expanded ? 17 : 14, expanded ? 274 : 180, animate, duration);
+        SetSurfaceElementLayout(SurfaceStationState, 20, 59, 250, animate, duration);
+        SetSurfaceElementLayout(SurfaceTrackPanel, expanded ? (width - trackWidth) / 2 : 205, expanded ? 91 : 14, trackWidth, animate, duration);
+        SetSurfaceElementLayout(DockVisualizerBars, expanded ? (width - 98) / 2 : Math.Min(width - 560, 430), expanded ? 159 : 11, 98, animate, duration);
+        SetSurfaceElementLayout(SurfaceTimeline, expanded ? 54 : Math.Max(650, width - timelineWidth - 50), expanded ? 237 : 20, timelineWidth, animate, duration);
+        SetSurfaceElementLayout(SurfaceTransport, expanded ? (width - 294) / 2 : Math.Min(width - 455, 545), expanded ? 287 : 13, expanded ? 294 : 102, animate, duration);
+        SetSurfaceElementLayout(SurfaceToggleButton, expanded ? width - 132 : width - 48, expanded ? 14 : 13, expanded ? 116 : 36, animate, duration);
+        SetSurfaceElementLayout(SurfaceSecondaryInfo, 18, Math.Min(height - 55, 348), Math.Max(300, width - 36), animate, duration);
+
+        SetSurfaceScale(DockVisualizerBars, expanded ? 1.45 : 1, expanded ? 1.32 : 1, animate, duration);
+        AnimateSurfaceValue(DockTrackText, TextBlock.FontSizeProperty, expanded ? 26 : 16, animate, duration);
+        AnimateSurfaceValue(DockArtistText, TextBlock.FontSizeProperty, expanded ? 13 : 10, animate, duration);
+        DockTrackText.TextAlignment = expanded ? TextAlignment.Center : TextAlignment.Left;
+        DockArtistText.TextAlignment = expanded ? TextAlignment.Center : TextAlignment.Left;
+        SurfaceToggleIcon.Text = expanded ? "⌄" : "⌃";
+        AnimateSurfaceValue(SurfaceStationState, UIElement.OpacityProperty, expanded ? 1 : 0, animate, duration);
+        AnimateSurfaceValue(SurfaceSecondaryInfo, UIElement.OpacityProperty, expanded ? 1 : 0, animate, duration, expanded ? TimeSpan.FromMilliseconds(150) : TimeSpan.Zero);
+        AnimateSurfaceValue(SurfacePreviousLabel, UIElement.OpacityProperty, expanded ? 1 : 0, animate, duration);
+        AnimateSurfaceValue(SurfacePlayLabel, UIElement.OpacityProperty, expanded ? 1 : 0, animate, duration);
+        AnimateSurfaceValue(SurfaceNextLabel, UIElement.OpacityProperty, expanded ? 1 : 0, animate, duration);
+        AnimateSurfaceValue(SurfaceToggleLabel, UIElement.OpacityProperty, expanded ? 1 : 0, animate, duration);
+        AnimateSurfaceValue(SurfacePreviousLabel, FrameworkElement.WidthProperty, expanded ? 76 : 0, animate, duration);
+        AnimateSurfaceValue(SurfacePlayLabel, FrameworkElement.WidthProperty, expanded ? 53 : 0, animate, duration);
+        AnimateSurfaceValue(SurfaceNextLabel, FrameworkElement.WidthProperty, expanded ? 55 : 0, animate, duration);
+        AnimateSurfaceValue(SurfaceToggleLabel, FrameworkElement.WidthProperty, expanded ? 74 : 0, animate, duration);
+        SurfaceSecondaryInfo.IsHitTestVisible = expanded;
+    }
+
+    void SetNowPlayingBackdrop(bool expanded, bool animate, TimeSpan duration)
+    {
+        var wasHidden = NowPlayingBackdrop.Visibility != Visibility.Visible;
+        NowPlayingBackdrop.BeginAnimation(UIElement.OpacityProperty, null);
+        if (expanded)
+        {
+            NowPlayingBackdrop.Visibility = Visibility.Visible;
+            if (animate && wasHidden) NowPlayingBackdrop.Opacity = 0;
+            AnimateSurfaceValue(NowPlayingBackdrop, UIElement.OpacityProperty, 1, animate, duration);
+        }
+        else if (!animate)
+        {
+            NowPlayingBackdrop.Opacity = 1;
+            NowPlayingBackdrop.Visibility = Visibility.Collapsed;
+        }
+        else
+        {
+            var fade = new DoubleAnimation(NowPlayingBackdrop.Opacity, 0, duration);
+            fade.Completed += (_, _) =>
+            {
+                if (_nowPlayingSurfaceState.State is NowPlayingSurfaceState.Compact or NowPlayingSurfaceState.Collapsing)
+                {
+                    NowPlayingBackdrop.Opacity = 1;
+                    NowPlayingBackdrop.Visibility = Visibility.Collapsed;
+                }
+            };
+            NowPlayingBackdrop.BeginAnimation(UIElement.OpacityProperty, fade);
+        }
+    }
+
+    static void SetSurfaceElementLayout(FrameworkElement element, double left, double top, double width, bool animate, TimeSpan duration)
+    {
+        var previousLeft = double.IsNaN(Canvas.GetLeft(element)) ? 0 : Canvas.GetLeft(element);
+        var previousTop = double.IsNaN(Canvas.GetTop(element)) ? 0 : Canvas.GetTop(element);
+        var previousWidth = double.IsNaN(element.Width) ? element.ActualWidth : element.Width;
+        Canvas.SetLeft(element, left);
+        Canvas.SetTop(element, top);
+        element.Width = width;
+        var (translate, _) = SurfaceTransforms(element);
+        if (!animate)
+        {
+            element.BeginAnimation(FrameworkElement.WidthProperty, null);
+            translate.BeginAnimation(TranslateTransform.XProperty, null);
+            translate.BeginAnimation(TranslateTransform.YProperty, null);
+            translate.X = 0;
+            translate.Y = 0;
+            return;
+        }
+        translate.BeginAnimation(TranslateTransform.XProperty, null);
+        translate.BeginAnimation(TranslateTransform.YProperty, null);
+        translate.X = previousLeft - left;
+        translate.Y = previousTop - top;
+        var easing = new CubicEase { EasingMode = EasingMode.EaseOut };
+        translate.BeginAnimation(TranslateTransform.XProperty, new DoubleAnimation(0, duration) { EasingFunction = easing });
+        translate.BeginAnimation(TranslateTransform.YProperty, new DoubleAnimation(0, duration) { EasingFunction = easing });
+        element.BeginAnimation(FrameworkElement.WidthProperty, new DoubleAnimation(previousWidth, width, duration) { EasingFunction = easing });
+    }
+
+    static void SetSurfaceScale(FrameworkElement element, double x, double y, bool animate, TimeSpan duration)
+    {
+        var (_, scale) = SurfaceTransforms(element);
+        if (!animate)
+        {
+            scale.BeginAnimation(ScaleTransform.ScaleXProperty, null);
+            scale.BeginAnimation(ScaleTransform.ScaleYProperty, null);
+            scale.ScaleX = x;
+            scale.ScaleY = y;
+            return;
+        }
+        scale.BeginAnimation(ScaleTransform.ScaleXProperty, new DoubleAnimation(scale.ScaleX, x, duration) { EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut } });
+        scale.BeginAnimation(ScaleTransform.ScaleYProperty, new DoubleAnimation(scale.ScaleY, y, duration) { EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut } });
+    }
+
+    static (TranslateTransform Translate, ScaleTransform Scale) SurfaceTransforms(FrameworkElement element)
+    {
+        if (element.RenderTransform is TransformGroup group && group.Children.OfType<TranslateTransform>().FirstOrDefault() is { } existingTranslate && group.Children.OfType<ScaleTransform>().FirstOrDefault() is { } existingScale)
+            return (existingTranslate, existingScale);
+        var scale = new ScaleTransform();
+        var translate = new TranslateTransform();
+        element.RenderTransform = new TransformGroup { Children = [scale, translate] };
+        element.RenderTransformOrigin = new Point(.5, .5);
+        return (translate, scale);
+    }
+
+    static void AnimateSurfaceValue(DependencyObject target, DependencyProperty property, double value, bool animate, TimeSpan duration, TimeSpan? beginTime = null)
+    {
+        var animatable = (IAnimatable)target;
+        if (!animate) { animatable.BeginAnimation(property, null); target.SetValue(property, value); return; }
+        var current = target.GetValue(property) is double existing ? existing : 0;
+        animatable.BeginAnimation(property, new DoubleAnimation(current, value, duration) { BeginTime = beginTime, EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut } });
+    }
+
+    void StopNowPlayingSurfaceAnimations()
+    {
+        NowPlayingSurface.BeginAnimation(FrameworkElement.HeightProperty, null);
+        NowPlayingBackdrop.BeginAnimation(UIElement.OpacityProperty, null);
     }
 
     async void NowPlayingTimeline_MouseLeftButtonUp(object sender, MouseButtonEventArgs e)
