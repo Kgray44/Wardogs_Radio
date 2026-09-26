@@ -20,6 +20,7 @@ namespace WardogsRadio.App;
 
 public partial class MainWindow : Window, IMacroActionHandler
 {
+    const double LocalHeadsetLoudnessCalibrationDb = 3;
     sealed record MacroCard(RadioMacro Macro, string Tag, string ActionSummary, string BindingSummary, string HealthSummary, string ActivationSummary, string StateSummary, int ActionCount)
     {
         public string Glyph => Macro.Glyph;
@@ -1269,7 +1270,7 @@ public partial class MainWindow : Window, IMacroActionHandler
             outgoingGain = await outgoing.ReadVolumeAsync(token);
             if (outgoingGame is not null) outgoingGameGain = await outgoingGame.ReadVolumeAsync(token);
             if (station.Shuffle && station.ShuffleSeed is null) station.ShuffleSeed = Random.Shared.Next();
-            incoming = new MpvProvider(new MpvLocator(), _config.MpvPath, _config.MpvAudioDeviceName);
+            incoming = new MpvProvider(new MpvLocator(), _config.MpvPath, _config.MpvAudioDeviceName, LocalHeadsetLoudnessCalibrationDb);
             await incoming.LoadAsync(station, token);
             await incoming.SetVolumeAsync(0, token);
             if (!await RestoreMpvPositionAsync(station, incoming))
@@ -1551,7 +1552,7 @@ public partial class MainWindow : Window, IMacroActionHandler
                 station.PlaylistFiles = station.PlaylistSongs.Select(song => song.Source).ToList();
                 station.Source = station.PlaylistFiles[0];
             }
-            _mpvProvider = new MpvProvider(new MpvLocator(), _config.MpvPath, _config.MpvAudioDeviceName);
+            _mpvProvider = new MpvProvider(new MpvLocator(), _config.MpvPath, _config.MpvAudioDeviceName, LocalHeadsetLoudnessCalibrationDb);
             _localStartupForensics?.RecordHeadsetSetup(_config.MpvAudioDeviceName, _config.MasterVolume * station.Volume);
             await _mpvProvider.LoadAsync(station);
             _localStartupForensics?.Mark("MPV process started / media loaded");

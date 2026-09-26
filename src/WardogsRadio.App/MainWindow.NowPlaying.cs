@@ -193,9 +193,10 @@ public partial class MainWindow
 
     void UpdateNowPlayingVisualizer(SignalLevel music, SignalLevel monitor)
     {
-        // Prefer the station's Voicemeeter strip when it is available, otherwise
-        // use the selected listening endpoint for direct local playback.
-        var source = music.Available ? music : monitor;
+        // A configured Voicemeeter strip can be available but silent when local
+        // MPV plays directly to the selected headphones. Fall back on a silent
+        // strip as well as an unavailable one, so the dock follows actual audio.
+        var source = music.Available && music.Peak > VoicemeeterSignalMonitor.VisualSignalFloor ? music : monitor;
         var loadingOrSwitching = _activationGate.CurrentCount == 0 ||
             _active?.ProviderId == "youtube" && (!_youtubePlayerReady || _youtubePlayerErrorDetail is not null) ||
             _youtubeRouteRecoveryBlocked;

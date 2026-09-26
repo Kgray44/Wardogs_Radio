@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Globalization;
 using System.IO.Pipes;
 using System.Text;
 using System.Text.Json;
@@ -71,7 +72,7 @@ public sealed class MpvLocator
    return null;
  }
 }
-public sealed class MpvProvider(MpvLocator locator, string? configuredPath=null, string? configuredAudioDevice=null) : IPlaybackProvider
+public sealed class MpvProvider(MpvLocator locator, string? configuredPath=null, string? configuredAudioDevice=null, double loudnessCalibrationDb=0) : IPlaybackProvider
 {
  readonly string _pipeName="wardogs-radio-mpv-"+Guid.NewGuid().ToString("N"); Process? _process; NamedPipeClientStream? _pipe; StreamReader? _reader;
  readonly SemaphoreSlim _commands = new(1,1); long _nextRequestId;
@@ -133,7 +134,10 @@ public sealed class MpvProvider(MpvLocator locator, string? configuredPath=null,
    _reader?.Dispose();_reader=null;_pipe?.Dispose();_pipe=null;_process?.Dispose();_process=null;
    var exe=locator.Find(configuredPath);
    if(exe is null)throw new FileNotFoundException("mpv.exe was not found. Set it in Provider settings or add mpv to PATH.");
-   _process=Process.Start(new ProcessStartInfo(exe,$"--no-config --idle=yes --no-video --force-window=no --terminal=no --pause=yes --input-ipc-server=\\\\.\\pipe\\{_pipeName}"){UseShellExecute=false,CreateNoWindow=true})
+   var loudnessFilter = loudnessCalibrationDb > 0
+     ? $" --af=lavfi=[volume={Math.Clamp(loudnessCalibrationDb, 0, 12).ToString("0.###", CultureInfo.InvariantCulture)}dB,alimiter=limit=0.95]"
+     : "";
+   _process=Process.Start(new ProcessStartInfo(exe,$"--no-config --idle=yes --no-video --force-window=no --terminal=no --pause=yes{loudnessFilter} --input-ipc-server=\\\\.\\pipe\\{_pipeName}"){UseShellExecute=false,CreateNoWindow=true})
      ?? throw new IOException("mpv process could not start.");
    for(var i=0;i<20;i++)
    {
