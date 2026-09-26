@@ -608,9 +608,7 @@ public partial class MainWindow : Window, IMacroActionHandler
                 var initialReturnSeconds = _youtubePendingResumeSeconds ?? 0;
                 await _youtubeStartupCoordinator.StartAsync(async () =>
                 {
-                    await YouTubeCommandAsync(_youtubeRoute.IsActive
-                        ? "volume(100)"
-                        : $"volume({Math.Clamp((int)Math.Round(_config.MasterVolume * activeStation.Volume * 100), 0, 100)})");
+                    await ApplyYouTubeListeningGainAsync(activeStation);
                     if (initialReturnSeconds > 0)
                         await YouTubeCommandAsync($"seek({initialReturnSeconds.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture)})");
                     if (!_youtubeStartPaused)
@@ -718,15 +716,23 @@ public partial class MainWindow : Window, IMacroActionHandler
         await YouTubeView.CoreWebView2.ExecuteScriptAsync("window.wardogs?." + command + ";");
     }
 
+    async Task ApplyYouTubeListeningGainAsync(Station station)
+    {
+        // A persistent WebView audio session can retain its original Windows
+        // endpoint. Keep the temporary Voicemeeter route at unity and make the
+        // player the sole listening-gain authority, regardless of that route.
+        if (_youtubeRoute.IsActive) _youtubeRoute.SetHeadsetGain(1);
+        var gain = Math.Clamp((int)Math.Round(_config.MasterVolume * station.Volume * 100), 0, 100);
+        await YouTubeCommandAsync($"volume({gain})");
+    }
+
     async Task SilenceYouTubeForRouteTeardownAsync()
     {
         if (!_youtubeReady || !_youtubePlayerReady) return;
         try
         {
-            // The temporary Voicemeeter route deliberately keeps YouTube at
-            // full player volume and applies listening gain on VAIO instead.
             // Silence the player before restoring Windows' physical default so
-            // that restore can never briefly bypass that gain.
+            // route teardown cannot leave an audible WebView session behind.
             await YouTubeView.CoreWebView2.ExecuteScriptAsync(
                 "(() => { window.wardogs?.volume(0); window.wardogs?.pause(); })();");
             await Task.Delay(150);
@@ -1722,7 +1728,7 @@ public partial class MainWindow : Window, IMacroActionHandler
         {
             try
             {
-                _youtubeRoute.Begin(_config.MonitorDeviceId ?? "", _config.MasterVolume * station.Volume);
+                _youtubeRoute.Begin(_config.MonitorDeviceId ?? "", 1);
                 _youtubeStartupForensics.Mark($"T2 temporary route begin complete ({_youtubeRoute.LastBeginDuration.TotalMilliseconds:0} ms)");
             }
             catch (Exception error)
@@ -1740,7 +1746,7 @@ public partial class MainWindow : Window, IMacroActionHandler
         }
         else
         {
-            _youtubeRoute.SetHeadsetGain(_config.MasterVolume * station.Volume);
+            _youtubeRoute.SetHeadsetGain(1);
             _youtubeStartupForensics.Mark("T2 temporary route active");
         }
         var returnMode = station.ModeOverride ?? _config.DefaultPlaybackMode;
@@ -2068,7 +2074,10 @@ public partial class MainWindow : Window, IMacroActionHandler
                 station.GameVolume = newStationGain;
                 if (_active?.Id == station.Id)
                 {
-                    if (_active.ProviderId == "youtube") _youtubeRoute.SetHeadsetGain(_config.MasterVolume * station.Volume);
+                    if (_active.ProviderId == "youtube")
+                    {
+                        if (_youtubePlayerReady) await ApplyYouTubeListeningGainAsync(_active);
+                    }
                     else await _mpvProvider!.SetVolumeAsync(_config.MasterVolume * station.Volume, cancellationToken);
                     await ApplyActiveGameMusicGainAsync(cancellationToken);
                 }
@@ -2090,7 +2099,10 @@ public partial class MainWindow : Window, IMacroActionHandler
                 station.Volume = previousStationGain;
                 if (_active?.Id == station.Id)
                 {
-                    if (_active.ProviderId == "youtube") _youtubeRoute.SetHeadsetGain(_config.MasterVolume * station.Volume);
+                    if (_active.ProviderId == "youtube")
+                    {
+                        if (_youtubePlayerReady) await ApplyYouTubeListeningGainAsync(_active);
+                    }
                     else await _mpvProvider!.SetVolumeAsync(_config.MasterVolume * station.Volume, cancellationToken);
                     await ApplyActiveGameMusicGainAsync(cancellationToken);
                 }
@@ -4033,17 +4045,9 @@ public partial class MainWindow : Window, IMacroActionHandler
             {
                 try
                 {
-                    if (_youtubeRoute.IsActive)
-                    {
-                        _youtubeRoute.SetHeadsetGain(e.NewValue * _active.Volume);
-                        Footer.Text = $"YOUTUBE HEADSET LEVEL · {Math.Round(e.NewValue * 100):0}% master via Voicemeeter A1";
-                    }
-                    else
-                    {
-                        await YouTubeCommandAsync($"volume({Math.Clamp((int)Math.Round(e.NewValue * _active.Volume * 100), 0, 100)})");
-                        var reported = await YouTubeView.CoreWebView2.ExecuteScriptAsync("window.wardogs?.getVolume()");
-                        Footer.Text = $"YOUTUBE HEADSET LEVEL · {Math.Round(e.NewValue * 100):0}% master · Player reports {reported}%";
-                    }
+                    await ApplyYouTubeListeningGainAsync(_active);
+                    var reported = await YouTubeView.CoreWebView2.ExecuteScriptAsync("window.wardogs?.getVolume()");
+                    Footer.Text = $"YOUTUBE HEADSET LEVEL · {Math.Round(e.NewValue * 100):0}% master · Player reports {reported}%";
                 }
                 catch (Exception error) { Footer.Text = "COULD NOT SET YOUTUBE LEVEL · " + error.Message; }
             }
