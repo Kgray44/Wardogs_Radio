@@ -17,7 +17,16 @@ public sealed class Station
     public override string ToString() => Name;
     public Guid Id { get; set; } = Guid.NewGuid(); public string Name { get; set; } = "New Station"; public string? Description { get; set; }
     public string Glyph { get; set; } = "◈"; public string IconId { get; set; } = "patrol"; public string AccentColor { get; set; } = "#9FB672"; public bool Enabled { get; set; } = true; public string ProviderId { get; set; } = "mpv";
-    public string Source { get; set; } = ""; public List<string> PlaylistFiles { get; set; } = []; public List<StationSong> PlaylistSongs { get; set; } = []; public double Volume { get; set; } = .72; public double GameVolume { get; set; } = .72; public bool Shuffle { get; set; } public int? ShuffleSeed { get; set; } public bool Loop { get; set; } = true;
+    public string Source { get; set; } = "";
+    // Schema 9 and earlier persisted these station-owned lists. Schema 10 keeps them only as
+    // short-lived provider projections; legacy JSON still deserializes through the named fields.
+    [JsonIgnore] public List<string> PlaylistFiles { get; set; } = [];
+    [JsonIgnore] public List<StationSong> PlaylistSongs { get; set; } = [];
+    [JsonPropertyName("PlaylistFiles"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public List<string>? LegacyPlaylistFiles { get; set; }
+    [JsonPropertyName("PlaylistSongs"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public List<StationSong>? LegacyPlaylistSongs { get; set; }
+    public List<StationPlaylistEntry> PlaylistEntries { get; set; } = []; public double Volume { get; set; } = .72; public double GameVolume { get; set; } = .72; public bool Shuffle { get; set; } public int? ShuffleSeed { get; set; } public bool Loop { get; set; } = true;
     public StationRepeatMode? RepeatMode { get; set; }
     [JsonIgnore] public StationRepeatMode EffectiveRepeatMode => RepeatMode ?? (Loop ? StationRepeatMode.Playlist : StationRepeatMode.Off);
     public PlaybackMode? ModeOverride { get; set; } public TimeSpan FadeIn { get; set; } = TimeSpan.FromSeconds(.35); public TimeSpan FadeOut { get; set; } = TimeSpan.FromSeconds(.35);
@@ -54,7 +63,8 @@ public sealed class YouTubeTrackMetadata { public string VideoId { get; set; } =
 public sealed class RadioProfile { public Guid Id { get; set; } = Guid.NewGuid(); public string Name { get; set; } = "WARDOGS"; public List<Station> Stations { get; set; } = []; public List<RadioMacro> Macros { get; set; } = []; }
 public sealed class AppConfiguration
 {
-    public int SchemaVersion { get; set; } = 9; public bool SetupComplete { get; set; } public RadioProfile Profile { get; set; } = Defaults.Profile();
+    public int SchemaVersion { get; set; } = MusicLibraryService.CurrentSchemaVersion; public bool SetupComplete { get; set; } public RadioProfile Profile { get; set; } = Defaults.Profile(); public MusicLibrary MusicLibrary { get; set; } = new();
+    public ClipGuardSettings ClipGuard { get; set; } = new();
     public PlaybackMode DefaultPlaybackMode { get; set; } = PlaybackMode.Player; public bool CrossfadeEnabled { get; set; } = true; public double CrossfadeSeconds { get; set; } = .65; public TransitionCurve Curve { get; set; } = TransitionCurve.EqualPower;
     public double MasterVolume { get; set; } = .8; public double GameMasterVolume { get; set; } = .8; public double MicrophoneVolume { get; set; } = 1; public bool MicrophoneVolumeInitialized { get; set; } public Dictionary<string, YouTubeTrackMetadata> YouTubeDurationCache { get; set; } = [];
     public Dictionary<string, double> LocalDurationCache { get; set; } = [];
@@ -91,6 +101,26 @@ public sealed class ConfigurationStore(string root)
         try
         {
             Directory.CreateDirectory(root);
+            // Only callers deliberately writing a historical schema need the old JSON shape.
+            // Normal schema-11 saves leave both fields null, so canonical library data is the
+            // sole persisted owner of song timing and playlist membership.
+            if (config.SchemaVersion < MusicLibraryService.CurrentSchemaVersion)
+                foreach (var station in config.Profile.Stations)
+                {
+                    station.LegacyPlaylistFiles = station.PlaylistFiles;
+                    station.LegacyPlaylistSongs = station.PlaylistSongs;
+                }
+            else
+                foreach (var station in config.Profile.Stations)
+                {
+                    // Accept in-memory station lists from older callers during the transition,
+                    // but convert them before their first schema-10 save. Empty stations stay
+                    // empty; this never recreates a cue removed from the library.
+                    if (station.PlaylistEntries.Count == 0 &&
+                        (station.PlaylistSongs.Count > 0 || station.PlaylistFiles.Count > 0))
+                        MusicLibraryService.EnsureStationLibrary(config, station);
+                    MusicLibraryService.MaterializeStationPlaylist(config, station);
+                }
             var tmp = Path + ".new";
             await using (var stream = File.Create(tmp)) await JsonSerializer.SerializeAsync(stream, config, _json, ct);
             if (File.Exists(Path)) File.Copy(Path, BackupPath, true);
@@ -101,12 +131,15 @@ public sealed class ConfigurationStore(string root)
     static AppConfiguration Normalize(AppConfiguration config)
     {
         config.Profile ??= Defaults.Profile();
+        config.ClipGuard ??= new ClipGuardSettings();
+        config.ClipGuard.Normalize();
         config.LocalDurationCache ??= [];
         config.Profile.Stations ??= [];
         foreach (var station in config.Profile.Stations)
         {
-            station.PlaylistFiles ??= [];
-            station.PlaylistSongs ??= [];
+            station.PlaylistFiles = station.LegacyPlaylistFiles ?? [];
+            station.PlaylistSongs = station.LegacyPlaylistSongs ?? [];
+            station.PlaylistEntries ??= [];
             station.RepeatMode ??= station.Loop ? StationRepeatMode.Playlist : StationRepeatMode.Off;
         }
         config.Profile.Macros ??= [];
@@ -163,7 +196,17 @@ public sealed class ConfigurationStore(string root)
             config.GameMasterVolume = config.MasterVolume;
             foreach (var station in config.Profile.Stations) station.GameVolume = station.Volume;
         }
-        config.SchemaVersion = Math.Max(9, config.SchemaVersion);
+        // Clip Guard previously displayed only an informational limiter capability. It never
+        // owned a Voicemeeter limiter setting, so migration must not begin changing a user's
+        // mixer just because a newer WARDOGS build is launched.
+        if (config.SchemaVersion < 12) config.ClipGuard.LimiterEnabled = false;
+        MusicLibraryService.NormalizeAndMigrate(config);
+        foreach (var station in config.Profile.Stations)
+        {
+            MusicLibraryService.MaterializeStationPlaylist(config, station);
+            station.LegacyPlaylistFiles = null;
+            station.LegacyPlaylistSongs = null;
+        }
         return config;
     }
 

@@ -23,21 +23,23 @@ public partial class StationEditorWindow : Window
     string _accentColor;
     bool _shuffle;
     int? _shuffleSeed;
-    readonly bool _usingSavedSongs;
+    bool _usingSavedSongs;
+    readonly MusicLibrary? _library;
     bool _initializing = true;
     bool _synchronizingSourceControls;
     public Station? Result { get; private set; }
 
-    public StationEditorWindow(Station? station = null)
+    public StationEditorWindow(Station? station = null, MusicLibrary? library = null)
     {
         InitializeComponent();
         _station = station ?? new Station();
+        _library = library;
         _iconId = _station.IconId;
         _accentColor = AccentColorPickerWindow.NormalizeColor(_station.AccentColor);
         Heading.Text = station is null ? "CREATE RADIO STATION" : "EDIT RADIO STATION";
         NameBox.Text = station is null ? "" : station.Name;
         SourceBox.Text = _station.Source;
-        _usingSavedSongs = _station.PlaylistSongs?.Count > 0 && _station.ProviderId == "mpv";
+        _usingSavedSongs = _station.PlaylistSongs?.Count > 0;
         _playlist.AddRange(_usingSavedSongs
             ? _station.PlaylistSongs.Select(song => new PlaylistItem(song.Source, song))
             : (_station.PlaylistFiles ?? []).Select(path => new PlaylistItem(path)));
@@ -287,6 +289,33 @@ public partial class StationEditorWindow : Window
         }
     }
 
+    void AddLibrarySongs_Click(object sender, RoutedEventArgs e)
+    {
+        if (_library is null)
+        {
+            ValidationText.Text = "THE MUSIC LIBRARY IS NOT AVAILABLE YET.";
+            return;
+        }
+        var picker = new LibrarySongPickerWindow(_library, Provider()) { Owner = this };
+        if (picker.ShowDialog() != true || picker.SelectedSongs.Count == 0) return;
+        var sources = _library.Sources.ToDictionary(source => source.Id);
+        foreach (var song in picker.SelectedSongs)
+        {
+            if (!sources.TryGetValue(song.SourceId, out var source)) continue;
+            if (_playlist.Any(item => item.Song.Id == song.Id)) continue;
+            _playlist.Add(new PlaylistItem(source.Source, new StationSong
+            {
+                Id = song.Id, Source = source.Source, Name = song.Name,
+                StartSeconds = song.StartSeconds, EndSeconds = song.EndSeconds
+            }));
+        }
+        if (!StationSourceSelection.IsLocal(ProviderChoice()) && string.IsNullOrWhiteSpace(SourceBox.Text) &&
+            _playlist.FirstOrDefault() is { } first)
+            SourceBox.Text = first.Path;
+        _usingSavedSongs = true;
+        RefreshPlaylist(_playlist.Count - 1);
+    }
+
     void RemovePlaylistFiles_Click(object sender, RoutedEventArgs e)
     {
         var index = PlaylistList.SelectedItem is PlaylistItem selected ? _playlist.IndexOf(selected) : -1;
@@ -369,7 +398,7 @@ public partial class StationEditorWindow : Window
         _station.ProviderId = Provider();
         var savedOrder = _usingSavedSongs ? _playlist : DisplayPlaylist();
         _station.PlaylistFiles = local ? savedOrder.Select(x => x.Path).ToList() : [];
-        if (local) _station.PlaylistSongs = savedOrder.Select(x => x.Song).ToList();
+        if (local || _usingSavedSongs) _station.PlaylistSongs = savedOrder.Select(x => x.Song).ToList();
         else if (oldProvider != _station.ProviderId || !string.Equals(oldSource, _station.Source, StringComparison.OrdinalIgnoreCase))
             _station.PlaylistSongs = [];
         _station.IconId = _iconId;

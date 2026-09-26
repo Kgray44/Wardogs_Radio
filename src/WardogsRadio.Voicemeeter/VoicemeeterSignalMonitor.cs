@@ -5,6 +5,10 @@ public sealed record SignalLevel(bool Available, float Peak);
 /// <summary>Reads real post-mute strip and output-bus peaks from the Voicemeeter Remote API.</summary>
 public sealed class VoicemeeterSignalMonitor(IVoicemeeterRemote remote)
 {
+    // The Remote API can expose a small constant digital noise floor even while
+    // the route carries no source audio. Keep it out of the visual meter so a
+    // "NO SIGNAL" label never accompanies a misleading fixed bar.
+    public const float VisualSignalFloor = .005f;
     public SignalLevel ReadStrip(string? edition, int? strip)
     {
         if (strip is not { } index || !StripChannels(edition, index, out var first, out var count)) return new(false, 0);
@@ -30,7 +34,7 @@ public sealed class VoicemeeterSignalMonitor(IVoicemeeterRemote remote)
 
     public static double BarValue(SignalLevel level)
     {
-        if (!level.Available || level.Peak <= 0) return 0;
+        if (!level.Available || level.Peak < VisualSignalFloor) return 0;
         var db = 20 * Math.Log10(level.Peak);
         return Math.Clamp((db + 60) / 60 * 100, 0, 100);
     }

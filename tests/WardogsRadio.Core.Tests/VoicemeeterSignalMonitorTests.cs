@@ -54,6 +54,16 @@ public sealed class VoicemeeterSignalMonitorTests
     }
 
     [Fact]
+    public void BarSuppressesTheSubSignalNoiseFloor()
+    {
+        var belowFloor = new SignalLevel(true, VoicemeeterSignalMonitor.VisualSignalFloor / 2);
+        var audible = new SignalLevel(true, VoicemeeterSignalMonitor.VisualSignalFloor * 2);
+
+        Assert.Equal(0, VoicemeeterSignalMonitor.BarValue(belowFloor));
+        Assert.True(VoicemeeterSignalMonitor.BarValue(audible) > 0);
+    }
+
+    [Fact]
     public void InstalledVoicemeeterRemoteReturnsLiveBusSamplesWhenConnected()
     {
         using var remote = new VoicemeeterRemote();

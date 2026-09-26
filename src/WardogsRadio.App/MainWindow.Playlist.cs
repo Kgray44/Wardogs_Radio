@@ -11,7 +11,7 @@ namespace WardogsRadio.App;
 
 public partial class MainWindow
 {
-    sealed record SongCard(StationSong Song, string Number, string Name, string Detail);
+    sealed record SongCard(Guid EntryId, StationSong Song, string Number, string Name, string Detail);
     Point _playlistDragStart;
     StationSong? _playlistDragSong;
     StationSong? _playlistContextSong;
@@ -24,23 +24,36 @@ public partial class MainWindow
     {
         if (DashboardPlaylist is null) return;
         var station = _active;
+        if (station is not null) MusicLibraryService.MaterializeStationPlaylist(_config, station);
         var songs = station?.PlaylistSongs ?? [];
         var current = station?.ProviderId == "mpv" ? _mpvProvider?.CurrentPlaylistIndex ?? station?.Runtime.SequenceIndex ?? 0
             : station?.Runtime.SequenceIndex ?? 0;
         DashboardShuffleButton.IsEnabled = station?.ProviderId is "mpv" or "youtube" && songs.Count > 1;
         DashboardPlaylistHint.Text = station is null ? "Choose a station to see its songs."
+            : songs.Count == 0 && !MusicLibraryService.SupportsCueRanges(station.ProviderId, station.Source)
+                ? "This source does not support reliable song segmentation."
             : songs.Count == 0 && station.ProviderId == "youtube" ? "Play the video, then mark song boundaries on the timeline."
             : songs.Count == 0 ? "This station has no local song list."
             : "Double-click to play · drag to reorder · shuffle mixes this list now.";
-        var signature = $"{station?.Id}:{current}:{string.Join(',', songs.Select(x => $"{x.Id:N}:{x.Name}:{x.StartSeconds}:{x.EndSeconds}"))}";
+        var signature = $"{station?.Id}:{current}:{string.Join(',', songs.Select(x => $"{x.Id:N}:{x.Name}:{x.StartSeconds}:{x.EndSeconds}:{(station is null ? null : KnownSongDuration(station, x))}"))}";
         if (signature == _lastPlaylistDisplay) return;
         _lastPlaylistDisplay = signature;
-        DashboardPlaylist.ItemsSource = songs.Select((song, index) => new SongCard(song,
+        var entryIds = station?.PlaylistEntries.Select(entry => entry.Id).ToList() ?? [];
+        DashboardPlaylist.ItemsSource = songs.Select((song, index) => new SongCard(entryIds.ElementAtOrDefault(index), song,
             index == current ? "▶" : $"{index + 1:00}", song.Name,
-            song.EndSeconds is { } end ? $"{DisplayTime(song.StartSeconds)}–{DisplayTime(end)} · {Path.GetFileName(song.Source)}"
-                : song.StartSeconds > 0 ? $"from {DisplayTime(song.StartSeconds)} · {Path.GetFileName(song.Source)}"
-                : Path.GetFileName(song.Source))).ToList();
+            SongCardDetail(station, song))).ToList();
         DashboardPlaylist.SelectedIndex = songs.Count > 0 ? Math.Clamp(current, 0, songs.Count - 1) : -1;
+    }
+
+    string SongCardDetail(Station? station, StationSong song)
+    {
+        var sourceName = Path.GetFileName(song.Source);
+        if (string.IsNullOrWhiteSpace(sourceName)) sourceName = song.Source;
+        var end = song.EndSeconds ?? (station is null ? null : KnownSongDuration(station, song));
+        return end is { } knownEnd
+            ? $"{DisplayTime(song.StartSeconds)}–{DisplayTime(knownEnd)} · {sourceName}"
+            : song.StartSeconds > 0 ? $"from {DisplayTime(song.StartSeconds)} · {sourceName}"
+            : sourceName;
     }
 
     async Task<PlaybackSnapshot> EnforceLocalSongBoundaryAsync(Station station, MpvProvider provider, PlaybackSnapshot playback)
@@ -152,13 +165,20 @@ public partial class MainWindow
         if (Ancestor<ListBoxItem>(e.OriginalSource as DependencyObject)?.DataContext is SongCard card)
             _playlistContextSong = card.Song;
         var onSong = _playlistContextSong is not null && _active.PlaylistSongs.Any(x => x.Id == _playlistContextSong.Id);
-        if (!onSong && _active.Runtime.DurationSeconds <= 0)
+        var source = _playlistContextSong?.Source
+            ?? _active.PlaylistSongs.ElementAtOrDefault(Math.Clamp(_active.Runtime.SequenceIndex, 0, Math.Max(0, _active.PlaylistSongs.Count - 1)))?.Source
+            ?? _active.Source;
+        if (!MusicLibraryService.SupportsCueRanges(_active.ProviderId, source) || !onSong && _active.Runtime.DurationSeconds <= 0)
         {
             e.Handled = true;
             return;
         }
         PlaylistCreateSongMenuItem.Visibility = onSong ? Visibility.Collapsed : Visibility.Visible;
         PlaylistEditSongMenuItem.Visibility = onSong ? Visibility.Visible : Visibility.Collapsed;
+        PlaylistSongActionsSeparator.Visibility = onSong ? Visibility.Visible : Visibility.Collapsed;
+        PlaylistOpenLibraryMenuItem.Visibility = onSong ? Visibility.Visible : Visibility.Collapsed;
+        PlaylistOpenSourceMenuItem.Visibility = onSong ? Visibility.Visible : Visibility.Collapsed;
+        PlaylistRemoveFromStationMenuItem.Visibility = onSong ? Visibility.Visible : Visibility.Collapsed;
         if (!onSong)
             _timelineContextSeconds = _active.ProviderId == "mpv"
                 ? _mpvProvider?.Snapshot.PositionSeconds ?? _active.Runtime.PositionSeconds
@@ -167,6 +187,10 @@ public partial class MainWindow
 
     double? KnownSongDuration(Station station, StationSong song)
     {
+        var source = _config.MusicLibrary.Sources.FirstOrDefault(candidate =>
+            candidate.ProviderId.Equals(station.ProviderId, StringComparison.OrdinalIgnoreCase) &&
+            string.Equals(candidate.Source, song.Source, StringComparison.OrdinalIgnoreCase));
+        if (source?.DurationSeconds is > 0) return source.DurationSeconds;
         if (station.ProviderId == "youtube") return station.Runtime.DurationSeconds > 0 ? station.Runtime.DurationSeconds : null;
         if (station.ProviderId != "mpv") return null;
         var key = DurationKey(song.Source);
@@ -184,11 +208,12 @@ public partial class MainWindow
         if (song is null) return;
         var dialog = new EditSongWindow(song, KnownSongDuration(station, song)) { Owner = this };
         if (dialog.ShowDialog() != true) return;
-        var previous = (song.Name, song.StartSeconds, song.EndSeconds);
         try
         {
-            SongPlaylist.Update(station.PlaylistSongs, song.Id, dialog.SongTitle,
+            MusicLibraryService.UpdateSong(_config.MusicLibrary, song.Id, dialog.SongTitle,
                 dialog.StartSeconds, dialog.EndSeconds, KnownSongDuration(station, song));
+            MusicLibraryService.MaterializeStationPlaylist(_config, station);
+            song = station.PlaylistSongs.First(item => item.Id == target.Id);
             if (station.ProviderId == "mpv" && _mpvProvider is { } provider &&
                 provider.CurrentPlaylistIndex >= 0 && provider.CurrentPlaylistIndex < station.PlaylistSongs.Count &&
                 station.PlaylistSongs[provider.CurrentPlaylistIndex].Id == song.Id &&
@@ -210,11 +235,49 @@ public partial class MainWindow
         }
         catch (Exception error)
         {
-            (song.Name, song.StartSeconds, song.EndSeconds) = previous;
             _lastPlaylistDisplay = null;
             RefreshDashboardPlaylist();
             Footer.Text = "COULD NOT EDIT SONG · " + error.Message;
         }
+    }
+
+    void DashboardPlaylist_OpenLibrary_Click(object sender, RoutedEventArgs e)
+    {
+        if (_playlistContextSong is null) return;
+        RefreshLibrary();
+        Show(LibraryView, "MUSIC LIBRARY", "Sources and song cues shared by your stations", LibraryNav);
+    }
+
+    void DashboardPlaylist_OpenSource_Click(object sender, RoutedEventArgs e)
+    {
+        if (_playlistContextSong is not { } song) return;
+        var librarySong = _config.MusicLibrary.Songs.FirstOrDefault(candidate => candidate.Id == song.Id);
+        var source = librarySong is null ? null : _config.MusicLibrary.Sources.FirstOrDefault(candidate => candidate.Id == librarySong.SourceId);
+        if (source is null) return;
+        OpenLibrarySource(source);
+    }
+
+    async void DashboardPlaylist_RemoveFromStation_Click(object sender, RoutedEventArgs e)
+    {
+        if (_active is not { } station || _playlistContextSong is not { } song) return;
+        try
+        {
+            MusicLibraryService.RemoveSongFromStation(station, song.Id);
+            MusicLibraryService.MaterializeStationPlaylist(_config, station);
+            if (station.PlaylistEntries.Count == 0)
+            {
+                if (station.ProviderId == "youtube" && _youtubePlayerReady) await YouTubeCommandAsync("pause()");
+                else if (station.ProviderId == "mpv" && _mpvProvider is not null) await _mpvProvider.PauseAsync();
+                station.Runtime.WasPlaying = false;
+                station.Runtime.IsOnAir = false;
+            }
+            else await ApplyPlaylistChangeAsync(CurrentSongId());
+            await _store.SaveAsync(_config);
+            _lastPlaylistDisplay = null;
+            RefreshCollections();
+            Footer.Text = $"REMOVED FROM {station.Name.ToUpperInvariant()} · The shared library cue was kept.";
+        }
+        catch (Exception error) { Footer.Text = "COULD NOT REMOVE FROM STATION · " + error.Message; }
     }
 
     void DashboardPlaylist_PreviewMouseMove(object sender, MouseEventArgs e)
@@ -238,11 +301,12 @@ public partial class MainWindow
         if (_active is not { } station || e.Data.GetData(typeof(StationSong)) is not StationSong song) return;
         var target = Ancestor<ListBoxItem>(e.OriginalSource as DependencyObject)?.DataContext as SongCard;
         if (target is null || target.Song.Id == song.Id) return;
-        var from = station.PlaylistSongs.FindIndex(x => x.Id == song.Id);
-        var to = station.PlaylistSongs.FindIndex(x => x.Id == target.Song.Id);
-        if (from < 0 || to < 0) return;
+        var sourceEntry = station.PlaylistEntries.FirstOrDefault(entry => entry.SongId == song.Id);
+        var to = station.PlaylistEntries.FindIndex(entry => entry.Id == target.EntryId);
+        if (sourceEntry is null || to < 0) return;
         var currentId = CurrentSongId();
-        SongPlaylist.Move(station.PlaylistSongs, from, to);
+        MusicLibraryService.MoveStationEntry(station, sourceEntry.Id, to);
+        MusicLibraryService.MaterializeStationPlaylist(_config, station);
         station.Shuffle = false;
         try { await ApplyPlaylistChangeAsync(currentId); }
         catch (Exception error) { Footer.Text = "COULD NOT REORDER PLAYLIST · " + error.Message; }
@@ -264,7 +328,8 @@ public partial class MainWindow
     {
         if (_active is not { } station || station.PlaylistSongs.Count < 2) return;
         var currentId = CurrentSongId();
-        SongPlaylist.Shuffle(station.PlaylistSongs);
+        MusicLibraryService.ShuffleStationEntries(station);
+        MusicLibraryService.MaterializeStationPlaylist(_config, station);
         station.Shuffle = true;
         station.ShuffleSeed = null;
         try { await ApplyPlaylistChangeAsync(currentId); }
@@ -281,6 +346,7 @@ public partial class MainWindow
     async Task ApplyPlaylistChangeAsync(Guid? activeSongId)
     {
         if (_active is not { } station) return;
+        MusicLibraryService.MaterializeStationPlaylist(_config, station);
         var index = activeSongId is { } id ? station.PlaylistSongs.FindIndex(x => x.Id == id) : -1;
         station.Runtime.SequenceIndex = Math.Max(0, index);
         if (station.ProviderId == "mpv")
@@ -335,10 +401,14 @@ public partial class MainWindow
 
     async Task SetYouTubeSongsAsync(Station station)
     {
-        var json = JsonSerializer.Serialize(station.PlaylistSongs.Select(song => new
+        var songs = MusicLibraryService.Resolve(_config, station);
+        var segments = songs.Select(song =>
         {
-            id = song.Id.ToString("N"), source = song.Source, start = song.StartSeconds, end = song.EndSeconds
-        }));
+            if (!MusicLibraryService.TryGetYouTubeVideoId(song.Source, out var videoId))
+                throw new InvalidOperationException("Library song segmentation is available only for a single YouTube video.");
+            return new { id = song.SongId.ToString("N"), source = videoId, start = song.StartSeconds, end = song.EndSeconds };
+        }).ToList();
+        var json = JsonSerializer.Serialize(segments);
         await YouTubeCommandAsync($"setSegments({json},{station.Runtime.SequenceIndex})");
     }
 
@@ -414,7 +484,10 @@ public partial class MainWindow
         _timelineDragging = false;
         TimelineSurface.ReleaseMouseCapture();
         _timelineContextSeconds = TimelineSeconds(Mouse.GetPosition(TimelineSurface));
-        if (_active?.Runtime.DurationSeconds is not > 0 || _active.ProviderId is not ("mpv" or "youtube"))
+        var source = _active?.PlaylistSongs.ElementAtOrDefault(Math.Clamp(_active?.Runtime.SequenceIndex ?? 0, 0,
+            Math.Max(0, (_active?.PlaylistSongs.Count ?? 0) - 1)))?.Source ?? _active?.Source;
+        if (_active?.Runtime.DurationSeconds is not > 0 || _active.ProviderId is not ("mpv" or "youtube") ||
+            !MusicLibraryService.SupportsCueRanges(_active.ProviderId, source))
             e.Handled = true;
     }
 
@@ -437,25 +510,29 @@ public partial class MainWindow
                 if (station.Source.Contains("list=", StringComparison.OrdinalIgnoreCase))
                     throw new InvalidOperationException("Song splitting currently supports a single YouTube video, not a multi-video playlist.");
                 if (station.PlaylistSongs.Count == 0)
-                {
-                    var uri = new Uri(station.Source);
-                    var id = uri.Query.TrimStart('?').Split('&').FirstOrDefault(x => x.StartsWith("v="))?[2..];
-                    if (string.IsNullOrWhiteSpace(id)) throw new InvalidOperationException("The video identity is not available yet.");
-                    station.PlaylistSongs.Add(new StationSong { Source = id, Name = station.Name });
-                }
+                    throw new InvalidOperationException("The station has no canonical library cue for this video.");
                 var containing = SongPlaylist.FindCurrent(station.PlaylistSongs, station.PlaylistSongs[0].Source, _timelineContextSeconds);
                 if (containing < 0) throw new InvalidOperationException("Choose a point inside an existing song.");
                 current = station.PlaylistSongs[containing];
             }
             else return;
+            if (!MusicLibraryService.SupportsCueRanges(station.ProviderId, current.Source))
+            {
+                Footer.Text = "THIS SOURCE DOES NOT SUPPORT RELIABLE SONG SEGMENTATION.";
+                return;
+            }
             var dialog = new CreateSongWindow(current.Name, DisplayTime(_timelineContextSeconds)) { Owner = this };
             if (dialog.ShowDialog() != true) return;
             var playingSource = station.ProviderId == "mpv" && _mpvProvider is { } playingProvider &&
                 playingProvider.CurrentPlaylistIndex >= 0 && playingProvider.CurrentPlaylistIndex < station.PlaylistSongs.Count
                 ? station.PlaylistSongs[playingProvider.CurrentPlaylistIndex].Source : current.Source;
             var position = station.Runtime.PositionSeconds;
-            SongPlaylist.Split(station.PlaylistSongs, current.Id, _timelineContextSeconds,
+            var entry = station.PlaylistEntries.FirstOrDefault(item => item.SongId == current.Id)
+                ?? throw new InvalidOperationException("The current song is not assigned to this station.");
+            var created = MusicLibraryService.SplitSong(_config.MusicLibrary, current.Id, _timelineContextSeconds,
                 station.Runtime.DurationSeconds, dialog.SongTitle, dialog.NameAfter);
+            MusicLibraryService.InsertSplitEntry(station, entry.Id, created.Id, dialog.NameAfter);
+            MusicLibraryService.MaterializeStationPlaylist(_config, station);
             var playingIndex = SongPlaylist.FindCurrent(station.PlaylistSongs, playingSource, position);
             var currentId = playingIndex >= 0 ? station.PlaylistSongs[playingIndex].Id : CurrentSongId();
             await ApplyPlaylistChangeAsync(currentId);

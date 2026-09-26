@@ -123,20 +123,46 @@ internal sealed class TemporaryYouTubeRoute(VoicemeeterRemote mixer) : IDisposab
         WaitFloat($"Strip[{DefaultVirtualStrip}].Gain", db);
     }
 
-    public void End()
+    /// <summary>
+    /// Attempts to restore every output changed by <see cref="Begin"/>. A failed
+    /// restoration deliberately leaves the recovery record in place so the next
+    /// launch can retry it; callers can keep the radio running and show the
+    /// owner exactly what still needs attention.
+    /// </summary>
+    public bool TryEnd(out string message)
     {
         var snapshot = _snapshot;
-        if (snapshot is null) return;
-        // Respect a manual default-output change made by the owner meanwhile.
-        if (WindowsDefaultRender.Current(Role.Console).Equals(snapshot.VirtualOutput, StringComparison.OrdinalIgnoreCase))
-            WindowsDefaultRender.Set(snapshot.PriorConsole, Role.Console);
-        if (WindowsDefaultRender.Current(Role.Multimedia).Equals(snapshot.VirtualOutput, StringComparison.OrdinalIgnoreCase))
-            WindowsDefaultRender.Set(snapshot.PriorMultimedia, Role.Multimedia);
-        RestoreMixer(snapshot);
+        if (snapshot is null)
+        {
+            message = "No temporary YouTube route is active.";
+            return true;
+        }
+
+        try
+        {
+            // Respect a manual default-output change made by the owner meanwhile.
+            if (WindowsDefaultRender.Current(Role.Console).Equals(snapshot.VirtualOutput, StringComparison.OrdinalIgnoreCase))
+                WindowsDefaultRender.Set(snapshot.PriorConsole, Role.Console);
+            if (WindowsDefaultRender.Current(Role.Multimedia).Equals(snapshot.VirtualOutput, StringComparison.OrdinalIgnoreCase))
+                WindowsDefaultRender.Set(snapshot.PriorMultimedia, Role.Multimedia);
+            RestoreMixer(snapshot);
+        }
+        catch (Exception error)
+        {
+            _auditioning = false;
+            message = error.Message;
+            return false;
+        }
+
         _snapshot = null;
         _auditioning = false;
         if (File.Exists(_recoveryPath)) File.Delete(_recoveryPath);
+        message = "Temporary YouTube route restored.";
+        return true;
     }
+
+    // Keep cleanup callers exception-safe; detailed handling should use TryEnd.
+    public void End() => TryEnd(out _);
 
     void RestoreMixer(Snapshot snapshot)
     {
@@ -174,7 +200,11 @@ internal sealed class TemporaryYouTubeRoute(VoicemeeterRemote mixer) : IDisposab
         {
             _snapshot = JsonSerializer.Deserialize<Snapshot>(File.ReadAllText(_recoveryPath))
                 ?? throw new InvalidOperationException("Recovery record is empty.");
-            End();
+            if (!TryEnd(out var error))
+            {
+                message = "TEMPORARY AUDIO ROUTE NEEDS RESTORATION · " + error;
+                return false;
+            }
             message = "Restored the Windows and Voicemeeter outputs after an interrupted YouTube session.";
             return true;
         }

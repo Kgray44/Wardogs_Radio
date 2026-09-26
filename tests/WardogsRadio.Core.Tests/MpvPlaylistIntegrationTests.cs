@@ -72,6 +72,68 @@ public sealed class MpvPlaylistIntegrationTests
     }
 
     [Fact]
+    public async Task InitialFadeAlwaysUnmutesAPreparedLocalPlayer()
+    {
+        if (new MpvLocator().Find(null) is null) return;
+        var folder = Path.Combine(Path.GetTempPath(), "wardogs-mpv-initial-unmute-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(folder);
+        try
+        {
+            var file = Path.Combine(folder, "short.wav");
+            WriteSilentWave(file, 2);
+            await using var player = new MpvProvider(new MpvLocator());
+            await player.LoadAsync(new Station { Source = file });
+            await player.SetVolumeAsync(.3);
+            await player.SetVolumeAsync(0);
+            Assert.True(await player.ReadMuteAsync());
+
+            await player.PlayAsync();
+
+            Assert.False(await player.ReadMuteAsync());
+            await player.SetVolumeAsync(.3);
+            Assert.InRange(await player.ReadVolumeAsync(), .299, .301);
+        }
+        finally { Directory.Delete(folder, true); }
+    }
+
+    [Fact]
+    public async Task ConfiguredLocalOutputsCanStartSilentlyWithoutRemainingMuted()
+    {
+        var root = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "WARDOGS Radio");
+        var configuration = await new ConfigurationStore(root).LoadAsync();
+        if (new MpvLocator().Find(configuration.MpvPath) is null ||
+            string.IsNullOrWhiteSpace(configuration.MpvAudioDeviceName)) return;
+
+        var folder = Path.Combine(Path.GetTempPath(), "wardogs-configured-mpv-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(folder);
+        try
+        {
+            var file = Path.Combine(folder, "silent.wav");
+            WriteSilentWave(file, 3);
+            await using var headset = new MpvProvider(new MpvLocator(), configuration.MpvPath, configuration.MpvAudioDeviceName);
+            await headset.LoadAsync(new Station { Source = file });
+            await headset.SetVolumeAsync(.2);
+            await headset.PlayAsync();
+            Assert.True((await headset.RefreshAsync()).IsPlaying);
+            Assert.False(await headset.ReadMuteAsync());
+            Assert.InRange(await headset.ReadVolumeAsync(), .199, .201);
+
+            if (!string.IsNullOrWhiteSpace(configuration.GameMpvAudioDeviceName) &&
+                !string.Equals(configuration.GameMpvAudioDeviceName, configuration.MpvAudioDeviceName, StringComparison.OrdinalIgnoreCase))
+            {
+                await using var game = new MpvProvider(new MpvLocator(), configuration.MpvPath, configuration.GameMpvAudioDeviceName);
+                await game.LoadAsync(new Station { Source = file });
+                await game.SetVolumeAsync(.2);
+                await game.PlayAsync();
+                Assert.True((await game.RefreshAsync()).IsPlaying);
+                Assert.False(await game.ReadMuteAsync());
+                Assert.InRange(await game.ReadVolumeAsync(), .199, .201);
+            }
+        }
+        finally { Directory.Delete(folder, true); }
+    }
+
+    [Fact]
     public async Task OptionalOwnerMp3CanReportDurationAndResume()
     {
         var file = Environment.GetEnvironmentVariable("WARDOGS_TEST_MEDIA");

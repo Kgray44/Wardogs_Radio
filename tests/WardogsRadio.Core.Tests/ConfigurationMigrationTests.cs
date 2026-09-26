@@ -35,6 +35,64 @@ public sealed class ConfigurationMigrationTests
         finally { if (Directory.Exists(root)) Directory.Delete(root, recursive: true); }
     }
 
+    [Fact]
+    public async Task ClipGuardPreferencesMigrateWithoutTouchingUserVolumeLevels()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "WardogsRadioTest-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var store = new ConfigurationStore(root);
+            var config = new AppConfiguration
+            {
+                SchemaVersion = 10,
+                MasterVolume = .61,
+                GameMasterVolume = .29,
+                ClipGuard = new ClipGuardSettings
+                {
+                    Mode = ClipGuardMode.Monitor,
+                    Preset = ClipGuardPreset.Custom,
+                    SafetyCeilingDbfs = -4.5,
+                    NearClipThresholdDbfs = -1.2,
+                    MaximumReductionDb = 6
+                }
+            };
+            await store.SaveAsync(config);
+
+            var migrated = await store.LoadAsync();
+
+            Assert.Equal(MusicLibraryService.CurrentSchemaVersion, migrated.SchemaVersion);
+            Assert.Equal(.61, migrated.MasterVolume);
+            Assert.Equal(.29, migrated.GameMasterVolume);
+            Assert.Equal(ClipGuardMode.Monitor, migrated.ClipGuard.Mode);
+            Assert.Equal(ClipGuardPreset.Custom, migrated.ClipGuard.Preset);
+            Assert.Equal(-4.5, migrated.ClipGuard.SafetyCeilingDbfs);
+            Assert.Equal(-1.2, migrated.ClipGuard.NearClipThresholdDbfs);
+            Assert.Equal(6, migrated.ClipGuard.MaximumReductionDb);
+        }
+        finally { if (Directory.Exists(root)) Directory.Delete(root, recursive: true); }
+    }
+
+    [Fact]
+    public async Task ExistingClipGuardConfigurationDoesNotLeaseMixerLimiterWithoutAnExplicitChoice()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "WardogsRadioTest-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var store = new ConfigurationStore(root);
+            await store.SaveAsync(new AppConfiguration
+            {
+                SchemaVersion = 11,
+                ClipGuard = new ClipGuardSettings { LimiterEnabled = true }
+            });
+
+            var migrated = await store.LoadAsync();
+
+            Assert.Equal(MusicLibraryService.CurrentSchemaVersion, migrated.SchemaVersion);
+            Assert.False(migrated.ClipGuard.LimiterEnabled);
+        }
+        finally { if (Directory.Exists(root)) Directory.Delete(root, recursive: true); }
+    }
+
     [Theory]
     [InlineData(0, -60)]
     [InlineData(1, 0)]
@@ -55,7 +113,7 @@ public sealed class ConfigurationMigrationTests
             old.Profile.Stations[0].Volume = .64;
             await store.SaveAsync(old);
             var migrated = await store.LoadAsync();
-            Assert.Equal(9, migrated.SchemaVersion);
+            Assert.Equal(MusicLibraryService.CurrentSchemaVersion, migrated.SchemaVersion);
             Assert.Equal(.37, migrated.GameMasterVolume);
             Assert.Equal(.64, migrated.Profile.Stations[0].GameVolume);
         }
@@ -100,7 +158,7 @@ public sealed class ConfigurationMigrationTests
             comms.ReleaseActions.Clear();
             await store.SaveAsync(config);
             var migrated = await store.LoadAsync();
-            Assert.Equal(9, migrated.SchemaVersion);
+            Assert.Equal(MusicLibraryService.CurrentSchemaVersion, migrated.SchemaVersion);
             Assert.Null(migrated.Profile.Stations.Single(x => x.Name == "Cruise").Hotkey);
             var restored = migrated.Profile.Macros.Single(x => x.Name == "Comms");
             Assert.Equal(MacroActivation.Hold, restored.Activation);
@@ -138,7 +196,7 @@ public sealed class ConfigurationMigrationTests
             var store = new ConfigurationStore(root);
             await store.SaveAsync(new AppConfiguration { SchemaVersion = 7, SetupComplete = true });
             var migrated = await store.LoadAsync();
-            Assert.Equal(9, migrated.SchemaVersion);
+            Assert.Equal(MusicLibraryService.CurrentSchemaVersion, migrated.SchemaVersion);
             Assert.False(migrated.SetupComplete);
         }
         finally { if (Directory.Exists(root)) Directory.Delete(root, recursive: true); }

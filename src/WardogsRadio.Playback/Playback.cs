@@ -232,12 +232,21 @@ public sealed class MpvProvider(MpvLocator locator, string? configuredPath=null,
    {
      // Opening an audio endpoint can produce a startup blip. Start at digital silence,
      // then ease up to the requested gain during the first 320 ms of playback.
+     // A player prepared for a crossfade has already been explicitly muted at zero.
+     // The fade must therefore also own the corresponding unmute transition; changing
+     // only the volume property leaves mpv playing silently.
+     var target=Math.Clamp(_requestedVolume,0,1);
      await Command(new object[]{"set_property","volume",0},ct);
+     await Command(new[]{"set_property","mute","yes"},ct);
      await Command(new[]{"set_property","pause","no"},ct);
      for(var step=1;step<=8;step++)
      {
        await Task.Delay(40,ct);
-       await Command(new object[]{"set_property","volume",Math.Clamp(_requestedVolume,0,1)*100*step/8},ct);
+       if(step==1)
+       {
+         await Command(new[]{"set_property","mute","no"},ct);
+       }
+       await Command(new object[]{"set_property","volume",target*100*step/8},ct);
      }
      _firstPlayPending=false;
    }
@@ -311,6 +320,8 @@ public sealed class MpvProvider(MpvLocator locator, string? configuredPath=null,
    {
      var target=_requestedVolume;
      await Command(new object[]{"set_property","volume",target*100},ct);
+     // Keep mute explicit for every gain write. Some WASAPI endpoints do not
+     // reliably retain a cached mute state across a device start or crossfade.
      await Command(new[]{"set_property","mute",target<=.0001?"yes":"no"},ct);
    }
    finally{_volumeGate.Release();}

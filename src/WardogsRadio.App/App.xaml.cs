@@ -15,7 +15,8 @@ public partial class App : Application
             Shutdown(PackageVerifier.Verify(AppContext.BaseDirectory, expected, out _) ? 0 : 1);
             return;
         }
-        MainWindow = new MainWindow();
+        var packagePath = e.Args.FirstOrDefault(arg => arg.EndsWith(".wradio", StringComparison.OrdinalIgnoreCase) && File.Exists(arg));
+        MainWindow = new MainWindow(packagePath);
         MainWindow.Show();
     }
 }
