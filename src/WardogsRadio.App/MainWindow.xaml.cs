@@ -2329,7 +2329,7 @@ public partial class MainWindow : Window, IMacroActionHandler
                 if (context.TryPeek<double>("mute-game-gain", out var priorGameMuteGain))
                 {
                     if (_gameMpvProvider is not null)
-                        await _gameMpvProvider.SetVolumeAsync(priorGameMuteGain * (_active?.GameVolume ?? 1) * (_outputHealth?.ProtectionGain ?? 1), cancellationToken);
+                        await _gameMpvProvider.SetVolumeAsync(GamePlayerGain(_active, priorGameMuteGain), cancellationToken);
                     _config.GameMasterVolume = priorGameMuteGain;
                     GameMasterVolume.Value = priorGameMuteGain;
                     context.TryRestore<double>("mute-game-gain", out _);
@@ -2347,7 +2347,7 @@ public partial class MainWindow : Window, IMacroActionHandler
                 context.Remember("master-gain", _config.MasterVolume);
                 context.Remember("game-master-gain", _config.GameMasterVolume);
                 await _mpvProvider.SetVolumeAsync(gain * (_active?.Volume ?? 1), cancellationToken);
-                if (_gameMpvProvider is not null) await _gameMpvProvider.SetVolumeAsync(gain * (_active?.GameVolume ?? 1) * (_outputHealth?.ProtectionGain ?? 1), cancellationToken);
+                if (_gameMpvProvider is not null) await _gameMpvProvider.SetVolumeAsync(GamePlayerGain(_active, gain), cancellationToken);
                 _config.MasterVolume = gain;
                 _config.GameMasterVolume = gain;
                 MasterVolume.Value = gain;
@@ -2361,7 +2361,7 @@ public partial class MainWindow : Window, IMacroActionHandler
                 if (context.TryPeek<double>("game-master-gain", out var priorGame))
                 {
                     if (_gameMpvProvider is not null)
-                        await _gameMpvProvider.SetVolumeAsync(priorGame * (_active?.GameVolume ?? 1) * (_outputHealth?.ProtectionGain ?? 1), cancellationToken);
+                        await _gameMpvProvider.SetVolumeAsync(GamePlayerGain(_active, priorGame), cancellationToken);
                     _config.GameMasterVolume = priorGame;
                     GameMasterVolume.Value = priorGame;
                     context.TryRestore<double>("game-master-gain", out _);
@@ -3045,8 +3045,8 @@ public partial class MainWindow : Window, IMacroActionHandler
         }
     }
 
-    double GamePlayerGain(Station station) => Math.Clamp(ClipGuardMath.EffectiveGameGain(
-        _config.GameMasterVolume, station.GameVolume,
+    double GamePlayerGain(Station? station, double? gameMasterOverride = null) => Math.Clamp(ClipGuardMath.EffectiveGameGain(
+        gameMasterOverride ?? _config.GameMasterVolume, station?.GameVolume ?? 1,
         _outputHealth?.AutoProtectionAvailable == true ? _outputHealth.ProtectionGain : 1), 0, 1);
 
     bool HasActiveGameMusicFeed() => _active?.ProviderId == "youtube"
@@ -4630,7 +4630,7 @@ public partial class MainWindow : Window, IMacroActionHandler
         {
             if (_active?.ProviderId == "youtube" && _youtubeGameFeed is not null)
             {
-                try { _youtubeGameFeed.SetVolume(e.NewValue * _active.GameVolume * (_outputHealth?.ProtectionGain ?? 1)); Footer.Text = $"YOUTUBE GAME FEED LEVEL · {Math.Round(e.NewValue * 100):0}%"; }
+                try { _youtubeGameFeed.SetVolume(GamePlayerGain(_active, e.NewValue)); Footer.Text = $"YOUTUBE GAME FEED LEVEL · {Math.Round(e.NewValue * 100):0}%"; }
                 catch (Exception error) { Footer.Text = "COULD NOT SET YOUTUBE GAME FEED LEVEL · " + error.Message; }
             }
             else if (_active?.ProviderId == "youtube") Footer.Text = "YOUTUBE GAME FEED UNAVAILABLE · " + (_youtubeGameFeedError ?? "Choose and verify a Voicemeeter game output.");
@@ -4638,7 +4638,7 @@ public partial class MainWindow : Window, IMacroActionHandler
         }
         try
         {
-            await game.SetVolumeAsync(e.NewValue * station.GameVolume * (_outputHealth?.ProtectionGain ?? 1));
+            await game.SetVolumeAsync(GamePlayerGain(station, e.NewValue));
             var reported = await game.ReadVolumeAsync();
             var muted = await game.ReadMuteAsync();
             Footer.Text = $"GAME MASTER · {Math.Round(e.NewValue * 100):0}% · Engine {Math.Round(reported * 100):0}%{(muted ? " · MUTED" : "")}";
