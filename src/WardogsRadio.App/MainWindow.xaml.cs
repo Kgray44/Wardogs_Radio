@@ -193,8 +193,6 @@ public partial class MainWindow : Window, IMacroActionHandler
     readonly SemaphoreSlim _b1AuditionGate = new(1, 1);
     B1Audition? _b1Audition;
     MpvProvider? _b1AuditionMutedPlayer;
-    bool _b1AuditionMutedYouTube;
-    bool _b1AuditionPriorWebViewMuted;
     bool _b1PointerHeld;
     bool _b1KeyboardHeld;
     string? _b1AuditionErrorDetail;
@@ -813,8 +811,7 @@ public partial class MainWindow : Window, IMacroActionHandler
     async Task ApplyYouTubeListeningGainAsync(Station station)
     {
         if (!_youtubeListeningRoute.IsActive) return;
-        if (!_b1AuditionMutedYouTube)
-            _youtubeListeningRoute.SetVolume(_config.MasterVolume * station.Volume);
+        _youtubeListeningRoute.SetVolume(_config.MasterVolume * station.Volume);
         await YouTubeCommandAsync("volume(100)");
     }
 
@@ -4951,14 +4948,14 @@ public partial class MainWindow : Window, IMacroActionHandler
         e.Handled = true;
         _b1PointerHeld = false;
         if (sender is Button { IsMouseCaptured: true } button) button.ReleaseMouseCapture();
-        if (!B1HoldRequested) await StopB1AuditionAsync("Normal headset listening restored.");
+        if (!B1HoldRequested) await StopB1AuditionAsync("Game mix preview stopped.");
     }
 
     async void B1Hold_LostCapture(object sender, MouseEventArgs e)
     {
         if (!_b1PointerHeld) return;
         _b1PointerHeld = false;
-        if (!B1HoldRequested) await StopB1AuditionAsync("Normal headset listening restored.");
+        if (!B1HoldRequested) await StopB1AuditionAsync("Game mix preview stopped.");
     }
 
     async void B1Hold_KeyDown(object sender, KeyEventArgs e)
@@ -4975,7 +4972,7 @@ public partial class MainWindow : Window, IMacroActionHandler
         if (e.Key is not (Key.Space or Key.Return)) return;
         e.Handled = true;
         _b1KeyboardHeld = false;
-        if (!B1HoldRequested) await StopB1AuditionAsync("Normal headset listening restored.");
+        if (!B1HoldRequested) await StopB1AuditionAsync("Game mix preview stopped.");
     }
 
     async void Window_Deactivated(object? sender, EventArgs e)
@@ -4984,7 +4981,7 @@ public partial class MainWindow : Window, IMacroActionHandler
         _b1KeyboardHeld = false;
         if (AudioAuditionB1Button.IsMouseCaptured) AudioAuditionB1Button.ReleaseMouseCapture();
         if (SetupAuditionB1Button.IsMouseCaptured) SetupAuditionB1Button.ReleaseMouseCapture();
-        await StopB1AuditionAsync("Normal headset listening restored.");
+        await StopB1AuditionAsync("Game mix preview stopped.");
     }
 
     async Task StartB1AuditionAsync()
@@ -5016,21 +5013,16 @@ public partial class MainWindow : Window, IMacroActionHandler
                     await player.SetVolumeAsync(0);
                     _b1AuditionMutedPlayer = player;
                 }
-                else if (_active?.ProviderId == "youtube")
-                {
-                    // Windows session gain also attenuates process-loopback capture.
-                    // WebView mute leaves that capture alive while silencing direct listening.
-                    _b1AuditionPriorWebViewMuted = YouTubeView.CoreWebView2.IsMuted;
-                    YouTubeView.CoreWebView2.IsMuted = true;
-                    _b1AuditionMutedYouTube = true;
-                }
-                if (!B1HoldRequested) { await StopB1AuditionCoreAsync("Normal headset listening restored."); return; }
+                if (!B1HoldRequested) { await StopB1AuditionCoreAsync("Game mix preview stopped."); return; }
                 var audition = new B1Audition();
-                audition.Start(_gameOutputEndpointId, _config.MonitorDeviceId);
+                var youtubePreview = _active?.ProviderId == "youtube";
+                audition.Start(_gameOutputEndpointId, _config.MonitorDeviceId, youtubePreview ? .25f : .50f);
                 _b1Audition = audition;
                 _b1AuditionErrorDetail = null;
-                if (!B1HoldRequested) { await StopB1AuditionCoreAsync("Normal headset listening restored."); return; }
-                SetB1AuditionUi(true, "Hearing the real B1 mix at 50% preview level. Release the button to restore normal listening.");
+                if (!B1HoldRequested) { await StopB1AuditionCoreAsync("Game mix preview stopped."); return; }
+                SetB1AuditionUi(true, youtubePreview
+                    ? "Hearing the B1 game mix at 25% alongside YouTube. Release to stop the preview."
+                    : "Hearing the B1 game mix at 50% preview level. Release to restore normal listening.");
             }
             catch (Exception error)
             {
@@ -5063,7 +5055,7 @@ public partial class MainWindow : Window, IMacroActionHandler
         await _b1AuditionGate.WaitAsync();
         try
         {
-            if (_b1Audition is null && _b1AuditionMutedPlayer is null && !_b1AuditionMutedYouTube && !_youtubeRoute.IsAuditioning) return;
+            if (_b1Audition is null && _b1AuditionMutedPlayer is null && !_youtubeRoute.IsAuditioning) return;
             await StopB1AuditionCoreAsync(message);
         }
         finally { _b1AuditionGate.Release(); }
@@ -5077,15 +5069,6 @@ public partial class MainWindow : Window, IMacroActionHandler
         {
             try { _youtubeRoute.SetAuditioning(false); }
             catch (Exception error) { message += " Direct listening could not be restored: " + error.Message; }
-        }
-        if (_b1AuditionMutedYouTube)
-        {
-            _b1AuditionMutedYouTube = false;
-            try { YouTubeView.CoreWebView2.IsMuted = _b1AuditionPriorWebViewMuted; }
-            catch (Exception error) { message += " Direct listening could not be restored: " + error.Message; }
-            if (_active is { ProviderId: "youtube" } youtubeStation && _youtubeListeningRoute.IsActive)
-                try { _youtubeListeningRoute.SetVolume(_config.MasterVolume * youtubeStation.Volume); }
-                catch (Exception error) { message += " Headset music level could not be restored: " + error.Message; }
         }
         var mutedPlayer = _b1AuditionMutedPlayer;
         _b1AuditionMutedPlayer = null;
