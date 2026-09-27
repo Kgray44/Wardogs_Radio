@@ -11,6 +11,7 @@ using System.Windows.Interop;
 using System.Windows.Input;
 using System.Windows.Threading;
 using Microsoft.Web.WebView2.Core;
+using NAudio.CoreAudioApi;
 using WardogsRadio.Core;
 using WardogsRadio.Diagnostics;
 using WardogsRadio.Input;
@@ -193,6 +194,7 @@ public partial class MainWindow : Window, IMacroActionHandler
     readonly SemaphoreSlim _b1AuditionGate = new(1, 1);
     B1Audition? _b1Audition;
     MpvProvider? _b1AuditionMutedPlayer;
+    CancellationTokenSource? _b1PreviewToneCancellation;
     bool _b1PointerHeld;
     bool _b1KeyboardHeld;
     string? _b1AuditionErrorDetail;
@@ -5021,8 +5023,11 @@ public partial class MainWindow : Window, IMacroActionHandler
                 _b1AuditionErrorDetail = null;
                 if (!B1HoldRequested) { await StopB1AuditionCoreAsync("Game mix preview stopped."); return; }
                 SetB1AuditionUi(true, youtubePreview
-                    ? "Hearing the B1 game mix at 25% alongside YouTube. Release to stop the preview."
-                    : "Hearing the B1 game mix at 50% preview level. Release to restore normal listening.");
+                    ? "Hearing the B1 game mix at 25% alongside YouTube. A short test tone is being sent through the game output."
+                    : "Hearing the B1 game mix at 50% preview level. A short test tone is being sent through the game output.");
+                var toneCancellation = new CancellationTokenSource();
+                _b1PreviewToneCancellation = toneCancellation;
+                _ = PlayB1PreviewToneAsync(toneCancellation, youtubePreview);
             }
             catch (Exception error)
             {
@@ -5050,6 +5055,34 @@ public partial class MainWindow : Window, IMacroActionHandler
         AudioAuditionB1State.Text = message;
     }
 
+    async Task PlayB1PreviewToneAsync(CancellationTokenSource cancellation, bool youtubePreview)
+    {
+        try
+        {
+            using var endpoints = new MMDeviceEnumerator();
+            var gameOutput = endpoints.EnumerateAudioEndPoints(DataFlow.Render, DeviceState.Active)
+                .SingleOrDefault(device => AudioDeviceIdentity.SameEndpoint(device.ID, _config.GameMpvAudioDeviceName));
+            if (gameOutput is null)
+                throw new InvalidOperationException("The configured game music output is unavailable.");
+            await DeviceTestSound.PlayAsync(gameOutput.ID, cancellation.Token);
+            if (ReferenceEquals(_b1PreviewToneCancellation, cancellation) && _b1Audition is not null)
+                SetB1AuditionUi(true, youtubePreview
+                    ? "A short tone was sent through the game output. YouTube stays audible alongside the quieter B1 preview; release to stop."
+                    : "A short tone was sent through the game output. You are hearing the B1 mix at 50%; release to restore normal listening.");
+        }
+        catch (OperationCanceledException) when (cancellation.IsCancellationRequested) { }
+        catch (Exception error)
+        {
+            if (ReferenceEquals(_b1PreviewToneCancellation, cancellation) && _b1Audition is not null)
+                SetB1AuditionUi(true, "Game mix preview is open, but the test tone could not play: " + error.Message);
+        }
+        finally
+        {
+            if (ReferenceEquals(_b1PreviewToneCancellation, cancellation)) _b1PreviewToneCancellation = null;
+            cancellation.Dispose();
+        }
+    }
+
     async Task StopB1AuditionAsync(string message)
     {
         await _b1AuditionGate.WaitAsync();
@@ -5063,6 +5096,9 @@ public partial class MainWindow : Window, IMacroActionHandler
 
     async Task StopB1AuditionCoreAsync(string message)
     {
+        var toneCancellation = _b1PreviewToneCancellation;
+        _b1PreviewToneCancellation = null;
+        toneCancellation?.Cancel();
         _b1Audition?.Dispose();
         _b1Audition = null;
         if (_youtubeRoute.IsAuditioning)
