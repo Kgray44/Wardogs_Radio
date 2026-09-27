@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  Windows 10/11 • Current release: <strong>v0.2.3</strong>
+  Windows 10/11 • Current release: <strong>v0.2.4</strong>
 </p>
 
 WARDOGS Radio is a Windows desktop app for playing music through your headset **and** your in-game voice output without having to rebuild an audio-routing science experiment every time you launch a game.
@@ -324,7 +324,9 @@ with a last-known-good backup.
 
 ## Requirements
 
-Before using WARDOGS Radio's full audio-routing features, make sure the following are available:
+WARDOGS Radio v0.2.4 includes a substantially improved installer and dependency-handling pass. The goal is simple: missing prerequisites should be caught and explained during installation/setup instead of turning into mysterious playback or routing failures later.
+
+You should still know what the important pieces are:
 
 ### Required: Voicemeeter Banana
 
@@ -342,7 +344,7 @@ WARDOGS Radio does **not** bundle, replace, or modify the Voicemeeter installati
 
 YouTube playback uses WebView2.
 
-Most current Windows systems already have WebView2 installed. WARDOGS Radio detects whether the runtime is available rather than pretending the player can work without it.
+Most current Windows systems already have WebView2 installed. The v0.2.4 installer/setup path now treats prerequisite detection as part of the normal installation experience, so a missing runtime should be surfaced clearly instead of becoming a vague YouTube-player failure later.
 
 ### Included: portable MPV
 
@@ -370,11 +372,9 @@ After installation, follow VB-Audio's normal reboot/restart requirements so the 
 
 ### 2. Install WARDOGS Radio
 
-Download the latest installer from [GitHub Releases](https://github.com/Kgray44/Wardogs_Radio/releases).
+Download **WARDOGS Radio v0.2.4** from [GitHub Releases](https://github.com/Kgray44/Wardogs_Radio/releases/latest).
 
-The current installer is:
-
-[**WARDOGS-Radio-Setup-v0.2.3.exe**](https://github.com/Kgray44/Wardogs_Radio/releases/download/v0.2.3/WARDOGS-Radio-Setup-v0.2.3.exe)
+v0.2.4 includes the updated installer/dependency pass, so fresh installs get much better prerequisite detection and a clearer path through anything the system still needs.
 
 The installer is per-user and places the application under:
 
@@ -537,6 +537,8 @@ The Launcher:
 - health-checks the updated application
 - still launches the installed copy if update checking fails
 
+v0.2.4 also includes a major installer/dependency hardening pass aimed specifically at fresh-machine reliability. Dependency problems should be detected and surfaced during installation/setup instead of waiting until the user discovers them halfway through playback or audio routing.
+
 An installed copy does **not** require internet access merely to launch and use local functionality.
 
 The installer bundles portable MPV, but does not bundle or alter:
@@ -589,6 +591,6 @@ No owner music, credentials, personal settings, or local build artifacts are int
 
 ## Current release
 
-**v0.2.3**
+**v0.2.4**
 
-[Download WARDOGS Radio v0.2.3](https://github.com/Kgray44/Wardogs_Radio/releases/tag/v0.2.3)
+[Download the latest WARDOGS Radio release](https://github.com/Kgray44/Wardogs_Radio/releases/latest)
