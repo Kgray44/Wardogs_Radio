@@ -18,7 +18,7 @@ Create stations like **Cruise**, **Combat**, **Night Ops**, or **Extraction**. F
 
 In other words: it is much closer to a little airborne radio console than a normal playlist player.
 
-> **Fresh install? You do not need to hunt down dependencies yourself.** WARDOGS Radio v0.2.4 handles its full runtime dependency stack through the installer: portable MPV is included, and the installer detects and offers the bundled official installers for **Microsoft Edge WebView2 Runtime** and **Voicemeeter Banana** only when they are missing. Voicemeeter's virtual-audio driver still requires Windows administrator approval and a restart.
+> **Fresh install? You do not need to hunt down dependencies yourself.** The installer bundles portable MPV and offers the official **Microsoft Edge WebView2 Runtime** and **Voicemeeter Banana** installers when needed. The unreleased Audio Bridge candidate requires Banana for automatic routing and starts its engine during app launch when safe. Voicemeeter's virtual-audio driver still requires Windows administrator approval and a restart.
 
 <img width="2057" height="1282" alt="image" src="https://github.com/user-attachments/assets/d34feeb1-a836-46f3-8678-2b4cc6e2bec3" />
 
@@ -239,21 +239,21 @@ WARDOGS Radio does not ship credentials or fake a healthy provider connection be
 
 ### 🔊 Route music into your game
 
-WARDOGS Radio uses **Voicemeeter Banana** as the main audio-routing backend.
+WARDOGS Radio uses **Voicemeeter Banana** as its supported audio-routing backend. The Audio Bridge attempts to start and connect Banana at launch. Setup & Repair then asks you to choose a microphone and headphones, connect the game-voice path, and verify it with live checks.
 
 At a high level:
 
 ```text
-WARDOGS Radio music ─┐
-                     ├──→ Voicemeeter Banana ───→ Headphones
-Microphone ──────────┘                         └──→ B1 / Game Voice Input
+Local station ──→ MPV headset player ──→ selected headphones
+             └─→ MPV game player ──────→ Banana AUX ──→ B1 game input
+Microphone ────────────────────────────→ Banana physical input ──→ B1
 ```
 
 This lets you monitor your radio in your own headset while also sending the intended mix into a game's voice input.
 
-The **Setup Wizard** and **Audio & Routing** page show live Voicemeeter strip and bus activity when the Remote API is connected.
+The five-step **Setup & Repair** flow uses the same readiness checks as Dashboard and Diagnostics. Audio & Routing retains the advanced strip, bus, and meter details. A moving B1 meter confirms the measured output, while game reception still needs your confirmation.
 
-For YouTube playback, WARDOGS Radio can temporarily manage the Windows listening route needed by the player and restore the previous output when that route is released or the application exits cleanly.
+For YouTube playback, WARDOGS Radio temporarily manages the Windows listening route needed by the player and checks ownership before restoring it. The [Audio Bridge candidate and live acceptance plan](docs/ReadinessAudioBridgeCandidate.md) describes the remaining hardware checks and limitations.
 
 ---
 
@@ -332,7 +332,7 @@ v0.2.4 ships with everything needed to handle the supported playback and routing
 | --- | --- |
 | **MPV** | Portable MPV is bundled directly with WARDOGS Radio. No separate MPV install is needed. |
 | **Microsoft Edge WebView2 Runtime** | The installer checks whether WebView2 already exists. If it is missing, the bundled official Microsoft installer is selected automatically and installs it silently. |
-| **Voicemeeter Banana** | The installer checks for Banana or compatible Voicemeeter Potato. If neither exists, the bundled official VB-Audio Banana installer is selected automatically. |
+| **Voicemeeter Banana** | The installer checks for Banana. If it is missing, the bundled official VB-Audio Banana installer is selected automatically. Potato alone does not satisfy the supported automatic-routing requirement. |
 
 ### Voicemeeter Banana
 
@@ -340,9 +340,9 @@ Voicemeeter Banana is still the audio-routing backend used for the supported mus
 
 The important difference in **v0.2.4** is that **you do not need to go download and install it separately before WARDOGS Radio**.
 
-If Banana or Potato is already installed, WARDOGS Radio leaves it alone.
+If Banana is already installed, WARDOGS Radio leaves the installation alone. If another Voicemeeter edition is running, WARDOGS reports that automatic routing needs Banana and does not replace the running mixer.
 
-If neither is installed, the WARDOGS Radio installer offers the bundled official Banana setup automatically.
+If Banana is not installed, the WARDOGS Radio installer offers the bundled official Banana setup automatically.
 
 Because Voicemeeter installs a Windows virtual-audio driver, Windows will still require:
 

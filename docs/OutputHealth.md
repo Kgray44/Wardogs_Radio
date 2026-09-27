@@ -1,6 +1,6 @@
 # Clip Guard / Output Health
 
-Clip Guard observes the configured Voicemeeter game-voice bus (normally B1) through the Remote API. It displays music-input, microphone-input, and game-bus peaks as dBFS, with an amber peak-hold marker over each live meter, latches a clip indication, and records a small in-memory event trail. A missing meter is reported as unavailable; it is never treated as digital silence.
+Clip Guard consumes the Audio Bridge's sampled Banana microphone, music-input, and B1 game-bus levels. The app separately measures the Windows B1 endpoint and checks that the two observations agree before permitting automatic protection. It displays peaks as dBFS, with an amber peak-hold marker over each live meter, latches a clip indication, and records a small in-memory event trail. A missing or conflicting meter is unavailable for control; it is never treated as digital silence.
 
 ## Modes and controls
 

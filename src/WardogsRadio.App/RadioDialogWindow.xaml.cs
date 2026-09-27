@@ -17,6 +17,13 @@ public partial class RadioDialogWindow : Window
     public static bool Confirm(Window owner, string heading, string message, string acceptLabel = "CONFIRM") =>
         new RadioDialogWindow(heading, message, true, acceptLabel) { Owner = owner }.ShowDialog() == true;
 
+    public static bool Choose(Window owner, string heading, string message, string acceptLabel, string otherLabel)
+    {
+        var dialog = new RadioDialogWindow(heading, message, true, acceptLabel) { Owner = owner };
+        dialog.CancelButton.Content = otherLabel;
+        return dialog.ShowDialog() == true;
+    }
+
     public static void Inform(Window? owner, string heading, string message)
     {
         var dialog = new RadioDialogWindow(heading, message, false, "OK");

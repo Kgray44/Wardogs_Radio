@@ -63,7 +63,7 @@ public sealed class YouTubeTrackMetadata { public string VideoId { get; set; } =
 public sealed class RadioProfile { public Guid Id { get; set; } = Guid.NewGuid(); public string Name { get; set; } = "WARDOGS"; public List<Station> Stations { get; set; } = []; public List<RadioMacro> Macros { get; set; } = []; }
 public sealed class AppConfiguration
 {
-    public int SchemaVersion { get; set; } = MusicLibraryService.CurrentSchemaVersion; public bool SetupComplete { get; set; } public RadioProfile Profile { get; set; } = Defaults.Profile(); public MusicLibrary MusicLibrary { get; set; } = new();
+    public int SchemaVersion { get; set; } = MusicLibraryService.CurrentSchemaVersion; public bool SetupComplete { get; set; } public SetupVerification? SetupVerification { get; set; } public RadioProfile Profile { get; set; } = Defaults.Profile(); public MusicLibrary MusicLibrary { get; set; } = new();
     public ClipGuardSettings ClipGuard { get; set; } = new();
     public PlaybackMode DefaultPlaybackMode { get; set; } = PlaybackMode.Player; public bool CrossfadeEnabled { get; set; } = true; public double CrossfadeSeconds { get; set; } = .65; public TransitionCurve Curve { get; set; } = TransitionCurve.EqualPower;
     public double MasterVolume { get; set; } = .8; public double GameMasterVolume { get; set; } = .8; public double MicrophoneVolume { get; set; } = 1; public bool MicrophoneVolumeInitialized { get; set; }
@@ -76,6 +76,7 @@ public sealed class AppConfiguration
     public int? AutoMusicRouteStrip { get; set; } public bool? AutoMusicPreviousA1 { get; set; } public bool? AutoMusicPreviousB1 { get; set; }
     public string? AutoMusicPreviousHeadsetDeviceName { get; set; } public string? AutoMusicPreviousGameDeviceName { get; set; } public int? AutoMusicPreviousStripIndex { get; set; }
     public int? AutoMicrophoneStrip { get; set; } public string? AutoMicrophonePreviousDeviceName { get; set; }
+    public string? AutoMicrophonePreviousDriver { get; set; } public string? AutoMicrophoneAppliedDeviceName { get; set; }
     public bool? AutoMicrophonePreviousA1 { get; set; } public bool? AutoMicrophonePreviousB1 { get; set; } public int? AutoMicrophonePreviousStripIndex { get; set; }
 }
 public static class Defaults
@@ -94,13 +95,16 @@ public static class Defaults
 }
 public sealed class ConfigurationStore(string root)
 {
+    public event Action<ConfigurationSaveState>? SaveStateChanged;
     readonly JsonSerializerOptions _json = new() { WriteIndented = true, Converters = { new JsonStringEnumConverter() } };
     readonly SemaphoreSlim _saveGate = new(1, 1);
     public string Path => System.IO.Path.Combine(root, "config.json"); public string BackupPath => System.IO.Path.Combine(root, "config.last-good.json");
     public async Task<AppConfiguration> LoadAsync(CancellationToken ct = default) { Directory.CreateDirectory(root); try { if (!File.Exists(Path)) return new(); await using var s=File.OpenRead(Path); return Normalize(await JsonSerializer.DeserializeAsync<AppConfiguration>(s,_json,ct) ?? new()); } catch { if(File.Exists(BackupPath)){ await using var s=File.OpenRead(BackupPath); return Normalize(await JsonSerializer.DeserializeAsync<AppConfiguration>(s,_json,ct) ?? new()); } return new(); } }
     public async Task SaveAsync(AppConfiguration config, CancellationToken ct = default)
     {
-        await _saveGate.WaitAsync(ct);
+        SaveStateChanged?.Invoke(ConfigurationSaveState.Saving);
+        try { await _saveGate.WaitAsync(ct); }
+        catch { SaveStateChanged?.Invoke(ConfigurationSaveState.Failed); throw; }
         try
         {
             Directory.CreateDirectory(root);
@@ -128,6 +132,12 @@ public sealed class ConfigurationStore(string root)
             await using (var stream = File.Create(tmp)) await JsonSerializer.SerializeAsync(stream, config, _json, ct);
             if (File.Exists(Path)) File.Copy(Path, BackupPath, true);
             File.Move(tmp, Path, true);
+            SaveStateChanged?.Invoke(ConfigurationSaveState.Saved);
+        }
+        catch
+        {
+            SaveStateChanged?.Invoke(ConfigurationSaveState.Failed);
+            throw;
         }
         finally { _saveGate.Release(); }
     }
@@ -224,3 +234,4 @@ public sealed class ConfigurationStore(string root)
         _ => "patrol"
     };
 }
+public enum ConfigurationSaveState { Saving, Saved, Failed }

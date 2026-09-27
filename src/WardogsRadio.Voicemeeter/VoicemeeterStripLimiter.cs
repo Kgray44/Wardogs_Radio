@@ -43,6 +43,12 @@ public sealed class VoicemeeterStripLimiter(IVoicemeeterRemote remote)
             return false;
 
         var target = (float)Math.Clamp(ceilingDb, MinimumLimitDb, MaximumLimitDb);
+        if (_leasedStrip == targetStrip && _appliedLimitDb is { } priorApplied &&
+            Math.Abs(current - priorApplied) >= .1f)
+        {
+            detail = $"Limiter on strip {targetStrip} changed outside WARDOGS; it was left untouched.";
+            return false;
+        }
         if (_leasedStrip == targetStrip && _appliedLimitDb is { } applied && Math.Abs(applied - target) < .05f)
         {
             detail = $"Limiter active on strip {targetStrip} at {target:0.0} dB; its prior { _priorLimitDb:0.0} dB value will be restored when disabled or WARDOGS closes.";
@@ -75,6 +81,19 @@ public sealed class VoicemeeterStripLimiter(IVoicemeeterRemote remote)
         {
             detail = "WARDOGS does not currently own a Voicemeeter limiter setting.";
             return true;
+        }
+        if (!remote.TryGetParameterFloat(Parameter(strip), out var current))
+        {
+            detail = $"Could not read the limiter on strip {strip}; prior state remains available for retry.";
+            return false;
+        }
+        if (_appliedLimitDb is { } applied && Math.Abs(current - applied) >= .1f)
+        {
+            _leasedStrip = null;
+            _priorLimitDb = null;
+            _appliedLimitDb = null;
+            detail = $"Limiter on strip {strip} changed outside WARDOGS; it was left untouched.";
+            return false;
         }
         if (!remote.TrySetParameterFloat(Parameter(strip), prior) ||
             !remote.TryGetParameterFloat(Parameter(strip), out var verified) || Math.Abs(verified - prior) >= .1f)

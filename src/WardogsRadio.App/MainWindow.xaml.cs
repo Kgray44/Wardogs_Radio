@@ -1,6 +1,7 @@
 using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
+using System.Net.Http;
 using System.Text.Json;
 using System.Windows;
 using System.Windows.Automation;
@@ -14,6 +15,7 @@ using WardogsRadio.Core;
 using WardogsRadio.Diagnostics;
 using WardogsRadio.Input;
 using WardogsRadio.Playback;
+using WardogsRadio.Update;
 using WardogsRadio.Voicemeeter;
 
 namespace WardogsRadio.App;
@@ -116,18 +118,21 @@ public partial class MainWindow : Window, IMacroActionHandler
     readonly WrRadioPackageService _backupTransfer;
     readonly string? _startupPackagePath;
     readonly VoicemeeterRemote _vm = new();
+    readonly AudioBridgeService _bridge;
     readonly VoicemeeterStripLimiter _voicemeeterStripLimiter;
     readonly TemporaryYouTubeRoute _youtubeRoute;
     readonly XInputControllerService _controllers = new();
     readonly DiagnosticService _diagnostics;
     readonly VirtualPlaybackTimeline _timeline = new(new SystemClock());
     readonly WindowsAudioEndpointService _audioEndpoints = new();
+    readonly SemaphoreSlim _endpointDiscoveryGate = new(1, 1);
     readonly WindowsAudioPeakMeter _headsetPeakMeter = new();
     readonly WindowsAudioCapturePeakMeter _gameBusEndpointPeakMeter = new();
     readonly ClipGuardController _clipGuard = new();
     readonly PrimaryPlaybackStartupCoordinator _youtubeStartupCoordinator = new();
     readonly BroadcastLevelTestSession _broadcastLevelTest = new();
     AppConfiguration _config = new();
+    bool _saveFailureVisible;
     OutputHealthSnapshot? _outputHealth;
     OutputTelemetryAssessment _outputTelemetry = new(OutputTelemetryConfidence.Unavailable, "B1 telemetry has not been sampled yet.");
     VoicemeeterMeterForensics? _meterForensics;
@@ -177,8 +182,7 @@ public partial class MainWindow : Window, IMacroActionHandler
     readonly Dictionary<uint, List<int>> _releaseHotkeys = [];
     readonly MacroHeldSourceTracker _heldMacroSources = new();
     readonly MacroExecutionEngine _macroEngine;
-    readonly MacroExecutionContext _setupRouteContext = new();
-    readonly List<(int Strip, string Route)> _setupChangedRoutes = [];
+    readonly List<AudioRouteLease> _setupRouteLeases = [];
     readonly DispatcherTimer _playbackTimer = new() { Interval = TimeSpan.FromSeconds(1) };
     // Keep normal mixer telemetry at the known-good 5 Hz cadence.  Diagnostics
     // performs the expensive raw scans only while its page is visible.
@@ -215,6 +219,8 @@ public partial class MainWindow : Window, IMacroActionHandler
     {
         _startupPackagePath = startupPackagePath;
         InitializeComponent();
+        var configurationRoot = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "WARDOGS Radio");
+        _bridge = new AudioBridgeService(_vm, recoveryPath: Path.Combine(configurationRoot, "audio-bridge-recovery.json"));
         _trayMenu = new ContextMenu { Placement = PlacementMode.MousePoint, StaysOpen = false };
         var openTrayMenuItem = new MenuItem { Header = "Open WARDOGS Radio" };
         openTrayMenuItem.Click += (_, _) => QueueRestoreFromTray();
@@ -243,12 +249,23 @@ public partial class MainWindow : Window, IMacroActionHandler
             else if (e.Button == System.Windows.Forms.MouseButtons.Right)
                 Dispatcher.BeginInvoke(DispatcherPriority.ContextIdle, new Action(() => _trayMenu.IsOpen = true));
         };
-        _voicemeeterStripLimiter = new VoicemeeterStripLimiter(_vm);
-        _youtubeRoute = new TemporaryYouTubeRoute(_vm);
-        var configurationRoot = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "WARDOGS Radio");
+        _voicemeeterStripLimiter = _bridge.Limiter;
+        _youtubeRoute = new TemporaryYouTubeRoute(_bridge);
         _store = new ConfigurationStore(configurationRoot);
+        _store.SaveStateChanged += state => Dispatcher.BeginInvoke(() =>
+        {
+            if (state == ConfigurationSaveState.Failed) _saveFailureVisible = true;
+            if (state == ConfigurationSaveState.Saved) _saveFailureVisible = false;
+            SaveStateText.Text = _saveFailureVisible ? "⚠ Could not save · Check Settings or retry" : state switch
+            {
+                ConfigurationSaveState.Saving => "Saving…",
+                ConfigurationSaveState.Saved => "✓ Saved",
+                _ => "⚠ Could not save"
+            };
+            SaveStateText.Foreground = (System.Windows.Media.Brush)FindResource(_saveFailureVisible ? "AmberBrush" : "OliveBrush");
+        });
         _backupTransfer = new WrRadioPackageService(configurationRoot);
-        _diagnostics = new DiagnosticService(_vm, _controllers);
+        _diagnostics = new DiagnosticService(_bridge, _controllers);
         _macroEngine = new MacroExecutionEngine(this);
         _macroEngine.ExecutionStarted += (_, id) => Dispatcher.BeginInvoke(() => { _runningMacros.Add(id); RefreshCollections(); });
         _macroEngine.ExecutionFinished += (_, id) => Dispatcher.BeginInvoke(() => { _runningMacros.Remove(id); RefreshCollections(); });
@@ -281,7 +298,7 @@ public partial class MainWindow : Window, IMacroActionHandler
         _loadingPlaybackSettings = true;
         foreach (var station in _config.Profile.Stations) station.Runtime.IsOnAir = false;
         MpvPathBox.Text = _config.MpvPath;
-        MpvProviderState.Text = new MpvLocator().Find(_config.MpvPath) is null ? "NEEDS SETUP" : "READY";
+        RefreshMpvAdvancedStatus();
         MasterVolume.Value = _config.MasterVolume;
         GameMasterVolume.Value = _config.GameMasterVolume;
         LoadClipGuardControls();
@@ -299,7 +316,13 @@ public partial class MainWindow : Window, IMacroActionHandler
         RefreshCollections();
         await LoadAudioEndpointsAsync();
         await LoadMpvOutputsAsync();
-        _vm.TryLogin(out _);
+        var bridgeStart = await _bridge.EnsureReadyAsync();
+        if (!bridgeStart.Success) Footer.Text = "AUDIO BRIDGE NEEDS ATTENTION · " + bridgeStart.Detail;
+        else
+        {
+            var bridgeRecovery = await _bridge.RecoverOwnedRoutesAsync();
+            if (!bridgeRecovery.Success) Footer.Text = "AUDIO BRIDGE RECOVERY NEEDS ATTENTION · " + bridgeRecovery.Detail;
+        }
         // Stabilization: release any old limiter lease. Clip Guard remains
         // telemetry-only and is not allowed to alter the playback path.
         ReconcileVoicemeeterLimiter();
@@ -310,6 +333,7 @@ public partial class MainWindow : Window, IMacroActionHandler
         }
         PopulateMusicStrips();
         await InitializeMicrophoneVolumeAsync();
+        _bridge.StartTelemetry(_config.MicrophoneStripIndex, _config.MusicStripIndex);
         RegisterHotkeys();
         StartControllerInput();
         RefreshCollections();
@@ -839,7 +863,7 @@ public partial class MainWindow : Window, IMacroActionHandler
     {
         if (action.Kind is ActionKind.Delay or ActionKind.OpenPage) return true;
         if (action.Kind == ActionKind.LaunchApplication) return !string.IsNullOrWhiteSpace(action.Argument) && File.Exists(action.Argument);
-        if (action.Kind == ActionKind.OpenVoicemeeter) return FindVoicemeeterExecutable(_vm.Probe().Edition) is not null;
+        if (action.Kind == ActionKind.OpenVoicemeeter) return FindVoicemeeterExecutable(_bridge.Probe().Edition) is not null;
         if (action.Kind is ActionKind.SetPlayerMode or ActionKind.SetRadioMode) return true;
         if (action.Kind == ActionKind.CycleStations) return _config.Profile.Stations.Any(station => station.Enabled);
         if (action.Kind is ActionKind.PlayCurrentStation or ActionKind.PauseCurrentStation)
@@ -855,7 +879,7 @@ public partial class MainWindow : Window, IMacroActionHandler
         if (action.Kind is ActionKind.ToggleGameRoute or ActionKind.EnableGameRoute or ActionKind.DisableGameRoute or
             ActionKind.RestorePreviousBroadcastState or ActionKind.ToggleMonitorRoute or ActionKind.EnableMonitorRoute or
             ActionKind.DisableMonitorRoute or ActionKind.RestorePreviousMonitorState)
-            return _config.MusicStripIndex is { } strip && new VoicemeeterRouteController(_vm).TryRead(strip,
+            return _config.MusicStripIndex is { } strip && _bridge.TryReadRoute(strip,
                 action.Kind is ActionKind.ToggleMonitorRoute or ActionKind.EnableMonitorRoute or ActionKind.DisableMonitorRoute or ActionKind.RestorePreviousMonitorState
                     ? "A1" : _config.GameBus, out _);
         if (action.Kind is ActionKind.SetStationGain or ActionKind.RestorePreviousStationGain)
@@ -874,8 +898,36 @@ public partial class MainWindow : Window, IMacroActionHandler
         return false;
     }
 
-    void Show(UIElement element, string title, string caption, Button nav)
+    bool _setupHasUncommittedChanges;
+
+    async void Show(UIElement element, string title, string caption, Button nav)
     {
+        if (SetupView.Visibility == Visibility.Visible && element != SetupView && _setupHasUncommittedChanges)
+        {
+            var undo = RadioDialogWindow.Choose(this, "Leave Setup & Repair?",
+                "You changed audio routing during this Setup visit. Undo those changes, or keep the configuration as it is now. The live checks remain unverified until you finish Setup.",
+                "UNDO CHANGES", "KEEP CHANGES");
+            if (undo)
+            {
+                if (!await UndoSetupVisitAsync()) return;
+            }
+            else
+            {
+                foreach (var lease in _setupRouteLeases.ToArray())
+                {
+                    var committed = await _bridge.CommitRouteAsync(lease);
+                    if (!committed.Success)
+                    {
+                        Footer.Text = "CANNOT KEEP ROUTE YET · " + committed.Detail;
+                        return;
+                    }
+                    _setupRouteLeases.Remove(lease);
+                }
+            }
+            _setupHasUncommittedChanges = false;
+            _setupVisit = null;
+        }
+        if (element != SetupView) _gameFeedTestCancellation?.Cancel();
         foreach (var view in new UIElement[] { DashboardView, StationsView, LibraryView, MacrosView, AudioView, SettingsView, DiagnosticsView, SetupView })
             view.Visibility = Visibility.Collapsed;
         element.Visibility = Visibility.Visible;
@@ -899,7 +951,7 @@ public partial class MainWindow : Window, IMacroActionHandler
     }
     void Macros_Click(object s, RoutedEventArgs e) => Show(MacrosView, "MACROS", "Your radio shortcuts", MacrosNav);
     void Audio_Click(object s, RoutedEventArgs e) => Show(AudioView, "AUDIO & ROUTING", "Where your sound goes", AudioNav);
-    void Settings_Click(object s, RoutedEventArgs e) { RefreshRecentBackups(); Show(SettingsView, "SETTINGS", "Music, providers, and controls", SettingsNav); }
+    void Settings_Click(object s, RoutedEventArgs e) { RefreshRecentBackups(); RefreshMpvAdvancedStatus(); Show(SettingsView, "SETTINGS", "Playback preferences and application", SettingsNav); }
 
     void RefreshRecentBackups()
     {
@@ -1099,29 +1151,79 @@ public partial class MainWindow : Window, IMacroActionHandler
         }
         catch (Exception error) { RadioDialogWindow.Inform(this, "Restore could not be completed", error.Message); }
     }
-    void CheckForUpdates_Click(object sender, RoutedEventArgs e)
+    async void CheckForUpdates_Click(object sender, RoutedEventArgs e)
     {
         var launcher = Path.Combine(AppContext.BaseDirectory, "WARDOGS Radio Launcher.exe");
         if (!File.Exists(launcher)) { RadioDialogWindow.Inform(this, "Launcher unavailable", "Updates are available from the installed WARDOGS Radio Launcher."); return; }
-        Process.Start(new ProcessStartInfo(launcher) { UseShellExecute = true, WorkingDirectory = AppContext.BaseDirectory });
-        _exitRequested = true;
-        Close();
+        var versionPath = Path.Combine(AppContext.BaseDirectory, "VERSION");
+        if (!File.Exists(versionPath) || !SemanticVersion.TryParse(File.ReadAllText(versionPath).Trim(), out var installed))
+        {
+            RadioDialogWindow.Inform(this, "Installed version unavailable", "This development or incomplete installation has no valid VERSION file. Use the installed launcher to check releases.");
+            return;
+        }
+        Footer.Text = "CHECKING OFFICIAL STABLE RELEASE…";
+        try
+        {
+            using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(8) };
+            var json = await client.GetStringAsync(ReleaseManifestValidator.LatestManifestUrl);
+            var decision = ReleaseManifestValidator.Decide(true, json, installed, installed, out var release, out var reason);
+            if (decision != UpdateDecision.InstallUpdate || release is null)
+            {
+                RadioDialogWindow.Inform(this, "Update check complete", reason == "Installed version is current or newer."
+                    ? $"WARDOGS Radio v{installed} is current." : reason);
+                Footer.Text = "UPDATE CHECK · " + reason;
+                return;
+            }
+            Footer.Text = $"UPDATE AVAILABLE · v{release.Version}";
+            if (!RadioDialogWindow.Confirm(this, $"WARDOGS Radio v{release.Version} is available",
+                    $"The installed version is v{installed}. Restart now to let the verified launcher download and install v{release.Version}? Your current station will stop.",
+                    "RESTART & UPDATE")) return;
+            Process.Start(new ProcessStartInfo(launcher) { UseShellExecute = true, WorkingDirectory = AppContext.BaseDirectory });
+            _exitRequested = true;
+            Close();
+        }
+        catch (Exception error)
+        {
+            Footer.Text = "UPDATE CHECK UNAVAILABLE · " + error.Message;
+            RadioDialogWindow.Inform(this, "Update check unavailable", "The official release manifest could not be checked. Your radio remains open. " + error.Message);
+        }
     }
     void Diagnostics_Click(object s, RoutedEventArgs e) { Show(DiagnosticsView, "DIAGNOSTICS", "Check what's connected", DiagnosticsNav); RunDiagnostics(); }
-    void Setup_Click(object s, RoutedEventArgs e) { Show(SetupView, "SETUP WIZARD", "Get your audio ready", SetupNav); _setupStep = 0; ShowSetupStep(); RefreshSetupWizard(); }
+    void Setup_Click(object s, RoutedEventArgs e)
+    {
+        Show(SetupView, "SETUP & REPAIR", "Connect, test, and repair your audio", SetupNav);
+        if (_setupVisit is null) BeginSetupVisit();
+        var readiness = CaptureReadiness();
+        var checks = readiness.Checks.ToDictionary(check => check.Id);
+        _setupStep = readiness.Overall == OverallReadiness.Ready ? 4 :
+            new[] { "playback", "voicemeeter", "supported-topology" }.Any(id => checks[id].Severity != ReadinessSeverity.Ready) ? 0 :
+            checks["microphone"].Severity == ReadinessSeverity.NeedsAction ||
+            checks["listening"].Severity == ReadinessSeverity.NeedsAction ? 1 :
+            checks["game-route"].Severity == ReadinessSeverity.NeedsAction ||
+            checks["game-output"].Severity == ReadinessSeverity.NeedsAction ? 2 : 3;
+        ShowSetupStep();
+    }
 
     void SetupBack_Click(object sender, RoutedEventArgs e) { _setupStep = Math.Max(0, _setupStep - 1); ShowSetupStep(); }
-    void SetupNext_Click(object sender, RoutedEventArgs e) { _setupStep = Math.Min(9, _setupStep + 1); ShowSetupStep(); }
+    void SetupNext_Click(object sender, RoutedEventArgs e) { _setupStep = Math.Min(4, _setupStep + 1); ShowSetupStep(); }
 
     void ShowSetupStep()
     {
         var steps = new[] { SetupStepSystem, SetupStepConnect, SetupStepDevices, SetupStepMonitor, SetupStepRouting, SetupStepVerify, SetupStepProviders, SetupStepStations, SetupStepControls, SetupStepFinish };
-        var titles = new[] { "SYSTEM CHECK", "CONNECT VOICEMEETER", "MICROPHONE", "LISTENING OUTPUT", "GAME VOICE OUTPUT", "SIGNAL CHAIN TEST", "MUSIC SERVICES", "STATIONS", "CONTROLS", "READY CHECK" };
-        for (var index = 0; index < steps.Length; index++) steps[index].Visibility = index == _setupStep ? Visibility.Visible : Visibility.Collapsed;
+        var titles = new[] { "SYSTEM CHECK", "YOUR AUDIO DEVICES", "CONNECT TO GAME VOICE", "VERIFY YOUR RADIO", "READY" };
+        for (var index = 0; index < steps.Length; index++) steps[index].Visibility = index switch
+        {
+            0 or 1 when _setupStep == 0 => Visibility.Visible,
+            2 or 3 when _setupStep == 1 => Visibility.Visible,
+            4 when _setupStep == 2 => Visibility.Visible,
+            5 when _setupStep == 3 => Visibility.Visible,
+            9 when _setupStep == 4 => Visibility.Visible,
+            _ => Visibility.Collapsed
+        };
         SetupProgress.Value = _setupStep + 1;
-        SetupStepTitle.Text = $"STEP {_setupStep + 1} OF {steps.Length} · {titles[_setupStep]}";
+        SetupStepTitle.Text = $"STEP {_setupStep + 1} OF {titles.Length} · {titles[_setupStep]}";
         SetupBackButton.IsEnabled = _setupStep > 0;
-        SetupNextButton.IsEnabled = _setupStep < steps.Length - 1;
+        SetupNextButton.IsEnabled = _setupStep < titles.Length - 1;
         SetupView.ScrollToTop();
         RefreshSetupWizard();
     }
@@ -2065,10 +2167,23 @@ public partial class MainWindow : Window, IMacroActionHandler
                     throw new InvalidOperationException("Select the Voicemeeter music strip in Audio & Routing first.");
                 var route = action.Kind is ActionKind.ToggleMonitorRoute or ActionKind.EnableMonitorRoute or
                     ActionKind.DisableMonitorRoute or ActionKind.RestorePreviousMonitorState ? "A1" : _config.GameBus;
-                var routing = new VoicemeeterRouteController(_vm);
+                var ownershipKey = $"bridge-route:{musicStrip}:{route}";
                 string routeResult;
                 if (action.Kind is ActionKind.RestorePreviousBroadcastState or ActionKind.RestorePreviousMonitorState)
-                    routeResult = routing.Restore(musicStrip, route, context);
+                {
+                    if (!context.TryPeek<MacroRouteOwnership>(ownershipKey, out var ownership) || ownership is null)
+                        throw new InvalidOperationException("No previous Audio Bridge route state is available for this macro run.");
+                    if (ownership.Lease is { } lease)
+                    {
+                        var restored = await _bridge.ReleaseRouteAsync(lease, cancellationToken);
+                        if (restored != AudioLeaseReleaseState.Restored)
+                            throw new InvalidOperationException(restored == AudioLeaseReleaseState.ExternallyChanged
+                                ? "The route changed outside WARDOGS; the macro left it untouched."
+                                : "The Audio Bridge could not verify route restoration.");
+                    }
+                    context.TryRestore<MacroRouteOwnership>(ownershipKey, out _);
+                    routeResult = $"{route} route restored";
+                }
                 else
                 {
                     bool? enabled = action.Kind switch
@@ -2077,7 +2192,12 @@ public partial class MainWindow : Window, IMacroActionHandler
                         ActionKind.DisableGameRoute or ActionKind.DisableMonitorRoute => false,
                         _ => null
                     };
-                    routeResult = routing.Change(musicStrip, route, enabled, context);
+                    if (!_bridge.TryReadRoute(musicStrip, route, out var priorRoute))
+                        throw new InvalidOperationException("The Audio Bridge cannot read the selected route.");
+                    var result = await _bridge.ApplyRouteAsync("macro", musicStrip, route, enabled ?? !priorRoute, cancellationToken);
+                    if (!result.Success) throw new InvalidOperationException(result.Detail);
+                    context.Remember(ownershipKey, new MacroRouteOwnership(result.Lease));
+                    routeResult = result.Detail;
                 }
                 UpdateMusicStripState();
                 return routeResult;
@@ -2315,7 +2435,7 @@ public partial class MainWindow : Window, IMacroActionHandler
                 Process.Start(new ProcessStartInfo(action.Argument) { UseShellExecute = true });
                 return "Application launched";
             case ActionKind.OpenVoicemeeter:
-                var voicemeeterPath = FindVoicemeeterExecutable(_vm.Probe().Edition) ?? throw new FileNotFoundException("Voicemeeter application was not found.");
+                var voicemeeterPath = FindVoicemeeterExecutable(_bridge.Probe().Edition) ?? throw new FileNotFoundException("Voicemeeter application was not found.");
                 Process.Start(new ProcessStartInfo(voicemeeterPath) { UseShellExecute = true });
                 return "Voicemeeter opened";
             default:
@@ -2618,7 +2738,16 @@ public partial class MainWindow : Window, IMacroActionHandler
 
     async void Reconnect_Click(object s, RoutedEventArgs e)
     {
-        var ok = _vm.TryLogin(out var message);
+        var needsRecovery = !_bridge.RecoveryReady || !_bridge.Probe().Connected;
+        var result = await _bridge.EnsureReadyAsync();
+        var ok = result.Success;
+        var message = result.Detail;
+        if (ok && needsRecovery)
+        {
+            _bridgeRecoveryAttempts = 0;
+            var recovery = await _bridge.RecoverOwnedRoutesAsync();
+            if (!recovery.Success) { ok = false; message += " Recovery needs attention: " + recovery.Detail; }
+        }
         _signalStatus = null;
         PopulateMusicStrips();
         if (_config.ClipGuard.LimiterEnabled) ReconcileVoicemeeterLimiter();
@@ -2639,15 +2768,15 @@ public partial class MainWindow : Window, IMacroActionHandler
         }
         RunDiagnostics();
         RoutingDetail.Text = message;
-        HealthText.Text = ok ? "NEEDS SETUP · Check your game voice output" : "NEEDS SETUP · Connect Voicemeeter";
+        PublishReadiness(CaptureReadiness());
         RefreshSetupWizard();
     }
 
     void PopulateMusicStrips()
     {
-        var status = _vm.Probe();
-        var count = status.Edition switch { "Standard" => 3, "Banana" => 5, "Potato" => 8, _ => 0 };
-        var physicalCount = status.Edition switch { "Standard" => 2, "Banana" => 3, "Potato" => 5, _ => 0 };
+        var status = _bridge.Probe();
+        var count = status.Edition == _bridge.Topology.Edition ? 5 : 0;
+        var physicalCount = status.Edition == _bridge.Topology.Edition ? _bridge.Topology.PhysicalInputStrips.Count : 0;
         _loadingMusicStrips = true;
         var choices = new List<MusicStripChoice> { new(null, "Not configured") };
         for (var index = 0; index < count; index++) choices.Add(new(index, index < physicalCount
@@ -2682,7 +2811,7 @@ public partial class MainWindow : Window, IMacroActionHandler
         SetupMicStripBox.SelectedItem = (SetupMicStripBox.ItemsSource as IEnumerable<MusicStripChoice>)?.FirstOrDefault(x => x.Index == choice.Index);
         _loadingSetupControls = false;
         RefreshSignalMeters();
-        ApplyMicrophoneVolumeToMixer(out _);
+        await ApplyMicrophoneVolumeToMixerAsync();
         await _store.SaveAsync(_config);
     }
 
@@ -2695,7 +2824,7 @@ public partial class MainWindow : Window, IMacroActionHandler
         MicrophoneStripBox.SelectedItem = (MicrophoneStripBox.ItemsSource as IEnumerable<MusicStripChoice>)?.FirstOrDefault(x => x.Index == choice.Index);
         _loadingMusicStrips = false;
         RefreshSignalMeters();
-        ApplyMicrophoneVolumeToMixer(out _);
+        await ApplyMicrophoneVolumeToMixerAsync();
         await _store.SaveAsync(_config);
     }
 
@@ -2716,9 +2845,7 @@ public partial class MainWindow : Window, IMacroActionHandler
 
     bool HeadsetPlayerTargetsSelectedOutput()
     {
-        var endpointGuid = _config.MonitorDeviceId?.Split('{').LastOrDefault()?.TrimEnd('}');
-        return !string.IsNullOrWhiteSpace(endpointGuid) &&
-            _config.MpvAudioDeviceName?.Contains(endpointGuid, StringComparison.OrdinalIgnoreCase) == true;
+        return AudioDeviceIdentity.SameEndpoint(_config.MonitorDeviceId, _config.MpvAudioDeviceName);
     }
 
     void LoadClipGuardControls()
@@ -2966,7 +3093,7 @@ public partial class MainWindow : Window, IMacroActionHandler
                     if (EndYouTubeRoute("The temporary route stopped after its health check failed. " + issue))
                     {
                         _youtubeHeadsetRouteError = issue;
-                        Footer.Text = "YOUTUBE HEADSET ROUTE STOPPED · " + issue + " Windows output restored.";
+                        Footer.Text = "YOUTUBE HEADSET ROUTE STOPPED · " + issue + " Temporary route released where still owned.";
                     }
                 }
             }
@@ -2979,14 +3106,21 @@ public partial class MainWindow : Window, IMacroActionHandler
         }
         if (_signalStatus is null || DateTime.UtcNow >= _signalStatusExpires)
         {
-            _signalStatus = _vm.Probe();
+            _signalStatus = _bridge.Probe();
             _signalStatusExpires = DateTime.UtcNow.AddSeconds(2);
         }
         var status = _signalStatus;
-        var signals = new VoicemeeterSignalMonitor(_vm);
-        var microphone = status.Connected ? signals.ReadStrip(status.Edition, _config.MicrophoneStripIndex) : new SignalLevel(false, 0);
-        var music = status.Connected ? signals.ReadStrip(status.Edition, _config.MusicStripIndex) : new SignalLevel(false, 0);
-        var game = status.Connected ? signals.ReadBus(status.Edition, _config.GameBus) : new SignalLevel(false, 0);
+        _bridge.UpdateTelemetryTargets(_config.MicrophoneStripIndex, _config.MusicStripIndex);
+        var bridgeTelemetry = _bridge.Snapshot.Telemetry;
+        if (bridgeTelemetry is null || bridgeTelemetry.MicrophoneStrip != _config.MicrophoneStripIndex ||
+            bridgeTelemetry.MusicStrip != _config.MusicStripIndex ||
+            DateTimeOffset.UtcNow - bridgeTelemetry.CapturedAt > TimeSpan.FromSeconds(1))
+            bridgeTelemetry = _bridge.SampleTelemetry(_config.MicrophoneStripIndex, _config.MusicStripIndex, status);
+        QueueAudioRecovery(status);
+        QueueEndpointRefresh();
+        var microphone = bridgeTelemetry.Microphone;
+        var music = bridgeTelemetry.Music;
+        var game = bridgeTelemetry.GameBus;
         var gameEndpointAvailable = _gameBusEndpointPeakMeter.TryRead(_gameOutputEndpointId, out var gameEndpointPeak);
         var gameEndpoint = new SignalLevel(gameEndpointAvailable, gameEndpointPeak);
         _outputTelemetry = OutputTelemetryAssessor.Assess(game.Available, game.Peak, gameEndpoint.Available, gameEndpoint.Peak);
@@ -2995,7 +3129,7 @@ public partial class MainWindow : Window, IMacroActionHandler
         if (status.Connected && DiagnosticsView.Visibility == Visibility.Visible && DateTime.UtcNow >= _nextMeterForensicsCapture)
         {
             _nextMeterForensicsCapture = DateTime.UtcNow.AddSeconds(1);
-            try { _meterForensics = signals.CaptureForensics(status.Edition); }
+            try { _meterForensics = _bridge.CaptureMeterForensics(status.Edition); }
             catch { /* Diagnostics reports the last valid snapshot; meter polling never interrupts playback. */ }
         }
         // The Remote API B1 path is the Clip Guard control sensor only after its
@@ -3033,7 +3167,11 @@ public partial class MainWindow : Window, IMacroActionHandler
         var audioVisible = AudioView.Visibility == Visibility.Visible;
         var setupVisible = SetupView.Visibility == Visibility.Visible;
         if (audioVisible) UpdateOutputHealthUi(_outputHealth);
-        UpdateGameVoiceBadge(status.Connected, game, gameEndpoint);
+        if (DateTime.UtcNow >= _nextReadinessRefresh)
+        {
+            _nextReadinessRefresh = DateTime.UtcNow.AddSeconds(2);
+            PublishReadiness(CaptureReadiness(status));
+        }
         var microphoneBar = VoicemeeterSignalMonitor.BarValue(microphone);
         var musicBar = VoicemeeterSignalMonitor.BarValue(music);
         var gameBar = VoicemeeterSignalMonitor.BarValue(game);
@@ -3068,7 +3206,7 @@ public partial class MainWindow : Window, IMacroActionHandler
             MusicMeter.Value = musicBar;
             GameMeter.Value = gameBar;
             MonitorMeter.Value = monitorBar;
-            MicMeterLabel.Text = !status.Connected ? "MICROPHONE · CONNECT VOICEMEETER" : _config.MicrophoneStripIndex is null ? "MICROPHONE · CHOOSE INPUT" : !microphone.Available ? "MICROPHONE · METER UNAVAILABLE" : microphone.Peak > .005f ? "MICROPHONE · SIGNAL DETECTED" : "MICROPHONE · NO SIGNAL (SPEAK TO TEST)";
+            MicMeterLabel.Text = !status.Connected ? "MICROPHONE · AUDIO BRIDGE NEEDS ATTENTION" : _config.MicrophoneStripIndex is null ? "MICROPHONE · CHOOSE INPUT" : !microphone.Available ? "MICROPHONE · METER UNAVAILABLE" : microphone.Peak > .005f ? "MICROPHONE · SIGNAL DETECTED" : "MICROPHONE · NO SIGNAL (SPEAK TO TEST)";
             HeadsetPlayerSignal.Text = _active?.ProviderId == "youtube"
                 ? _youtubePlayerReady ? _active.Runtime.WasPlaying ? "YOUTUBE PLAYER · playing" : "YOUTUBE PLAYER · ready / paused" : "YOUTUBE PLAYER · loading"
                 : _mpvProvider is null ? _active is null ? "HEADSET PLAYER · no station" : "HEADSET PLAYER · no local music player"
@@ -3077,7 +3215,7 @@ public partial class MainWindow : Window, IMacroActionHandler
                 : _active?.ProviderId == "youtube" ? _youtubeGameFeed is null ? "GAME MUSIC · YouTube route unavailable" : _youtubeGameFeed.Fault is not null ? "GAME MUSIC · YouTube route stopped: " + _youtubeGameFeed.Fault : _youtubeGameFeed.HasRecentSignal && music.Available && music.Peak <= VoicemeeterSignalMonitor.VisualSignalFloor ? "GAME FEED CAPTURED AUDIO BUT OUTPUT ROUTE IS SILENT" : _youtubeGameFeed.HasRecentSignal && music.Available ? "GAME MUSIC · source and selected Voicemeeter input show signal" : _youtubeGameFeed.HasRecentSignal ? "GAME MUSIC · source captured; configured Voicemeeter input meter unavailable" : "GAME MUSIC · waiting for YouTube audio"
                 : _gameMpvProvider is null ? "GAME MUSIC · configured but not connected" : _gameMpvProvider.Snapshot.IsPlaying ? "GAME MUSIC · playing" : "GAME MUSIC · ready / paused";
             var musicInputLabel = _config.GameMpvAudioDeviceName is null ? "VOICEMEETER MUSIC INPUT" : "GAME MUSIC INPUT";
-            MusicMeterLabel.Text = !status.Connected ? $"{musicInputLabel} · CONNECT VOICEMEETER" : _active?.ProviderId == "youtube" && _youtubeGameFeed is null ? "GAME MUSIC INPUT · YOUTUBE ROUTE UNAVAILABLE" : _config.GameMpvAudioDeviceName is null && _config.MpvAudioDeviceName is null ? $"{musicInputLabel} · PLAYER ROUTED DIRECTLY TO HEADSET" : _config.MusicStripIndex is null ? $"{musicInputLabel} · CHOOSE INPUT" : !music.Available ? $"{musicInputLabel} · METER UNAVAILABLE" : music.Peak > .005f ? $"{musicInputLabel} · SIGNAL DETECTED" : $"{musicInputLabel} · NO SIGNAL";
+            MusicMeterLabel.Text = !status.Connected ? $"{musicInputLabel} · AUDIO BRIDGE NEEDS ATTENTION" : _active?.ProviderId == "youtube" && _youtubeGameFeed is null ? "GAME MUSIC INPUT · YOUTUBE ROUTE UNAVAILABLE" : _config.GameMpvAudioDeviceName is null && _config.MpvAudioDeviceName is null ? $"{musicInputLabel} · PLAYER ROUTED DIRECTLY TO HEADSET" : _config.MusicStripIndex is null ? $"{musicInputLabel} · CHOOSE INPUT" : !music.Available ? $"{musicInputLabel} · METER UNAVAILABLE" : music.Peak > .005f ? $"{musicInputLabel} · SIGNAL DETECTED" : $"{musicInputLabel} · NO SIGNAL";
             GameMeterLabel.Text = _outputTelemetry.Confidence == OutputTelemetryConfidence.Conflicting ? "GAME VOICE BUS · OUTPUT TELEMETRY MISMATCH" : !game.Available ? "GAME VOICE BUS · METER UNAVAILABLE" : game.Peak > .005f ? "GAME VOICE BUS · SIGNAL DETECTED" : "GAME VOICE BUS · NO SIGNAL";
             MonitorMeterLabel.Text = string.IsNullOrWhiteSpace(_config.MonitorDeviceId) ? "HEADSET OUTPUT · CHOOSE HEADPHONES" : !monitor.Available ? "HEADSET OUTPUT · WINDOWS METER UNAVAILABLE" : monitor.Peak > .005f ? "HEADSET OUTPUT · SIGNAL DETECTED" : "HEADSET OUTPUT · NO SIGNAL";
         }
@@ -3110,9 +3248,8 @@ public partial class MainWindow : Window, IMacroActionHandler
             MusicStripState.Text = "Choose the input where WARDOGS music appears in Voicemeeter.";
             return;
         }
-        var routes = new VoicemeeterRouteController(_vm);
-        var game = routes.TryRead(strip, _config.GameBus, out var gameOn) ? (gameOn ? "ON" : "OFF") : "UNAVAILABLE";
-        var monitor = routes.TryRead(strip, "A1", out var monitorOn) ? (monitorOn ? "ON" : "OFF") : "UNAVAILABLE";
+        var game = _bridge.TryReadRoute(strip, _bridge.Topology.GameBus, out var gameOn) ? (gameOn ? "ON" : "OFF") : "UNAVAILABLE";
+        var monitor = _bridge.TryReadRoute(strip, _bridge.Topology.ListeningBus, out var monitorOn) ? (monitorOn ? "ON" : "OFF") : "UNAVAILABLE";
         var label = (MusicStripBox.SelectedItem as MusicStripChoice)?.Label ?? "Music input";
         MusicStripState.Text = _config.GameMpvAudioDeviceName is null
             ? $"{label} · Game voice: {game} · A1 listening: {monitor}"
@@ -3141,14 +3278,13 @@ public partial class MainWindow : Window, IMacroActionHandler
 
     async Task<bool> ObserveStripSignalAsync(int strip)
     {
-        var monitor = new VoicemeeterSignalMonitor(_vm);
-        var edition = _vm.Probe().Edition;
+        var edition = _bridge.Probe().Edition;
         if (edition is null) return false;
         var end = DateTime.UtcNow.AddSeconds(3);
         var seen = false;
         while (DateTime.UtcNow < end)
         {
-            var reading = monitor.ReadStrip(edition, strip);
+            var reading = _bridge.ReadStripSignal(strip, edition);
             seen |= reading.Available && reading.Peak > .005f;
             await Task.Delay(100);
         }
@@ -3161,17 +3297,17 @@ public partial class MainWindow : Window, IMacroActionHandler
         if (strip == _config.MusicStripIndex && selectedMusicPlaying) _sawMusicSignal |= seen;
         return seen;
     }
-    void SetupRouteMic_Click(object sender, RoutedEventArgs e)
+    async void SetupRouteMic_Click(object sender, RoutedEventArgs e)
     {
         if (_config.MicrophoneStripIndex is not { } strip) { Footer.Text = "Choose the microphone strip first."; return; }
-        EnableWizardRoutes((strip, _config.GameBus));
+        await EnableWizardRoutesAsync((strip, _bridge.Topology.GameBus));
     }
 
-    void SetupRouteMusic_Click(object sender, RoutedEventArgs e)
+    async void SetupRouteMusic_Click(object sender, RoutedEventArgs e)
     {
         if (_config.MusicStripIndex is not { } strip) { Footer.Text = "Choose the music strip first."; return; }
-        if (HeadsetPlayerTargetsSelectedOutput()) EnableWizardRoutes((strip, _config.GameBus));
-        else EnableWizardRoutes((strip, _config.GameBus), (strip, "A1"));
+        if (HeadsetPlayerTargetsSelectedOutput()) await EnableWizardRoutesAsync((strip, _bridge.Topology.GameBus));
+        else await EnableWizardRoutesAsync((strip, _bridge.Topology.GameBus), (strip, _bridge.Topology.ListeningBus));
     }
 
     async void SetupAutomaticMicrophone_Click(object sender, RoutedEventArgs e)
@@ -3186,13 +3322,13 @@ public partial class MainWindow : Window, IMacroActionHandler
 
     async Task<bool> ConfigureAutomaticMicrophoneAsync(WindowsAudioEndpoint microphone)
     {
-        var status = _vm.Probe();
+        var status = _bridge.Probe();
         if (!status.Connected || status.Edition != "Banana")
         {
             Footer.Text = "AUTO MICROPHONE SETUP NEEDS A CONNECTED VOICEMEETER BANANA ENGINE.";
             return false;
         }
-        var device = _vm.ListAudioDevices(true)
+        var device = _bridge.ListAudioDevices(true)
             .Where(x => x.InterfaceType == 3 && x.Name.Equals(microphone.Name, StringComparison.OrdinalIgnoreCase))
             .FirstOrDefault();
         if (device is null)
@@ -3210,134 +3346,207 @@ public partial class MainWindow : Window, IMacroActionHandler
         }
         var ownedStrip = _config.AutoMicrophoneStrip;
         var strip = ownedStrip ?? Enumerable.Range(0, 3).FirstOrDefault(index =>
-            _vm.TryGetParameterString($"Strip[{index}].device.name", out var name) && string.IsNullOrWhiteSpace(name), -1);
+            _bridge.TryReadDevice(index, out var name) && string.IsNullOrWhiteSpace(name), -1);
         if (strip < 0)
         {
             Footer.Text = "ALL PHYSICAL VOICEMEETER INPUTS ARE ASSIGNED. AUTO SETUP WILL NOT REPLACE AN EXISTING DEVICE.";
             return false;
         }
-        var meter = new VoicemeeterSignalMonitor(_vm).ReadStrip(status.Edition, strip);
+        var meter = _bridge.ReadStripSignal(strip, status.Edition);
         if (!meter.Available || ownedStrip is null && meter.Peak > .005f)
         {
             Footer.Text = "THE FREE PHYSICAL INPUT HAS LIVE SIGNAL OR NO READABLE METER; AUTO SETUP WILL NOT TAKE IT OVER.";
             return false;
         }
-        var routes = new VoicemeeterRouteController(_vm);
-        if (!routes.TryRead(strip, "A1", out var priorA1) || !routes.TryRead(strip, _config.GameBus, out var priorB1))
+        if (!_bridge.TryReadRoute(strip, _bridge.Topology.ListeningBus, out var priorA1) ||
+            !_bridge.TryReadRoute(strip, _bridge.Topology.GameBus, out var priorB1))
         {
             Footer.Text = "CANNOT READ MICROPHONE ROUTES; NOTHING CHANGED.";
             return false;
         }
         var priorStrip = _config.MicrophoneStripIndex;
-        _vm.TryGetParameterString($"Strip[{strip}].device.name", out var priorDevice);
+        _bridge.TryReadDevice(strip, out var priorDevice);
         if (ownedStrip is not null && string.Equals(priorDevice, device.Name, StringComparison.OrdinalIgnoreCase))
         {
+            var previousSelection = _config.MicrophoneDeviceId;
             _config.MicrophoneDeviceId = microphone.Id;
             await _store.SaveAsync(_config);
+            if (SetupView.Visibility == Visibility.Visible && previousSelection != microphone.Id)
+                _setupHasUncommittedChanges = true;
             await InitializeMicrophoneVolumeAsync();
             Footer.Text = $"MICROPHONE ALREADY CONNECTED · {device.Name} → {_config.GameBus}.";
             return true;
         }
         var driver = device.InterfaceName.ToLowerInvariant();
         var connected = false;
+        var routeLeases = new List<AudioRouteLease>();
+        AudioDeviceLease? deviceLease = null;
+        var formerConfig = (_config.MicrophoneStripIndex, _config.MicrophoneDeviceId, _config.AutoMicrophoneStrip,
+            _config.AutoMicrophonePreviousDeviceName, _config.AutoMicrophonePreviousDriver,
+            _config.AutoMicrophoneAppliedDeviceName, _config.AutoMicrophonePreviousA1,
+            _config.AutoMicrophonePreviousB1, _config.AutoMicrophonePreviousStripIndex, _config.SetupComplete);
+        var priorDriver = _bridge.ListAudioDevices(true).FirstOrDefault(candidate =>
+            candidate.Name.Equals(priorDevice, StringComparison.OrdinalIgnoreCase))?.InterfaceName.ToLowerInvariant() ?? driver;
         try
         {
-            if (!_vm.TrySetParameterString($"Strip[{strip}].device.{driver}", device.Name))
-                throw new InvalidOperationException("Voicemeeter refused the microphone device assignment.");
-            connected = true;
-            if (!_vm.TrySetParameterFloat($"Strip[{strip}].A1", 0) || !_vm.TrySetParameterFloat($"Strip[{strip}].{_config.GameBus}", 1))
-                throw new InvalidOperationException("Voicemeeter refused microphone routing.");
-            var assigned = false;
-            for (var attempt = 0; attempt < 20; attempt++)
+            var assignment = await _bridge.SetDeviceAsync("automatic microphone setup", $"Strip[{strip}].device.{driver}",
+                $"Strip[{strip}].device.name", device.Name,
+                current => AudioBridgeService.MatchesDeviceName(current, device.Name), persistLease: true);
+            deviceLease = assignment.DeviceLease ?? _bridge.OwnedDevices.FirstOrDefault(lease =>
+                lease.Owner == "automatic microphone setup" && lease.ReadbackResource == $"Strip[{strip}].device.name");
+            if (!assignment.Success)
             {
-                await Task.Delay(100);
-                if (_vm.TryGetParameterString($"Strip[{strip}].device.name", out var current) && current.Contains(device.Name, StringComparison.OrdinalIgnoreCase))
-                {
-                    assigned = true;
-                    break;
-                }
+                connected = _bridge.TryReadDevice(strip, out var current) && AudioBridgeService.MatchesDeviceName(current, device.Name);
+                throw new InvalidOperationException(assignment.Detail);
             }
-            if (!assigned) throw new InvalidOperationException("Voicemeeter did not report the selected microphone on its physical input.");
+            connected = true;
+            foreach (var (bus, enabled) in new[] { (_bridge.Topology.ListeningBus, false), (_bridge.Topology.GameBus, true) })
+            {
+                var route = await _bridge.ApplyRouteAsync("automatic microphone setup", strip, bus, enabled);
+                if (!route.Success) throw new InvalidOperationException(route.Detail);
+                if (route.Lease is { } lease) routeLeases.Add(lease);
+            }
             if (ownedStrip is null)
             {
                 _config.AutoMicrophoneStrip = strip;
                 _config.AutoMicrophonePreviousDeviceName = priorDevice;
+                _config.AutoMicrophonePreviousDriver = priorDriver;
                 _config.AutoMicrophonePreviousA1 = priorA1;
                 _config.AutoMicrophonePreviousB1 = priorB1;
                 _config.AutoMicrophonePreviousStripIndex = priorStrip;
             }
+            _config.AutoMicrophoneAppliedDeviceName = device.Name;
             _config.MicrophoneStripIndex = strip;
             _config.MicrophoneDeviceId = microphone.Id;
             InvalidateSignalVerification();
             await _store.SaveAsync(_config);
+            if (SetupView.Visibility == Visibility.Visible && _setupVisit is { } visit)
+            {
+                visit.RecordRoute(strip, _bridge.Topology.ListeningBus, priorA1, false);
+                visit.RecordRoute(strip, _bridge.Topology.GameBus, priorB1, true);
+                if (!string.Equals(priorDevice, device.Name, StringComparison.OrdinalIgnoreCase))
+                    visit.RecordDevice(strip, priorDevice ?? "", device.Name, priorDriver);
+                _setupHasUncommittedChanges = true;
+            }
+            if (deviceLease is { } assignedLease)
+            {
+                var committedDevice = await _bridge.CommitDeviceAsync(assignedLease);
+                if (!committedDevice.Success)
+                {
+                    Footer.Text = "MICROPHONE CONFIGURATION SAVED, BUT DEVICE OWNERSHIP NEEDS ATTENTION · " + committedDevice.Detail;
+                    return false;
+                }
+                deviceLease = null;
+            }
+            foreach (var lease in routeLeases)
+            {
+                var committed = await _bridge.CommitRouteAsync(lease);
+                if (!committed.Success)
+                {
+                    Footer.Text = "MICROPHONE CONFIGURATION SAVED, BUT ROUTE OWNERSHIP NEEDS ATTENTION · " + committed.Detail;
+                    return false;
+                }
+            }
             PopulateMusicStrips();
             await InitializeMicrophoneVolumeAsync();
             RefreshSignalMeters();
+            if (SetupView.Visibility == Visibility.Visible) _setupHasUncommittedChanges = true;
             Footer.Text = $"MICROPHONE ASSIGNED TO VOICEMEETER HARDWARE INPUT {strip + 1} → {_config.GameBus}; A1 SELF-MONITORING OFF. SPEAK TO VERIFY ITS LIVE METER.";
             RefreshSetupWizard();
             return true;
         }
         catch (Exception error)
         {
-            if (connected) _vm.TrySetParameterString($"Strip[{strip}].device.{driver}", priorDevice);
-            _vm.TrySetParameterFloat($"Strip[{strip}].A1", priorA1 ? 1 : 0);
-            _vm.TrySetParameterFloat($"Strip[{strip}].{_config.GameBus}", priorB1 ? 1 : 0);
-            Footer.Text = "AUTO MICROPHONE SETUP FAILED · Previous route restored where possible · " + error.Message;
+            var restoreErrors = new List<string>();
+            foreach (var lease in routeLeases.AsEnumerable().Reverse())
+            {
+                var state = await _bridge.ReleaseRouteAsync(lease);
+                if (state != AudioLeaseReleaseState.Restored) restoreErrors.Add($"{lease.Resource}: {state}");
+            }
+            if (deviceLease is { } pendingDevice)
+            {
+                var restored = await _bridge.ReleaseDeviceAsync(pendingDevice);
+                if (restored != AudioLeaseReleaseState.Restored)
+                    restoreErrors.Add($"{pendingDevice.ReadbackResource}: {restored}");
+            }
+            else if (connected)
+            {
+                if (!_bridge.TryReadDevice(strip, out var currentDevice)) restoreErrors.Add("Cannot read microphone assignment.");
+                else if (!AudioBridgeService.MatchesDeviceName(currentDevice, device.Name))
+                    restoreErrors.Add("Microphone assignment changed outside WARDOGS; it was left untouched.");
+                else
+                {
+                    var restored = await _bridge.SetDeviceAsync("automatic microphone rollback",
+                        $"Strip[{strip}].device.{priorDriver}", $"Strip[{strip}].device.name", priorDevice,
+                        current => current.Equals(priorDevice, StringComparison.OrdinalIgnoreCase));
+                    if (!restored.Success) restoreErrors.Add(restored.Detail);
+                }
+            }
+            if (restoreErrors.Count == 0)
+            {
+                (_config.MicrophoneStripIndex, _config.MicrophoneDeviceId, _config.AutoMicrophoneStrip,
+                    _config.AutoMicrophonePreviousDeviceName, _config.AutoMicrophonePreviousDriver,
+                    _config.AutoMicrophoneAppliedDeviceName, _config.AutoMicrophonePreviousA1,
+                    _config.AutoMicrophonePreviousB1, _config.AutoMicrophonePreviousStripIndex, _config.SetupComplete) = formerConfig;
+            }
+            try { await _store.SaveAsync(_config); }
+            catch (Exception saveError) { restoreErrors.Add("Configuration save failed: " + saveError.Message); }
+            Footer.Text = "AUTO MICROPHONE SETUP FAILED · " + error.Message +
+                (restoreErrors.Count == 0 ? " · Prior mixer state restored." : " · Restore needs attention: " + string.Join("; ", restoreErrors));
             return false;
         }
     }
 
-    async void SetupAutomaticMusic_Click(object sender, RoutedEventArgs e)
+    async void SetupAutomaticMusic_Click(object sender, RoutedEventArgs e) => await ConfigureAutomaticMusicAsync();
+
+    async Task<bool> ConfigureAutomaticMusicAsync()
     {
-        var status = _vm.Probe();
+        var status = _bridge.Probe();
         if (!status.Connected || status.Edition != "Banana")
         {
             Footer.Text = "AUTO MUSIC SETUP NEEDS A CONNECTED VOICEMEETER BANANA ENGINE.";
-            return;
+            return false;
         }
         if (SetupMonitorBox.SelectedItem is not WindowsAudioEndpoint headset)
         {
             Footer.Text = "CHOOSE YOUR HEADPHONES ON STEP 4 FIRST.";
-            return;
+            return false;
         }
         const int auxStrip = 4;
         if (_config.AutoMusicRouteStrip is { } savedStrip && savedStrip != auxStrip)
         {
             Footer.Text = "RESTORE THE PREVIOUS AUTO MUSIC ROUTE BEFORE CHANGING STRIPS.";
-            return;
+            return false;
         }
         var devices = (GameMpvOutputBox.ItemsSource as IEnumerable<MpvAudioDevice>)?.ToList() ?? [];
-        var headsetId = headset.Id.Split('{').LastOrDefault()?.TrimEnd('}');
-        var headsetDevice = devices.FirstOrDefault(x => !string.IsNullOrWhiteSpace(headsetId) && x.Name.Contains(headsetId, StringComparison.OrdinalIgnoreCase));
+        var headsetDevice = devices.FirstOrDefault(x => AudioDeviceIdentity.SameEndpoint(headset.Id, x.Name));
         var gameDevice = devices.FirstOrDefault(x => x.Description.Contains("Voicemeeter AUX Input", StringComparison.OrdinalIgnoreCase));
         if (headsetDevice is null || gameDevice is null || headsetDevice.Name == gameDevice.Name)
         {
             Footer.Text = "AUTO MUSIC SETUP CANNOT MATCH THE SELECTED HEADSET AND VOICEMEETER AUX IN MPV. REFRESH MPV OUTPUTS.";
-            return;
+            return false;
         }
-        var routeController = new VoicemeeterRouteController(_vm);
         if (_config.AutoMusicRouteStrip == auxStrip &&
             _config.MpvAudioDeviceName == headsetDevice.Name &&
             _config.GameMpvAudioDeviceName == gameDevice.Name &&
-            routeController.TryRead(auxStrip, _config.GameBus, out var alreadyOnB1) && alreadyOnB1 &&
-            routeController.TryRead(auxStrip, "A1", out var alreadyOnA1) && !alreadyOnA1)
+            _bridge.TryReadRoute(auxStrip, _bridge.Topology.GameBus, out var alreadyOnB1) && alreadyOnB1 &&
+            _bridge.TryReadRoute(auxStrip, _bridge.Topology.ListeningBus, out var alreadyOnA1) && !alreadyOnA1)
         {
             Footer.Text = "MUSIC IS ALREADY CONNECTED · Your selected headphones play the station; Voicemeeter AUX sends a separate feed to B1. No route changed.";
             RefreshSetupWizard();
-            return;
+            return true;
         }
-        var monitor = new VoicemeeterSignalMonitor(_vm);
-        var auxLevel = monitor.ReadStrip(status.Edition, auxStrip);
+        var auxLevel = _bridge.ReadStripSignal(auxStrip, status.Edition);
         if (!auxLevel.Available || auxLevel.Peak > .005f)
         {
             Footer.Text = auxLevel.Available ? "VOICEMEETER AUX ALREADY HAS LIVE AUDIO. AUTO SETUP WILL NOT TAKE OVER AN ACTIVE INPUT." : "VOICEMEETER AUX METER IS UNAVAILABLE; AUTO SETUP DID NOT CHANGE ROUTES.";
-            return;
+            return false;
         }
-        var routes = routeController;
-        if (!routes.TryRead(auxStrip, "A1", out var priorA1) || !routes.TryRead(auxStrip, _config.GameBus, out var priorB1))
+        if (!_bridge.TryReadRoute(auxStrip, _bridge.Topology.ListeningBus, out var priorA1) ||
+            !_bridge.TryReadRoute(auxStrip, _bridge.Topology.GameBus, out var priorB1))
         {
             Footer.Text = "CANNOT READ EXISTING VOICEMEETER ROUTES; NOTHING CHANGED.";
-            return;
+            return false;
         }
         var formerHeadset = _config.MpvAudioDeviceName;
         var formerGame = _config.GameMpvAudioDeviceName;
@@ -3345,19 +3554,20 @@ public partial class MainWindow : Window, IMacroActionHandler
         var formerAutoStrip = _config.AutoMusicRouteStrip;
         var formerAutoA1 = _config.AutoMusicPreviousA1;
         var formerAutoB1 = _config.AutoMusicPreviousB1;
-        var changedA1 = false;
-        var changedB1 = false;
+        var routeLeases = new List<AudioRouteLease>();
         try
         {
             if (priorA1)
             {
-                if (!_vm.TrySetParameterFloat($"Strip[{auxStrip}].A1", 0)) throw new InvalidOperationException("Could not turn off AUX monitoring to prevent double headset playback.");
-                changedA1 = true;
+                var listening = await _bridge.ApplyRouteAsync("automatic music setup", auxStrip, _bridge.Topology.ListeningBus, false);
+                if (!listening.Success) throw new InvalidOperationException(listening.Detail);
+                if (listening.Lease is { } lease) routeLeases.Add(lease);
             }
             if (!priorB1)
             {
-                if (!_vm.TrySetParameterFloat($"Strip[{auxStrip}].{_config.GameBus}", 1)) throw new InvalidOperationException("Could not enable AUX to game bus.");
-                changedB1 = true;
+                var gameRoute = await _bridge.ApplyRouteAsync("automatic music setup", auxStrip, _bridge.Topology.GameBus, true);
+                if (!gameRoute.Success) throw new InvalidOperationException(gameRoute.Detail);
+                if (gameRoute.Lease is { } lease) routeLeases.Add(lease);
             }
             if (_mpvProvider is not null) await _mpvProvider.SetAudioDeviceAsync(headsetDevice.Name);
             _config.AutoMusicRouteStrip ??= auxStrip;
@@ -3374,6 +3584,12 @@ public partial class MainWindow : Window, IMacroActionHandler
             _config.MusicStripIndex = auxStrip;
             InvalidateSignalVerification();
             await _store.SaveAsync(_config);
+            if (SetupView.Visibility == Visibility.Visible && _setupVisit is { } visit)
+            {
+                visit.RecordRoute(auxStrip, _bridge.Topology.ListeningBus, priorA1, false);
+                visit.RecordRoute(auxStrip, _bridge.Topology.GameBus, priorB1, true);
+                _setupHasUncommittedChanges = true;
+            }
             await LoadMpvOutputsAsync();
             PopulateMusicStrips();
             if (_active is { ProviderId: "mpv" } station && _mpvProvider is { } player)
@@ -3382,15 +3598,31 @@ public partial class MainWindow : Window, IMacroActionHandler
                 if (_gameMpvProvider is null) throw new InvalidOperationException("MPV could not open the Voicemeeter AUX output.");
                 if (station.Runtime.WasPlaying) await _gameMpvProvider.PlayAsync();
             }
+            foreach (var lease in routeLeases)
+            {
+                var committed = await _bridge.CommitRouteAsync(lease);
+                if (!committed.Success)
+                {
+                    Footer.Text = "MUSIC CONFIGURATION SAVED, BUT ROUTE OWNERSHIP NEEDS ATTENTION · " + committed.Detail;
+                    return false;
+                }
+            }
             Footer.Text = "MUSIC ROUTED · Headset plays directly; separate game player feeds Voicemeeter AUX → B1. Play a station and verify moving music/B1 meters.";
+            if (SetupView.Visibility == Visibility.Visible) _setupHasUncommittedChanges = true;
             RefreshSignalMeters();
             RefreshSetupWizard();
+            return true;
         }
         catch (Exception error)
         {
             await StopGameOutputAsync();
-            if (changedA1) _vm.TrySetParameterFloat($"Strip[{auxStrip}].A1", priorA1 ? 1 : 0);
-            if (changedB1) _vm.TrySetParameterFloat($"Strip[{auxStrip}].{_config.GameBus}", priorB1 ? 1 : 0);
+            var restoreErrors = new List<string>();
+            foreach (var lease in routeLeases.AsEnumerable().Reverse())
+            {
+                if (!_bridge.Snapshot.OwnedRoutes.Contains(lease)) continue;
+                var restored = await _bridge.ReleaseRouteAsync(lease);
+                if (restored != AudioLeaseReleaseState.Restored) restoreErrors.Add($"{lease.Resource}: {restored}");
+            }
             _config.MpvAudioDeviceName = formerHeadset;
             _config.GameMpvAudioDeviceName = formerGame;
             _config.MusicStripIndex = formerStrip;
@@ -3404,35 +3636,43 @@ public partial class MainWindow : Window, IMacroActionHandler
                 _config.AutoMusicPreviousStripIndex = null;
             }
             if (_mpvProvider is not null) try { await _mpvProvider.SetAudioDeviceAsync(formerHeadset ?? "auto"); } catch { }
-            await _store.SaveAsync(_config);
-            Footer.Text = "AUTO MUSIC SETUP FAILED · Previous outputs and routes restored where possible · " + error.Message;
+            try { await _store.SaveAsync(_config); }
+            catch (Exception saveError) { restoreErrors.Add("Configuration save failed: " + saveError.Message); }
+            Footer.Text = "AUTO MUSIC SETUP FAILED · " + error.Message +
+                (restoreErrors.Count == 0 ? "" : " · Restore needs attention: " + string.Join("; ", restoreErrors));
             RefreshSetupWizard();
+            return false;
         }
     }
 
-    void EnableWizardRoutes(params (int Strip, string Route)[] targets)
+    async Task EnableWizardRoutesAsync(params (int Strip, string Route)[] targets)
     {
-        var routes = new VoicemeeterRouteController(_vm);
-        var changed = new List<(int Strip, string Route)>();
+        var changed = new List<AudioRouteLease>();
         try
         {
             foreach (var (strip, route) in targets)
             {
-                if (!routes.TryRead(strip, route, out var enabled)) throw new InvalidOperationException($"Could not read strip {strip} {route}; no further route changed.");
-                if (enabled) continue;
-                routes.Change(strip, route, true, _setupRouteContext);
-                changed.Add((strip, route));
+                var result = await _bridge.ApplyRouteAsync("setup", strip, route, true);
+                if (!result.Success) throw new InvalidOperationException(result.Detail);
+                if (result.Lease is { } lease) changed.Add(lease);
             }
-            _setupChangedRoutes.AddRange(changed);
+            _setupRouteLeases.AddRange(changed);
+            if (changed.Count > 0) _setupHasUncommittedChanges = true;
             if (changed.Count > 0) InvalidateSignalVerification();
             Footer.Text = changed.Count == 0 ? "REQUESTED ROUTES WERE ALREADY ON." : "VOICEMEETER ROUTES ENABLED · Test live signal and game/headphone receive.";
         }
         catch (Exception error)
         {
             var rollbackErrors = new List<string>();
-            foreach (var (strip, route) in changed.AsEnumerable().Reverse())
-                try { routes.Restore(strip, route, _setupRouteContext); }
-                catch (Exception rollback) { _setupChangedRoutes.Add((strip, route)); rollbackErrors.Add(rollback.Message); }
+            foreach (var lease in changed.AsEnumerable().Reverse())
+            {
+                var restored = await _bridge.ReleaseRouteAsync(lease);
+                if (restored != AudioLeaseReleaseState.Restored)
+                {
+                    if (restored == AudioLeaseReleaseState.Failed) _setupRouteLeases.Add(lease);
+                    rollbackErrors.Add($"{lease.Resource}: {restored}");
+                }
+            }
             Footer.Text = rollbackErrors.Count == 0 ? $"ROUTE CHANGE FAILED · {error.Message}" :
                 $"ROUTE CHANGE FAILED · RESTORE NEEDS ATTENTION · {string.Join("; ", rollbackErrors)}";
         }
@@ -3440,32 +3680,50 @@ public partial class MainWindow : Window, IMacroActionHandler
         RefreshSetupWizard();
     }
 
-    async void RestoreRoute_Click(object s, RoutedEventArgs e)
+    async void RestoreRoute_Click(object s, RoutedEventArgs e) => await RestoreOwnedRoutesAsync();
+
+    async Task<bool> RestoreOwnedRoutesAsync()
     {
-        var routes = new VoicemeeterRouteController(_vm);
         if (_config.AutoMicrophoneStrip is { } micStrip)
         {
-            if (!_vm.TryGetParameterString($"Strip[{micStrip}].device.name", out var currentMic))
+            if (!_bridge.TryReadDevice(micStrip, out var currentMic))
             {
                 Footer.Text = "MICROPHONE ROUTE RESTORE FAILED · Cannot read current input.";
-                return;
+                return false;
             }
-            if (!string.IsNullOrWhiteSpace(currentMic) && SetupMicrophoneBox.SelectedItem is WindowsAudioEndpoint selectedMic &&
-                !currentMic.Contains(selectedMic.Name, StringComparison.OrdinalIgnoreCase))
+            var priorDevice = _config.AutoMicrophonePreviousDeviceName ?? "";
+            var appliedDevice = _config.AutoMicrophoneAppliedDeviceName ??
+                (SetupMicrophoneBox.SelectedItem as WindowsAudioEndpoint)?.Name;
+            if (!currentMic.Equals(priorDevice, StringComparison.OrdinalIgnoreCase) &&
+                !AudioBridgeService.MatchesDeviceName(currentMic, appliedDevice))
             {
                 Footer.Text = "MICROPHONE INPUT WAS CHANGED ELSEWHERE. AUTO RESTORE WILL NOT OVERWRITE IT.";
-                return;
+                return false;
             }
-            if (!_vm.TrySetParameterString($"Strip[{micStrip}].device.wdm", _config.AutoMicrophonePreviousDeviceName ?? "") ||
-                _config.AutoMicrophonePreviousA1 is { } micA1 && !_vm.TrySetParameterFloat($"Strip[{micStrip}].A1", micA1 ? 1 : 0) ||
-                _config.AutoMicrophonePreviousB1 is { } micB1 && !_vm.TrySetParameterFloat($"Strip[{micStrip}].{_config.GameBus}", micB1 ? 1 : 0))
+            if (_config.AutoMicrophonePreviousA1 is { } micA1 &&
+                !(await _bridge.RestoreConfiguredFloatAsync("microphone", $"Strip[{micStrip}].A1", 0, micA1 ? 1 : 0)).Success ||
+                _config.AutoMicrophonePreviousB1 is { } micB1 &&
+                !(await _bridge.RestoreConfiguredFloatAsync("microphone", $"Strip[{micStrip}].B1", 1, micB1 ? 1 : 0)).Success)
             {
                 Footer.Text = "MICROPHONE ROUTE RESTORE FAILED · Saved prior state kept for retry.";
-                return;
+                return false;
+            }
+            if (!currentMic.Equals(priorDevice, StringComparison.OrdinalIgnoreCase))
+            {
+                var driver = _config.AutoMicrophonePreviousDriver ?? "wdm";
+                var restoredDevice = await _bridge.SetDeviceAsync("microphone restore", $"Strip[{micStrip}].device.{driver}",
+                    $"Strip[{micStrip}].device.name", priorDevice);
+                if (!restoredDevice.Success)
+                {
+                    Footer.Text = "MICROPHONE DEVICE RESTORE NEEDS ATTENTION · " + restoredDevice.Detail;
+                    return false;
+                }
             }
             _config.MicrophoneStripIndex = _config.AutoMicrophonePreviousStripIndex;
             _config.AutoMicrophoneStrip = null;
             _config.AutoMicrophonePreviousDeviceName = null;
+            _config.AutoMicrophonePreviousDriver = null;
+            _config.AutoMicrophoneAppliedDeviceName = null;
             _config.AutoMicrophonePreviousA1 = null;
             _config.AutoMicrophonePreviousB1 = null;
             _config.AutoMicrophonePreviousStripIndex = null;
@@ -3474,17 +3732,19 @@ public partial class MainWindow : Window, IMacroActionHandler
         if (_config.AutoMusicRouteStrip is { } autoStrip)
         {
             await StopGameOutputAsync();
-            if (_config.AutoMusicPreviousA1 is { } priorA1 && !_vm.TrySetParameterFloat($"Strip[{autoStrip}].A1", priorA1 ? 1 : 0) ||
-                _config.AutoMusicPreviousB1 is { } priorB1 && !_vm.TrySetParameterFloat($"Strip[{autoStrip}].{_config.GameBus}", priorB1 ? 1 : 0))
+            if (_config.AutoMusicPreviousA1 is { } priorA1 &&
+                !(await _bridge.RestoreConfiguredFloatAsync("music", $"Strip[{autoStrip}].A1", 0, priorA1 ? 1 : 0)).Success ||
+                _config.AutoMusicPreviousB1 is { } priorB1 &&
+                !(await _bridge.RestoreConfiguredFloatAsync("music", $"Strip[{autoStrip}].B1", 1, priorB1 ? 1 : 0)).Success)
             {
                 Footer.Text = "AUTO MUSIC ROUTE RESTORE FAILED · Settings kept for retry.";
-                return;
+                return false;
             }
             _config.MpvAudioDeviceName = _config.AutoMusicPreviousHeadsetDeviceName;
             _config.GameMpvAudioDeviceName = _config.AutoMusicPreviousGameDeviceName;
             _config.MusicStripIndex = _config.AutoMusicPreviousStripIndex;
             if (_mpvProvider is not null) try { await _mpvProvider.SetAudioDeviceAsync(_config.MpvAudioDeviceName ?? "auto"); }
-                catch (Exception error) { Footer.Text = "HEADSET DEVICE RESTORE NEEDS ATTENTION · " + error.Message; return; }
+                catch (Exception error) { Footer.Text = "HEADSET DEVICE RESTORE NEEDS ATTENTION · " + error.Message; return false; }
             _config.AutoMusicRouteStrip = null;
             _config.AutoMusicPreviousA1 = null;
             _config.AutoMusicPreviousB1 = null;
@@ -3495,15 +3755,21 @@ public partial class MainWindow : Window, IMacroActionHandler
             await LoadMpvOutputsAsync();
             PopulateMusicStrips();
         }
-        foreach (var (strip, route) in _setupChangedRoutes.AsEnumerable().Reverse().ToList())
+        foreach (var lease in _setupRouteLeases.AsEnumerable().Reverse().ToList())
         {
-            try { routes.Restore(strip, route, _setupRouteContext); _setupChangedRoutes.Remove((strip, route)); }
-            catch (Exception error) { Footer.Text = $"ROUTE RESTORE NEEDS ATTENTION · {error.Message}"; RefreshSetupWizard(); return; }
+            var state = await _bridge.ReleaseRouteAsync(lease);
+            if (state == AudioLeaseReleaseState.Failed)
+            { Footer.Text = $"ROUTE RESTORE NEEDS ATTENTION · {lease.Resource}"; RefreshSetupWizard(); return false; }
+            _setupRouteLeases.Remove(lease);
+            if (state == AudioLeaseReleaseState.ExternallyChanged)
+            { Footer.Text = $"ROUTE CHANGED OUTSIDE WARDOGS · {lease.Resource} was left untouched."; RefreshSetupWizard(); return false; }
         }
         Footer.Text = "WIZARD ROUTES RESTORED TO THEIR PRIOR STATES.";
+        _setupHasUncommittedChanges = false;
         InvalidateSignalVerification();
         UpdateMusicStripState();
         RefreshSetupWizard();
+        return true;
     }
 
     async void RefreshAudioEndpoints_Click(object s, RoutedEventArgs e) => await LoadAudioEndpointsAsync();
@@ -3730,13 +3996,17 @@ public partial class MainWindow : Window, IMacroActionHandler
         RefreshSetupWizard();
     }
 
-    async Task LoadAudioEndpointsAsync()
+    async Task<bool> LoadAudioEndpointsAsync(bool quiet = false)
     {
+        await _endpointDiscoveryGate.WaitAsync();
         try
         {
-            var endpoints = await _audioEndpoints.DiscoverAsync();
+            using var discoveryDeadline = new CancellationTokenSource(TimeSpan.FromSeconds(8));
+            var endpoints = await _audioEndpoints.DiscoverAsync(discoveryDeadline.Token);
             var inputs = endpoints.Where(x => x.IsInput).ToList();
             var outputs = endpoints.Where(x => !x.IsInput).ToList();
+            var stagedMicrophone = (SetupMicrophoneBox.SelectedItem as WindowsAudioEndpoint)?.Id;
+            var stagedHeadphones = (SetupMonitorBox.SelectedItem as WindowsAudioEndpoint)?.Id;
             _loadingAudioRouteControls = true;
             MicrophoneBox.ItemsSource = inputs;
             MonitorBox.ItemsSource = outputs;
@@ -3745,8 +4015,8 @@ public partial class MainWindow : Window, IMacroActionHandler
             _loadingSetupControls = true;
             SetupMicrophoneBox.ItemsSource = inputs;
             SetupMonitorBox.ItemsSource = outputs;
-            SetupMicrophoneBox.SelectedItem = inputs.FirstOrDefault(x => x.Id == _config.MicrophoneDeviceId);
-            SetupMonitorBox.SelectedItem = outputs.FirstOrDefault(x => x.Id == _config.MonitorDeviceId);
+            SetupMicrophoneBox.SelectedItem = inputs.FirstOrDefault(x => x.Id == (stagedMicrophone ?? _config.MicrophoneDeviceId));
+            SetupMonitorBox.SelectedItem = outputs.FirstOrDefault(x => x.Id == (stagedHeadphones ?? _config.MonitorDeviceId));
             _loadingSetupControls = false;
             _loadingAudioRouteControls = false;
             MicrophoneRouteText.Text = MicrophoneBox.SelectedItem is WindowsAudioEndpoint mic ? mic.Name : "Not selected";
@@ -3757,14 +4027,21 @@ public partial class MainWindow : Window, IMacroActionHandler
             GameRouteText.Text = gameOutput is null
                 ? $"{_config.GameBus} output device not found"
                 : $"{_config.GameBus} · {gameOutput.Name} · needs verification";
-            Footer.Text = $"{inputs.Count} INPUT AND {outputs.Count} OUTPUT AUDIO ENDPOINT(S) DISCOVERED.";
+            if (!quiet) Footer.Text = $"{inputs.Count} INPUT AND {outputs.Count} OUTPUT AUDIO ENDPOINT(S) DISCOVERED.";
             RefreshSetupWizard();
+            return true;
         }
         catch (Exception ex)
         {
-            Footer.Text = "AUDIO ENDPOINT DISCOVERY FAILED · " + ex.Message;
+            if (!quiet) Footer.Text = "AUDIO ENDPOINT DISCOVERY FAILED · " + ex.Message;
+            return false;
         }
-        finally { _loadingAudioRouteControls = false; _loadingSetupControls = false; }
+        finally
+        {
+            _loadingAudioRouteControls = false;
+            _loadingSetupControls = false;
+            _endpointDiscoveryGate.Release();
+        }
     }
 
     void PickAudioEndpoint(ComboBox selector, bool microphone)
@@ -3834,45 +4111,14 @@ public partial class MainWindow : Window, IMacroActionHandler
         RefreshSetupWizard();
     }
 
-    async void SetupMicrophoneBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    void SetupMicrophoneBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
-        if (_loadingSetupControls || !IsLoaded || SetupMicrophoneBox.SelectedItem is not WindowsAudioEndpoint microphone) return;
-        if (!await ConfigureAutomaticMicrophoneAsync(microphone))
-        {
-            _loadingSetupControls = true;
-            SetupMicrophoneBox.SelectedItem = (SetupMicrophoneBox.ItemsSource as IEnumerable<WindowsAudioEndpoint>)?.FirstOrDefault(x => x.Id == _config.MicrophoneDeviceId);
-            _loadingSetupControls = false;
-            return;
-        }
-        _loadingAudioRouteControls = true;
-        MicrophoneBox.SelectedItem = (MicrophoneBox.ItemsSource as IEnumerable<WindowsAudioEndpoint>)?.FirstOrDefault(x => x.Id == microphone.Id);
-        _loadingAudioRouteControls = false;
-        MicrophoneRouteText.Text = microphone.Name + " · connected to Voicemeeter B1";
-        RefreshSetupWizard();
+        if (!_loadingSetupControls && IsLoaded) RefreshSetupWizard();
     }
 
-    async void SetupMonitorBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    void SetupMonitorBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
-        if (_loadingSetupControls || !IsLoaded || SetupMonitorBox.SelectedItem is not WindowsAudioEndpoint monitor) return;
-        var guid = monitor.Id.Split('{').LastOrDefault()?.TrimEnd('}');
-        var mpvDevice = (SetupMpvOutputBox.ItemsSource as IEnumerable<MpvAudioDevice>)?.FirstOrDefault(x =>
-            !string.IsNullOrWhiteSpace(guid) && x.Name.Contains(guid, StringComparison.OrdinalIgnoreCase));
-        if (mpvDevice is null)
-        {
-            Footer.Text = "HEADPHONES NOT SWITCHED · MPV could not match this output. Refresh device lists or use the exact player output below.";
-            RestoreSetupMonitorSelection();
-            return;
-        }
-        await ApplyMpvOutputAsync(mpvDevice);
-        if (_config.MpvAudioDeviceName != mpvDevice.Name) { RestoreSetupMonitorSelection(); return; }
-        if (_config.MonitorDeviceId != monitor.Id) InvalidateSignalVerification();
-        _config.MonitorDeviceId = monitor.Id;
-        _loadingAudioRouteControls = true;
-        MonitorBox.SelectedItem = (MonitorBox.ItemsSource as IEnumerable<WindowsAudioEndpoint>)?.FirstOrDefault(x => x.Id == monitor.Id);
-        _loadingAudioRouteControls = false;
-        MonitorRouteText.Text = monitor.Name + " · active MPV output";
-        await _store.SaveAsync(_config);
-        RefreshSetupWizard();
+        if (!_loadingSetupControls && IsLoaded) RefreshSetupWizard();
     }
 
     void RestoreSetupMonitorSelection()
@@ -3884,12 +4130,7 @@ public partial class MainWindow : Window, IMacroActionHandler
 
     static string? FindVoicemeeterExecutable(string? edition)
     {
-        var executableNames = edition switch
-        {
-            "Banana" => new[] { "voicemeeterpro_x64.exe", "voicemeeterpro.exe" },
-            "Potato" => new[] { "voicemeeter8x64.exe", "voicemeeter8.exe" },
-            _ => new[] { "voicemeeter_x64.exe", "voicemeeter.exe" }
-        };
+        var executableNames = new[] { "voicemeeterpro_x64.exe", "voicemeeterpro.exe" };
         var roots = new[] { Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),
             Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86) };
         return roots.SelectMany(root => executableNames.Select(name => Path.Combine(root, "VB", "Voicemeeter", name))).FirstOrDefault(File.Exists);
@@ -3897,14 +4138,14 @@ public partial class MainWindow : Window, IMacroActionHandler
 
     void OpenVm_Click(object s, RoutedEventArgs e)
     {
-        var path = FindVoicemeeterExecutable(_vm.Probe().Edition);
+        var path = FindVoicemeeterExecutable(_bridge.Probe().Edition);
         if (path is not null) Process.Start(new ProcessStartInfo(path) { UseShellExecute = true }); else Footer.Text = "VOICEMEETER APPLICATION WAS NOT FOUND.";
     }
 
     async void SaveSettings_Click(object s, RoutedEventArgs e)
     {
         _config.MpvPath = MpvPathBox.Text;
-        MpvProviderState.Text = new MpvLocator().Find(_config.MpvPath) is null ? "NEEDS SETUP" : "READY";
+        RefreshMpvAdvancedStatus();
         _config.MasterVolume = MasterVolume.Value;
         _config.GameMasterVolume = GameMasterVolume.Value;
         _config.MicrophoneVolume = MicrophoneVolume.Value;
@@ -3953,10 +4194,29 @@ public partial class MainWindow : Window, IMacroActionHandler
     async void MpvPathBox_LostFocus(object sender, RoutedEventArgs e)
     {
         if (_loadingPlaybackSettings || !IsLoaded) return;
-        _config.MpvPath = MpvPathBox.Text.Trim();
-        MpvProviderState.Text = new MpvLocator().Find(_config.MpvPath) is null ? "NEEDS SETUP" : "READY";
+        _config.MpvPath = string.IsNullOrWhiteSpace(MpvPathBox.Text) ? null : MpvPathBox.Text.Trim();
+        RefreshMpvAdvancedStatus();
         await _store.SaveAsync(_config);
         Footer.Text = "MPV PATH SAVED · Applies to the next player launch.";
+    }
+
+    void RefreshMpvAdvancedStatus()
+    {
+        if (MpvProviderState is null) return;
+        var bundled = File.Exists(Path.Combine(AppContext.BaseDirectory, "mpv.exe"));
+        var invalidOverride = !string.IsNullOrWhiteSpace(_config.MpvPath) && !File.Exists(_config.MpvPath);
+        MpvProviderState.Text = invalidOverride ? "⚠ MPV override missing · Use Bundled MPV" :
+            bundled ? "✓ Bundled MPV is available" :
+            new MpvLocator().Find(_config.MpvPath) is not null ? "✓ MPV is available from your system" : "⚠ MPV is unavailable";
+    }
+
+    async void UseBundledMpv_Click(object sender, RoutedEventArgs e)
+    {
+        _config.MpvPath = null;
+        MpvPathBox.Text = "";
+        RefreshMpvAdvancedStatus();
+        await _store.SaveAsync(_config);
+        Footer.Text = "BUNDLED MPV SELECTED · Applies on the next player launch.";
     }
 
     void ShowHeadsetMasterLevel(double value)
@@ -4000,35 +4260,30 @@ public partial class MainWindow : Window, IMacroActionHandler
 
     async Task InitializeMicrophoneVolumeAsync()
     {
-        if (_config.MicrophoneStripIndex is null || !_vm.Probe().Connected) return;
+        if (_config.MicrophoneStripIndex is null || !_bridge.Probe().Connected) return;
         if (!_config.MicrophoneVolumeInitialized)
         {
-            if (!_vm.TryGetParameterFloat($"Strip[{_config.MicrophoneStripIndex}].Gain", out var currentDb)) return;
+            if (!_bridge.TryReadGain(_config.MicrophoneStripIndex.Value, out var currentDb)) return;
             _config.MicrophoneVolume = Math.Clamp(Math.Pow(10, currentDb / 20), 0, MicrophoneLevel.Maximum);
             _config.MicrophoneVolumeInitialized = true;
             ShowMicrophoneVolume(_config.MicrophoneVolume);
             await _store.SaveAsync(_config);
         }
-        else if (!ApplyMicrophoneVolumeToMixer(out var error)) Footer.Text = error;
+        else
+        {
+            var applied = await ApplyMicrophoneVolumeToMixerAsync();
+            if (!applied.Success) Footer.Text = applied.Detail;
+        }
     }
 
-    bool ApplyMicrophoneVolumeToMixer(out string error)
+    async Task<AudioOperationResult> ApplyMicrophoneVolumeToMixerAsync()
     {
         if (_config.MicrophoneStripIndex is not { } strip)
-        {
-            error = "Choose a microphone/Voicemeeter input before its volume can apply.";
-            return false;
-        }
-        if (!_vm.TrySetParameterFloat($"Strip[{strip}].Gain", MicrophoneLevel.GainDb(_config.MicrophoneVolume)))
-        {
-            error = "Voicemeeter mic level did not apply. Reconnect Voicemeeter and retry.";
-            return false;
-        }
-        error = $"MICROPHONE · {Math.Round(_config.MicrophoneVolume * 100):0}% · Voicemeeter strip {strip} gain {MicrophoneLevel.GainDb(_config.MicrophoneVolume):F1} dB";
-        return true;
+            return new(false, "Choose a microphone before its volume can apply.");
+        return await _bridge.SetGainAsync(strip, MicrophoneLevel.GainDb(_config.MicrophoneVolume));
     }
 
-    void MicrophoneVolume_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
+    async void MicrophoneVolume_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
     {
         if (MicrophoneVolumeText is null || DashboardMicrophoneVolumeText is null ||
             AudioMicrophoneVolumeText is null || SetupMicrophoneVolumeText is null || _syncingMicrophoneVolumeSliders) return;
@@ -4036,8 +4291,9 @@ public partial class MainWindow : Window, IMacroActionHandler
         if (!IsLoaded) return;
         _config.MicrophoneVolume = Math.Clamp(e.NewValue, 0, MicrophoneLevel.Maximum);
         _config.MicrophoneVolumeInitialized = true;
-        if (ApplyMicrophoneVolumeToMixer(out var status)) Footer.Text = status;
-        else Footer.Text = status + " Your choice is saved for when the route is available.";
+        var applied = await ApplyMicrophoneVolumeToMixerAsync();
+        if (Math.Abs(_config.MicrophoneVolume - e.NewValue) < .001)
+            Footer.Text = applied.Success ? applied.Detail : applied.Detail + " Your choice is saved for when the route is available.";
         _volumeSaveTimer.Stop();
         _volumeSaveTimer.Start();
     }
@@ -4134,29 +4390,31 @@ public partial class MainWindow : Window, IMacroActionHandler
     {
         try
         {
-            var checks = _diagnostics.Collect(_config, _mpvProvider?.Snapshot, _youtubeReady, _outputHealth).ToList();
+            RunDiagnostics();
+            var checks = _diagnosticSnapshot!.Technical.ToList();
             var sessions = await new PowerShellMediaSessionBackend().DiscoverAsync();
             if (sessions.Count == 0) checks.Add(new DiagnosticItem("External Audio", "NOT TESTED", "No Windows media sessions found", "Start a supported media application, then retry. Process-loopback capture is intentionally not replaced with system-audio capture."));
             foreach (var session in sessions) checks.Add(new DiagnosticItem("External Audio", session.CanCapture ? "PASS" : "WARNING", session.ApplicationName, $"Session: {session.SessionId}; controls: play={session.CanPlay}, pause={session.CanPause}, seek={session.CanSeek}; process capture: unavailable."));
-            DiagnosticList.ItemsSource = checks;
+            ShowDiagnosticSnapshot(_diagnosticSnapshot with { Technical = checks });
             Footer.Text = $"EXTERNAL AUDIO DIAGNOSTICS · {sessions.Count} SESSION(S) FOUND.";
         }
-        catch (Exception ex) { DiagnosticList.ItemsSource = new[] { new DiagnosticItem("External Audio", "FAIL", "Media-session scan failed", ex.Message) }; Footer.Text = "EXTERNAL AUDIO DIAGNOSTICS FAILED."; }
-    }
-
-    void UpdateGameVoiceBadge(bool connected, SignalLevel mixer, SignalLevel endpoint)
-    {
-        RouteStatus.Text = !connected ? $"{_config.GameBus}: DISCONNECTED"
-            : _gameOutputEndpointId is null ? $"{_config.GameBus}: OUTPUT MISSING"
-            : endpoint.Available && endpoint.Peak > .005f ? $"{_config.GameBus}: LIVE OUTPUT"
-            : mixer.Available && mixer.Peak > .005f ? $"{_config.GameBus}: MIXER SIGNAL ONLY"
-            : $"{_config.GameBus}: READY / QUIET";
-        RouteStatus.ToolTip = "Live output means audio was captured from the Voicemeeter B1 Windows device. It does not prove a game received it; confirm that separately in Setup Wizard.";
+        catch (Exception ex)
+        {
+            if (_diagnosticSnapshot is { } snapshot)
+                ShowDiagnosticSnapshot(snapshot with { Technical = snapshot.Technical.Concat([new DiagnosticItem("External Audio", "ERROR", "Media-session scan failed", ex.Message)]).ToArray() });
+            Footer.Text = "EXTERNAL AUDIO DIAGNOSTICS FAILED.";
+        }
     }
 
     void RunDiagnostics()
     {
-        var checks = _diagnostics.Collect(_config, _mpvProvider?.Snapshot, _youtubeReady, _outputHealth).ToList();
+        var readiness = CaptureReadiness();
+        var bridgeSnapshot = _bridge.Snapshot;
+        var bridgeStatus = bridgeSnapshot.Telemetry?.Status;
+        var checks = _diagnostics.Collect(_config, _mpvProvider?.Snapshot, _youtubeReady, _outputHealth, bridgeStatus).ToList();
+        checks.Add(new DiagnosticItem("Audio Bridge", bridgeSnapshot.Connection.ToString().ToUpperInvariant(),
+            bridgeSnapshot.Detail,
+            $"Edition: {bridgeSnapshot.Edition ?? "unknown"}; route leases: {bridgeSnapshot.OwnedRoutes.Count}; device leases: {bridgeSnapshot.OwnedDevices.Count}; recent faults: {bridgeSnapshot.Faults.Count}."));
         AddLimiterDiagnostic(checks);
         if (_b1AuditionErrorDetail is not null)
             checks.Add(new DiagnosticItem("B1 listening test", "WARNING",
@@ -4170,13 +4428,11 @@ public partial class MainWindow : Window, IMacroActionHandler
         if (_localStartupForensics is { } localStartup)
             checks.Add(new DiagnosticItem("Local playback forensics", "INFO",
                 localStartup.StationName, localStartup.Describe()));
-        var vm = _vm.Probe();
-        VmStatus.Text = vm.Connected ? "VM: CONNECTED" : vm.Installed ? "VM: INSTALLED" : "VM: MISSING";
-        var meterMonitor = new VoicemeeterSignalMonitor(_vm);
-        var mixer = vm.Connected ? meterMonitor.ReadBus(vm.Edition, _config.GameBus) : new SignalLevel(false, 0);
+        var vm = _bridge.Probe();
+        var mixer = vm.Connected ? _bridge.ReadBusSignal(_config.GameBus, vm.Edition) : new SignalLevel(false, 0);
         if (vm.Connected && DiagnosticsView.Visibility == Visibility.Visible)
         {
-            try { _meterForensics = meterMonitor.CaptureForensics(vm.Edition); }
+            try { _meterForensics = _bridge.CaptureMeterForensics(vm.Edition); }
             catch (Exception error) { checks.Add(new DiagnosticItem("Voicemeeter raw meter forensics", "WARNING", "Raw Remote API scan failed", error.Message)); }
         }
         var endpointAvailable = _gameBusEndpointPeakMeter.TryRead(_gameOutputEndpointId, out var endpointPeak);
@@ -4184,18 +4440,13 @@ public partial class MainWindow : Window, IMacroActionHandler
             checks.Add(new DiagnosticItem("B1 output capture", "WARNING",
                 "WARDOGS could not capture the B1 Windows output for its live verification meter", captureError));
         AddMeterForensicsDiagnostics(checks, vm, endpointAvailable, endpointPeak);
-        DiagnosticList.ItemsSource = checks;
-        UpdateGameVoiceBadge(vm.Connected, mixer, new SignalLevel(endpointAvailable, endpointPeak));
+        ShowDiagnosticSnapshot(new DiagnosticSnapshot(readiness, checks) { AudioBridge = bridgeSnapshot });
         GameRouteText.Text = _gameOutputEndpointName is null ? $"{_config.GameBus} output device not found" : $"{_config.GameBus} · {_gameOutputEndpointName} · check its live endpoint meter";
         MicrophoneRouteText.Text = MicrophoneBox.SelectedItem is WindowsAudioEndpoint mic ? mic.Name + " · Voicemeeter input → B1" : "Not selected";
         MonitorRouteText.Text = MonitorBox.SelectedItem is WindowsAudioEndpoint monitor
             ? monitor.Name + (_active?.ProviderId == "youtube" ? " · YouTube listening via Voicemeeter A1" : " · direct local player output")
             : "Not selected";
         RoutingDetail.Text = vm.Detail;
-        OperationalStatus.Text = vm.Connected
-            ? endpointAvailable && endpointPeak > .005f ? "Voicemeeter B1 output has live signal · Confirm game receive separately" : "Voicemeeter connected · Check B1 output and game receive"
-            : vm.Installed ? "Voicemeeter installed · Connect it to continue" : "Voicemeeter not found";
-        HealthText.Text = vm.Installed ? "ATTENTION · SETUP AND VERIFICATION REQUIRED" : "DEGRADED — SETUP REQUIRED";
     }
 
     static string RawPeak(RawMeterPath? path) => path is null ? "not mapped" :
@@ -4207,8 +4458,8 @@ public partial class MainWindow : Window, IMacroActionHandler
     string RouteState(int? strip, string route)
     {
         if (strip is not { } index) return "not configured";
-        return _vm.TryGetParameterFloat($"Strip[{index}].{route}", out var value)
-            ? value > .5f ? "ON" : "OFF" : "unavailable";
+        return _bridge.TryReadRoute(index, route, out var enabled)
+            ? enabled ? "ON" : "OFF" : "unavailable";
     }
 
     void AddMeterForensicsDiagnostics(ICollection<DiagnosticItem> checks, VoicemeeterStatus vm,
@@ -4252,30 +4503,19 @@ public partial class MainWindow : Window, IMacroActionHandler
 
     async void ExportDiagnostics_Click(object s, RoutedEventArgs e)
     {
-        var path = await _diagnostics.ExportAsync(_config, Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "WARDOGS Radio", "Diagnostics"), _mpvProvider?.Snapshot, _youtubeReady, _outputHealth);
-        if (_meterForensics is { } report)
-        {
-            var vm = _vm.Probe();
-            var endpointAvailable = _gameBusEndpointPeakMeter.TryRead(_gameOutputEndpointId, out var endpointPeak);
-            var selected = _config.MusicStripIndex is { } index ? report.Strip(index) : null;
-            var feed = _youtubeGameFeed;
-            var text = Environment.NewLine + "RAW VOICEMEETER METER FORENSICS" + Environment.NewLine +
-                $"edition={vm.Edition}; selectedStrip={_config.MusicStripIndex}; gameBus={_config.GameBus}; " +
-                $"remoteB1={RawPeak(report.Bus("B1"))}; windowsB1={endpointPeak:0.000000}; windowsB1Available={endpointAvailable}; " +
-                $"confidence={_outputTelemetry.Confidence}; feedEndpoint={feed?.OutputEndpointName ?? "none"}; captured={feed?.CapturedPeak.ToString("0.000000") ?? "—"}" + Environment.NewLine +
-                string.Join(Environment.NewLine, report.Strips.Concat(report.Buses).Select(path => $"{path.Name}: {RawPeak(path)}")) + Environment.NewLine +
-                string.Join(Environment.NewLine, report.ChannelScan.Select(RawScan)) + Environment.NewLine;
-            await File.AppendAllTextAsync(path, text);
-        }
+        if (_diagnosticSnapshot is null) RunDiagnostics();
+        var path = await DiagnosticService.ExportSnapshotAsync(_diagnosticSnapshot!,
+            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "WARDOGS Radio", "Diagnostics"),
+            ApplicationVersionText.Text);
         Footer.Text = "DIAGNOSTIC REPORT EXPORTED · " + path;
     }
 
     void RefreshSetupWizard()
     {
         if (SetupVmState is null) return;
-        var vm = _signalStatus ?? _vm.Probe();
+        var vm = _signalStatus ?? _bridge.Probe();
         var mpvAvailable = new MpvLocator().Find(_config.MpvPath) is not null;
-        SetupSystemChecks.Text = $"Voicemeeter: {(vm.Connected ? "Connected" : vm.Installed ? "Installed · connect next" : "Needs setup")}\nLocal music player: {(mpvAvailable ? "Ready" : "Needs setup")}\nYouTube player: {(_youtubeReady ? "Ready" : "Needs setup")}\nSoundCloud / Apple Music: Account setup unavailable until owner access is supplied";
+        SetupSystemChecks.Text = $"WARDOGS Radio: Running\nBundled/local MPV: {(mpvAvailable ? "Available" : "Needs attention")}\nAudio Bridge: {(vm.Connected && vm.Edition == "Banana" ? "Connected" : vm.Installed ? "Repair needed" : "Voicemeeter Banana missing")}";
         SetupVmState.Text = vm.Connected ? $"Connected · Voicemeeter {vm.Edition}" : vm.Installed ? "Voicemeeter found · press Connect to continue" : "Voicemeeter not found · install or start Voicemeeter Banana";
         var microphone = SetupMicrophoneBox.SelectedItem as WindowsAudioEndpoint;
         var monitor = SetupMonitorBox.SelectedItem as WindowsAudioEndpoint;
@@ -4286,14 +4526,13 @@ public partial class MainWindow : Window, IMacroActionHandler
         SetupProviderState.Text = $"Local music: {(mpvAvailable ? "Ready" : "Needs setup")} · YouTube: {(_youtubeReady ? "Ready" : "Needs setup")} · External music apps: {_externalSessions.Count} found · SoundCloud: needs account access · Apple Music: needs account access";
         SetupStationsState.Text = $"{_config.Profile.Stations.Count} station(s) saved · {_config.Profile.Stations.Count(x => x.Enabled && ((x.PlaylistFiles?.Count ?? 0) > 0 || !string.IsNullOrWhiteSpace(x.Source)))} with a source";
         SetupControlsState.Text = $"{_config.Profile.Macros.Count} macro(s) saved. Test a binding in the Macro editor; physical controller input requires a live test.";
-        SetupRoutingDevices.Text = $"Mic: {microphone?.Name ?? "not chosen"} → Voicemeeter {_config.GameBus}. Local listening: {monitor?.Name ?? "not chosen"}. Voicemeeter—not WARDOGS—mixes the mic and separate game-music strips.";
+        SetupRoutingDevices.Text = $"Microphone: {microphone?.Name ?? "not chosen"}. Headphones: {monitor?.Name ?? "not chosen"}. WARDOGS manages the supported audio path into game voice.";
         SetupGameOutputEndpointName.Text = _gameOutputEndpointName is null
             ? $"Voicemeeter Out {_config.GameBus} was not found in Windows recording devices. Refresh devices before choosing it in your game."
             : $"{_gameOutputEndpointName} · choose this as the microphone in your game or voice app.";
-        var route = new VoicemeeterRouteController(_vm);
-        var micB1 = _config.MicrophoneStripIndex is { } micStrip && route.TryRead(micStrip, _config.GameBus, out var micToGame) && micToGame;
-        var musicB1 = _config.MusicStripIndex is { } musicStrip && route.TryRead(musicStrip, _config.GameBus, out var musicToGame) && musicToGame;
-        var musicA1 = _config.MusicStripIndex is { } listeningStrip && route.TryRead(listeningStrip, "A1", out var musicToMonitor) && musicToMonitor;
+        var micB1 = _config.MicrophoneStripIndex is { } micStrip && _bridge.TryReadRoute(micStrip, _bridge.Topology.GameBus, out var micToGame) && micToGame;
+        var musicB1 = _config.MusicStripIndex is { } musicStrip && _bridge.TryReadRoute(musicStrip, _bridge.Topology.GameBus, out var musicToGame) && musicToGame;
+        var musicA1 = _config.MusicStripIndex is { } listeningStrip && _bridge.TryReadRoute(listeningStrip, _bridge.Topology.ListeningBus, out var musicToMonitor) && musicToMonitor;
         var splitOutput = _config.GameMpvAudioDeviceName is not null;
         var directHeadset = HeadsetPlayerTargetsSelectedOutput();
         var youtubeListening = _active?.ProviderId == "youtube" && _youtubeRoute.IsActive;
@@ -4311,26 +4550,11 @@ public partial class MainWindow : Window, IMacroActionHandler
             ? $"Mic → {_config.GameBus}: {(micB1 ? "ON" : "OFF / UNKNOWN")} · Game music → {_config.GameBus}: {(musicB1 ? "ON" : "OFF / UNKNOWN")} · Music → A1: {(musicA1 ? "ON (may double headset music)" : "OFF")}. Headset music plays directly to its device."
             : $"Mic → {_config.GameBus}: {(micB1 ? "ON" : "OFF / UNKNOWN")} · Music → {_config.GameBus}: {(musicB1 ? "ON" : "OFF / UNKNOWN")} · Music → A1: {(musicA1 ? "ON" : "OFF / UNKNOWN")}. Set A1 hardware output to your headphones in Voicemeeter.";
         SetupChainTestState.Text = $"Mic: {(_sawMicSignal ? "PASS" : "NEEDS TEST")} · Music: {(_sawMusicSignal ? "PASS" : "NEEDS TEST")} · B1 mixer: {(_sawGameSignal ? "PASS" : "NEEDS TEST")} · B1 Windows output: {(_sawGameEndpointSignal ? "PASS" : "NEEDS TEST")} · Headphones: {(_sawMonitorSignal ? "PASS" : "NEEDS TEST")}";
-        var missing = new List<string>();
-        if (!vm.Connected) missing.Add("connect Voicemeeter");
-        if (microphone is null) missing.Add("choose microphone");
-        if (monitor is null) missing.Add("choose headphones");
-        if (_config.MicrophoneStripIndex is null) missing.Add("assign mic strip");
-        if (_config.MusicStripIndex is null) missing.Add("assign music strip");
-        missing.AddRange(SetupMusicReadiness.Missing(_active, _mpvProvider is not null,
-            _youtubePlayerReady, _youtubeGameFeed is { Fault: null }, splitOutput, _gameMpvProvider is not null));
-        if (_config.MicrophoneStripIndex is not null && _config.MicrophoneStripIndex == _config.MusicStripIndex) missing.Add("use separate mic and music strips");
-        if (!micB1) missing.Add("route mic to B1");
-        if (!musicB1) missing.Add("route music to B1");
-        if (!directHeadset && !musicA1) missing.Add("route music to A1");
-        if (!_sawMicSignal) missing.Add("observe mic level");
-        if (!_sawMusicSignal) missing.Add("observe music level");
-        if (!_sawGameSignal) missing.Add("observe B1 level");
-        if (!_sawGameEndpointSignal) missing.Add("observe Voicemeeter Out B1 Windows endpoint level");
-        if (!_sawMonitorSignal) missing.Add(directHeadset ? "observe headphone output level" : "observe A1 level");
-        if (SetupHeardMusic.IsChecked != true) missing.Add("confirm headphones by listening");
-        if (SetupGameHeard.IsChecked != true) missing.Add("confirm game-voice receive");
-        SetupReadiness.Text = missing.Count == 0 ? "READY · Live input and bus levels seen, routes enabled, and listening/game receive owner-confirmed." : "STILL NEEDED · " + string.Join(" · ", missing);
+        var readiness = CaptureReadiness(vm);
+        SetupReadiness.Text = readiness.Overall == OverallReadiness.Ready
+            ? $"READY · {readiness.CorePassed}/{readiness.CoreTotal} core checks passed. Last verified: {_config.SetupVerification?.VerifiedAt.ToLocalTime().ToString("g") ?? "this session"}."
+            : $"{readiness.Overall.ToString().ToUpperInvariant()} · " +
+                string.Join(" · ", readiness.Checks.Where(check => check.BlocksCoreReadiness && check.Severity != ReadinessSeverity.Ready).Select(check => check.Summary));
     }
 
     void InvalidateSignalVerification()
@@ -4383,8 +4607,8 @@ public partial class MainWindow : Window, IMacroActionHandler
         var end = DateTime.UtcNow.AddSeconds(3);
         while (DateTime.UtcNow < end)
         {
-            var status = _vm.Probe();
-            var mixer = status.Connected ? new VoicemeeterSignalMonitor(_vm).ReadBus(status.Edition, _config.GameBus) : new SignalLevel(false, 0);
+            var status = _bridge.Probe();
+            var mixer = status.Connected ? _bridge.ReadBusSignal(_config.GameBus, status.Edition) : new SignalLevel(false, 0);
             mixerSeen |= mixer.Available && mixer.Peak > .005f;
             endpointSeen |= _gameBusEndpointPeakMeter.TryRead(_gameOutputEndpointId, out var peak) && peak > .005f;
             await Task.Delay(100);
@@ -4574,13 +4798,52 @@ public partial class MainWindow : Window, IMacroActionHandler
     async void SetupFinish_Click(object sender, RoutedEventArgs e)
     {
         RefreshSetupWizard();
-        if (!SetupReadiness.Text.StartsWith("READY ·", StringComparison.Ordinal))
+        var readiness = CaptureReadiness();
+        if (readiness.Overall != OverallReadiness.Ready)
         {
             Footer.Text = "SETUP UNFINISHED · Complete the live checks or leave the wizard without claiming verification.";
             return;
         }
+        var priorVerification = _config.SetupVerification;
+        var priorComplete = _config.SetupComplete;
+        _config.SetupVerification = new SetupVerification
+        {
+            VerifiedAt = DateTimeOffset.Now,
+            MicrophoneDeviceId = _config.MicrophoneDeviceId,
+            MonitorDeviceId = _config.MonitorDeviceId,
+            MicrophoneStripIndex = _config.MicrophoneStripIndex,
+            MusicStripIndex = _config.MusicStripIndex,
+            GameBus = _config.GameBus,
+            GameOutputDeviceId = _gameOutputEndpointId,
+            VoicemeeterEdition = _bridge.Snapshot.Telemetry?.Status.Edition ?? _bridge.Probe().Edition,
+            MicrophoneObserved = _sawMicSignal,
+            ListeningConfirmed = SetupHeardMusic.IsChecked == true,
+            MusicObserved = _sawMusicSignal,
+            MixerBusObserved = _sawGameSignal,
+            WindowsBusObserved = _sawGameEndpointSignal,
+            GameReceiveConfirmed = SetupGameHeard.IsChecked == true
+        };
         _config.SetupComplete = true;
-        await _store.SaveAsync(_config);
+        try { await _store.SaveAsync(_config); }
+        catch (Exception error)
+        {
+            _config.SetupVerification = priorVerification;
+            _config.SetupComplete = priorComplete;
+            Footer.Text = "SETUP VERIFICATION COULD NOT BE SAVED · " + error.Message;
+            return;
+        }
+        foreach (var lease in _setupRouteLeases.ToArray())
+        {
+            var committed = await _bridge.CommitRouteAsync(lease);
+            if (!committed.Success)
+            {
+                Footer.Text = "SETUP SAVED, BUT ROUTE OWNERSHIP NEEDS ATTENTION · " + committed.Detail;
+                return;
+            }
+            _setupRouteLeases.Remove(lease);
+        }
+        _setupHasUncommittedChanges = false;
+        _setupVisit = null;
         Footer.Text = "SETUP VERIFIED · Live meters and owner listening checks completed.";
         Dashboard_Click(sender, e);
     }
@@ -4635,6 +4898,7 @@ public partial class MainWindow : Window, IMacroActionHandler
 
     async void Window_Closing(object? sender, CancelEventArgs e)
     {
+        _gameFeedTestCancellation?.Cancel();
         if (_closingFinalized) return;
         e.Cancel = true;
         if (!_exitRequested)
@@ -4681,6 +4945,9 @@ public partial class MainWindow : Window, IMacroActionHandler
                 }
                 catch (Exception error) { Footer.Text = "Could not save the final playback position: " + error.Message; }
             }
+            await StopGameOutputAsync();
+            if (!EndYouTubeRoute("The app is closing, but the temporary YouTube route still needs restoration."))
+                throw new InvalidOperationException(_youtubeHeadsetRouteError ?? "Temporary YouTube listening route still needs restoration.");
             await _store.SaveAsync(_config);
             _hotkeys?.Dispose();
             _headsetPeakMeter.Dispose();
@@ -4688,10 +4955,9 @@ public partial class MainWindow : Window, IMacroActionHandler
             _keyRelease?.Dispose();
             _rawControllers?.Dispose();
             if (_xinputEvents is not null) await _xinputEvents.DisposeAsync();
-            try { await StopGameOutputAsync(); }
-            finally { EndYouTubeRoute("The app is closing, but the temporary YouTube route still needs restoration."); }
             if (_mpvProvider is not null) await _mpvProvider.DisposeAsync();
             if (_externalProvider is not null) await _externalProvider.DisposeAsync();
+            await _bridge.StopTelemetryAsync();
             _vm.Dispose();
             _trayIcon.Visible = false;
             _trayMenu.IsOpen = false;
@@ -4708,6 +4974,8 @@ public partial class MainWindow : Window, IMacroActionHandler
             _exitRequested = false;
             QueueRestoreFromTray();
             _playbackTimer.Start();
+            _signalTimer.Start();
+            _bridge.StartTelemetry(_config.MicrophoneStripIndex, _config.MusicStripIndex);
         }
     }
 }
