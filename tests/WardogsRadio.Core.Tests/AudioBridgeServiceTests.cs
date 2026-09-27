@@ -159,6 +159,21 @@ public sealed class AudioBridgeServiceTests
     }
 
     [Fact]
+    public async Task SetupGainUndoRestoresOnlyItsVerifiedAppliedValue()
+    {
+        var remote = new Remote { Connected = true, Running = true };
+        remote.Values["Strip[0].Gain"] = 0;
+        var bridge = new AudioBridgeService(remote);
+        Assert.True((await bridge.SetGainAsync(0, -6)).Success);
+        Assert.True((await bridge.RestoreConfiguredFloatAsync("setup", "Strip[0].Gain", -6, 0)).Success);
+        Assert.Equal(0, remote.Values["Strip[0].Gain"]);
+        Assert.True((await bridge.SetGainAsync(0, -6)).Success);
+        remote.Values["Strip[0].Gain"] = -3;
+        Assert.False((await bridge.RestoreConfiguredFloatAsync("setup", "Strip[0].Gain", -6, 0)).Success);
+        Assert.Equal(-3, remote.Values["Strip[0].Gain"]);
+    }
+
+    [Fact]
     public async Task InterruptedRouteIsRestoredFromDurableLease()
     {
         var path = Path.Combine(Path.GetTempPath(), "wardogs-bridge-test-" + Guid.NewGuid() + ".json");

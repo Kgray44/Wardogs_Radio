@@ -65,11 +65,12 @@ public partial class MainWindow
         public SetupAudioConfiguration Original { get; } = original;
         public Dictionary<string, (float Prior, float Applied)> Routes { get; } = [];
         public Dictionary<int, (string Prior, string Applied, string Driver)> Devices { get; } = [];
+        public void RecordFloat(string parameter, float prior, float applied) =>
+            Routes[parameter] = (Routes.TryGetValue(parameter, out var earlier) ? earlier.Prior : prior, applied);
         public void RecordRoute(int strip, string bus, bool prior, bool applied)
         {
             var key = $"Strip[{strip}].{bus}";
-            Routes[key] = (Routes.TryGetValue(key, out var earlier) ? earlier.Prior : prior ? 1f : 0f,
-                applied ? 1f : 0f);
+            RecordFloat(key, prior ? 1f : 0f, applied ? 1f : 0f);
         }
         public void RecordDevice(int strip, string prior, string applied, string driver)
         {
@@ -132,6 +133,10 @@ public partial class MainWindow
                 catch (Exception error) { Footer.Text = "SETUP UNDO NEEDS ATTENTION · Headphone output: " + error.Message; return false; }
         }
         visit.Original.Restore(_config);
+        ShowMicrophoneVolume(_config.MicrophoneVolume);
+        _sawMicSignal = _sawMusicSignal = _sawGameSignal = _sawGameEndpointSignal = _sawMonitorSignal = false;
+        SetupHeardMusic.IsChecked = false;
+        SetupGameHeard.IsChecked = false;
         try { await _store.SaveAsync(_config); }
         catch (Exception error) { Footer.Text = "SETUP UNDO NEEDS ATTENTION · Configuration save: " + error.Message; return false; }
         _setupHasUncommittedChanges = false;

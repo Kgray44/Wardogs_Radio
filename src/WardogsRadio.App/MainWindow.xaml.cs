@@ -3359,7 +3359,8 @@ public partial class MainWindow : Window, IMacroActionHandler
             return false;
         }
         if (!_bridge.TryReadRoute(strip, _bridge.Topology.ListeningBus, out var priorA1) ||
-            !_bridge.TryReadRoute(strip, _bridge.Topology.GameBus, out var priorB1))
+            !_bridge.TryReadRoute(strip, _bridge.Topology.GameBus, out var priorB1) ||
+            !_bridge.TryReadGain(strip, out var priorGain))
         {
             Footer.Text = "CANNOT READ MICROPHONE ROUTES; NOTHING CHANGED.";
             return false;
@@ -3369,13 +3370,36 @@ public partial class MainWindow : Window, IMacroActionHandler
         if (ownedStrip is not null && string.Equals(priorDevice, device.Name, StringComparison.OrdinalIgnoreCase))
         {
             var previousSelection = _config.MicrophoneDeviceId;
-            _config.MicrophoneDeviceId = microphone.Id;
-            await _store.SaveAsync(_config);
-            if (SetupView.Visibility == Visibility.Visible && previousSelection != microphone.Id)
-                _setupHasUncommittedChanges = true;
-            await InitializeMicrophoneVolumeAsync();
-            Footer.Text = $"MICROPHONE ALREADY CONNECTED · {device.Name} → {_config.GameBus}.";
-            return true;
+            var previousVolume = _config.MicrophoneVolume;
+            var previousVolumeInitialized = _config.MicrophoneVolumeInitialized;
+            try
+            {
+                _config.MicrophoneDeviceId = microphone.Id;
+                await _store.SaveAsync(_config);
+                await InitializeMicrophoneVolumeAsync();
+                if (!_bridge.TryReadGain(strip, out var existingGain) ||
+                    Math.Abs(existingGain - MicrophoneLevel.GainDb(_config.MicrophoneVolume)) >= .1f)
+                    throw new InvalidOperationException("Microphone gain could not be confirmed after connecting.");
+                if (SetupView.Visibility == Visibility.Visible && _setupVisit is { } noChangeVisit)
+                {
+                    noChangeVisit.RecordFloat($"Strip[{strip}].Gain", priorGain, existingGain);
+                    if (previousSelection != microphone.Id || Math.Abs(priorGain - existingGain) >= .1f)
+                        _setupHasUncommittedChanges = true;
+                }
+                Footer.Text = $"MICROPHONE ALREADY CONNECTED · {device.Name} → {_config.GameBus}.";
+                return true;
+            }
+            catch (Exception error)
+            {
+                await _bridge.RestoreConfiguredFloatAsync("microphone gain", $"Strip[{strip}].Gain",
+                    MicrophoneLevel.GainDb(_config.MicrophoneVolume), priorGain);
+                _config.MicrophoneDeviceId = previousSelection;
+                _config.MicrophoneVolume = previousVolume;
+                _config.MicrophoneVolumeInitialized = previousVolumeInitialized;
+                try { await _store.SaveAsync(_config); } catch { /* Save indicator reports the failure. */ }
+                Footer.Text = "MICROPHONE SETUP NEEDS ATTENTION · " + error.Message;
+                return false;
+            }
         }
         var driver = device.InterfaceName.ToLowerInvariant();
         var connected = false;
@@ -3384,7 +3408,8 @@ public partial class MainWindow : Window, IMacroActionHandler
         var formerConfig = (_config.MicrophoneStripIndex, _config.MicrophoneDeviceId, _config.AutoMicrophoneStrip,
             _config.AutoMicrophonePreviousDeviceName, _config.AutoMicrophonePreviousDriver,
             _config.AutoMicrophoneAppliedDeviceName, _config.AutoMicrophonePreviousA1,
-            _config.AutoMicrophonePreviousB1, _config.AutoMicrophonePreviousStripIndex, _config.SetupComplete);
+            _config.AutoMicrophonePreviousB1, _config.AutoMicrophonePreviousStripIndex, _config.SetupComplete,
+            _config.MicrophoneVolume, _config.MicrophoneVolumeInitialized);
         var priorDriver = _bridge.ListAudioDevices(true).FirstOrDefault(candidate =>
             candidate.Name.Equals(priorDevice, StringComparison.OrdinalIgnoreCase))?.InterfaceName.ToLowerInvariant() ?? driver;
         try
@@ -3449,6 +3474,12 @@ public partial class MainWindow : Window, IMacroActionHandler
             }
             PopulateMusicStrips();
             await InitializeMicrophoneVolumeAsync();
+            if (!_bridge.TryReadGain(strip, out var confirmedGain) ||
+                Math.Abs(confirmedGain - MicrophoneLevel.GainDb(_config.MicrophoneVolume)) >= .1f)
+                throw new InvalidOperationException("Microphone gain could not be confirmed after connecting.");
+            if (SetupView.Visibility == Visibility.Visible && _setupVisit is { } gainVisit &&
+                _bridge.TryReadGain(strip, out var appliedGain))
+                gainVisit.RecordFloat($"Strip[{strip}].Gain", priorGain, appliedGain);
             RefreshSignalMeters();
             if (SetupView.Visibility == Visibility.Visible) _setupHasUncommittedChanges = true;
             Footer.Text = $"MICROPHONE ASSIGNED TO VOICEMEETER HARDWARE INPUT {strip + 1} → {_config.GameBus}; A1 SELF-MONITORING OFF. SPEAK TO VERIFY ITS LIVE METER.";
@@ -3458,6 +3489,9 @@ public partial class MainWindow : Window, IMacroActionHandler
         catch (Exception error)
         {
             var restoreErrors = new List<string>();
+            var gainRestore = await _bridge.RestoreConfiguredFloatAsync("microphone gain", $"Strip[{strip}].Gain",
+                MicrophoneLevel.GainDb(_config.MicrophoneVolume), priorGain);
+            if (!gainRestore.Success) restoreErrors.Add(gainRestore.Detail);
             foreach (var lease in routeLeases.AsEnumerable().Reverse())
             {
                 var state = await _bridge.ReleaseRouteAsync(lease);
@@ -3487,7 +3521,8 @@ public partial class MainWindow : Window, IMacroActionHandler
                 (_config.MicrophoneStripIndex, _config.MicrophoneDeviceId, _config.AutoMicrophoneStrip,
                     _config.AutoMicrophonePreviousDeviceName, _config.AutoMicrophonePreviousDriver,
                     _config.AutoMicrophoneAppliedDeviceName, _config.AutoMicrophonePreviousA1,
-                    _config.AutoMicrophonePreviousB1, _config.AutoMicrophonePreviousStripIndex, _config.SetupComplete) = formerConfig;
+                    _config.AutoMicrophonePreviousB1, _config.AutoMicrophonePreviousStripIndex, _config.SetupComplete,
+                    _config.MicrophoneVolume, _config.MicrophoneVolumeInitialized) = formerConfig;
             }
             try { await _store.SaveAsync(_config); }
             catch (Exception saveError) { restoreErrors.Add("Configuration save failed: " + saveError.Message); }
@@ -4289,9 +4324,20 @@ public partial class MainWindow : Window, IMacroActionHandler
             AudioMicrophoneVolumeText is null || SetupMicrophoneVolumeText is null || _syncingMicrophoneVolumeSliders) return;
         ShowMicrophoneVolume(e.NewValue);
         if (!IsLoaded) return;
+        var volumeStrip = _config.MicrophoneStripIndex;
+        var priorMixerGain = 0f;
+        var hadGain = volumeStrip is { } configuredStrip &&
+            _bridge.TryReadGain(configuredStrip, out priorMixerGain);
         _config.MicrophoneVolume = Math.Clamp(e.NewValue, 0, MicrophoneLevel.Maximum);
         _config.MicrophoneVolumeInitialized = true;
         var applied = await ApplyMicrophoneVolumeToMixerAsync();
+        if (SetupView.Visibility == Visibility.Visible && _setupVisit is { } visit)
+        {
+            if (applied.Success && hadGain && volumeStrip is { } strip &&
+                _bridge.TryReadGain(strip, out var currentMixerGain))
+                visit.RecordFloat($"Strip[{strip}].Gain", priorMixerGain, currentMixerGain);
+            _setupHasUncommittedChanges = true;
+        }
         if (Math.Abs(_config.MicrophoneVolume - e.NewValue) < .001)
             Footer.Text = applied.Success ? applied.Detail : applied.Detail + " Your choice is saved for when the route is available.";
         _volumeSaveTimer.Stop();
