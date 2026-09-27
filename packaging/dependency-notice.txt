@@ -1,0 +1,20 @@
+Bundled setup prerequisites
+===========================
+
+Microsoft Edge WebView2 Runtime
+-------------------------------
+WARDOGS Radio includes Microsoft's Evergreen WebView2 Runtime x64 standalone
+installer. It is run only when the runtime is missing and the user keeps the
+default prerequisite selection. Microsoft services the Evergreen Runtime after
+installation. See https://learn.microsoft.com/microsoft-edge/webview2/concepts/distribution
+
+VB-Audio Voicemeeter Banana
+---------------------------
+WARDOGS Radio includes the unmodified Voicemeeter Banana setup from VB-Audio.
+Origin: https://www.voicemeeter.com/ and https://vb-audio.com/
+
+Voicemeeter Banana is donationware. All participations are welcome. The
+official VB-Audio installer is run only when a Banana-or-better installation is
+missing and the user keeps the default prerequisite selection. It installs a
+virtual audio driver and requires administrator approval and a Windows restart.
+WARDOGS Radio does not alter or remove Voicemeeter when it is uninstalled.

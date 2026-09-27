@@ -33,4 +33,4 @@ jobs:
           .\scripts\stage-package.ps1 -StageDir "$PWD\.release\stage"
           $app = Start-Process -FilePath "$PWD\.release\stage\WARDOGS Radio.exe" -ArgumentList '--startup-health-check' -WorkingDirectory "$PWD\.release\stage" -Wait -PassThru
           if ($app.ExitCode -ne 0) { throw 'Staged application startup health failed.' }
-          foreach ($file in @('WARDOGS Radio Launcher.exe','WARDOGS Radio Update Agent.exe','VERSION','PACKAGE_CONTENTS.sha256','WebView2Loader.dll','mpv.exe','mpv.com','d3dcompiler_43.dll','THIRD_PARTY_MPV.txt')) { if (-not (Test-Path "$PWD\.release\stage\$file")) { throw "Staged package is missing $file." } }
+          foreach ($file in @('WARDOGS Radio Launcher.exe','WARDOGS Radio Update Agent.exe','VERSION','PACKAGE_CONTENTS.sha256','WebView2Loader.dll','mpv.exe','mpv.com','d3dcompiler_43.dll','THIRD_PARTY_MPV.txt','THIRD_PARTY_DEPENDENCIES.txt','Prerequisites\MicrosoftEdgeWebView2RuntimeInstallerX64.exe','Prerequisites\VoicemeeterBananaSetup.exe')) { if (-not (Test-Path "$PWD\.release\stage\$file")) { throw "Staged package is missing $file." } }

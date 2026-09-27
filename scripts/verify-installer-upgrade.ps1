@@ -6,7 +6,7 @@ $target = [IO.Path]::GetFullPath($InstallDir)
 if ($target -eq [IO.Path]::GetPathRoot($target) -or $target.Length -lt 10) { throw 'Refusing an unsafe InstallDir.' }
 $result = Start-Process -FilePath $InstallerPath -ArgumentList @('/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/SP-',"/DIR=`"$target`"") -Wait -PassThru
 if ($result.ExitCode -ne 0) { throw "Installer failed with $($result.ExitCode)." }
-foreach ($file in @('WARDOGS Radio.exe','WARDOGS Radio Launcher.exe','WARDOGS Radio Update Agent.exe','VERSION','PACKAGE_CONTENTS.sha256','WARDOGS Radio.dll','WardogsRadio.Core.dll','youtube-player.html','mpv.exe','mpv.com','d3dcompiler_43.dll','THIRD_PARTY_MPV.txt')) {
+foreach ($file in @('WARDOGS Radio.exe','WARDOGS Radio Launcher.exe','WARDOGS Radio Update Agent.exe','VERSION','PACKAGE_CONTENTS.sha256','WARDOGS Radio.dll','WardogsRadio.Core.dll','youtube-player.html','mpv.exe','mpv.com','d3dcompiler_43.dll','THIRD_PARTY_MPV.txt','THIRD_PARTY_DEPENDENCIES.txt')) {
     if (-not (Test-Path -LiteralPath (Join-Path $target $file) -PathType Leaf)) { throw "Installed package verification failed: $file is missing." }
 }
 if ((Get-Content -LiteralPath (Join-Path $target 'VERSION') -Raw).Trim() -ne $version) { throw 'Installed VERSION does not match WARDOGS_VERSION.' }
