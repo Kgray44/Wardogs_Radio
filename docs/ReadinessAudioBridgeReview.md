@@ -24,6 +24,8 @@ In the `71479ef` preview, the owner heard the B1 preview continuously, but could
 
 The owner heard that distinct tone clearly in the `4871e43` preview. This confirms the configured game output, B1 path, and local headphone audition for the tone on the owner's machine. The owner has not yet confirmed that a game or Discord receives YouTube music from Voicemeeter Out B1. The current PR checks passed on GitHub, but that CI result does not substitute for this last external-app check.
 
+The owner also changed the listening device from Razer headphones to laptop speakers and back during the same active YouTube station. The song moved both ways without retuning, and Windows' default remained the Razer headset; a separate read-only default-device check agreed. This is owner-live acceptance of the YouTube device-switch path on this machine. The owner could not yet test game/Discord reception. The owner also noted that the held B1 control did not sound like an isolated output preview because YouTube direct listening continued. The UI now calls it a game-output check with a distinct tone and explicitly says YouTube stays audible; it no longer promises an isolated YouTube mix.
+
 The follow-up amendment uses these as regression evidence. A later build or simulated test does not erase or supersede them. The owner has also reported that the later Audio & Routing preview is somewhat better while Setup & Repair still contains far too much information. A substantially simpler Setup page is open for renewed owner review. Repeat owner-live acceptance is required before merge readiness can be claimed.
 
 ## Follow-up candidate in progress

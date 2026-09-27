@@ -4950,14 +4950,14 @@ public partial class MainWindow : Window, IMacroActionHandler
         e.Handled = true;
         _b1PointerHeld = false;
         if (sender is Button { IsMouseCaptured: true } button) button.ReleaseMouseCapture();
-        if (!B1HoldRequested) await StopB1AuditionAsync("Game mix preview stopped.");
+        if (!B1HoldRequested) await StopB1AuditionAsync("Game output check stopped.");
     }
 
     async void B1Hold_LostCapture(object sender, MouseEventArgs e)
     {
         if (!_b1PointerHeld) return;
         _b1PointerHeld = false;
-        if (!B1HoldRequested) await StopB1AuditionAsync("Game mix preview stopped.");
+        if (!B1HoldRequested) await StopB1AuditionAsync("Game output check stopped.");
     }
 
     async void B1Hold_KeyDown(object sender, KeyEventArgs e)
@@ -4974,7 +4974,7 @@ public partial class MainWindow : Window, IMacroActionHandler
         if (e.Key is not (Key.Space or Key.Return)) return;
         e.Handled = true;
         _b1KeyboardHeld = false;
-        if (!B1HoldRequested) await StopB1AuditionAsync("Game mix preview stopped.");
+        if (!B1HoldRequested) await StopB1AuditionAsync("Game output check stopped.");
     }
 
     async void Window_Deactivated(object? sender, EventArgs e)
@@ -4983,7 +4983,7 @@ public partial class MainWindow : Window, IMacroActionHandler
         _b1KeyboardHeld = false;
         if (AudioAuditionB1Button.IsMouseCaptured) AudioAuditionB1Button.ReleaseMouseCapture();
         if (SetupAuditionB1Button.IsMouseCaptured) SetupAuditionB1Button.ReleaseMouseCapture();
-        await StopB1AuditionAsync("Game mix preview stopped.");
+        await StopB1AuditionAsync("Game output check stopped.");
     }
 
     async Task StartB1AuditionAsync()
@@ -5009,22 +5009,22 @@ public partial class MainWindow : Window, IMacroActionHandler
             }
             try
             {
-                SetB1AuditionUi(false, "Opening the B1 listening path… keep holding the button.");
+                SetB1AuditionUi(false, "Opening the game output check… keep holding the button.");
                 if (_active?.ProviderId == "mpv" && _mpvProvider is { } player)
                 {
                     await player.SetVolumeAsync(0);
                     _b1AuditionMutedPlayer = player;
                 }
-                if (!B1HoldRequested) { await StopB1AuditionCoreAsync("Game mix preview stopped."); return; }
+                if (!B1HoldRequested) { await StopB1AuditionCoreAsync("Game output check stopped."); return; }
                 var audition = new B1Audition();
                 var youtubePreview = _active?.ProviderId == "youtube";
                 audition.Start(_gameOutputEndpointId, _config.MonitorDeviceId, youtubePreview ? .25f : .50f);
                 _b1Audition = audition;
                 _b1AuditionErrorDetail = null;
-                if (!B1HoldRequested) { await StopB1AuditionCoreAsync("Game mix preview stopped."); return; }
+                if (!B1HoldRequested) { await StopB1AuditionCoreAsync("Game output check stopped."); return; }
                 SetB1AuditionUi(true, youtubePreview
-                    ? "Hearing the B1 game mix at 25% alongside YouTube. A short test tone is being sent through the game output."
-                    : "Hearing the B1 game mix at 50% preview level. A short test tone is being sent through the game output.");
+                    ? "Checking game output with a short tone. YouTube continues in your headphones."
+                    : "Checking game output with a short tone while local headphone music pauses.");
                 var toneCancellation = new CancellationTokenSource();
                 _b1PreviewToneCancellation = toneCancellation;
                 _ = PlayB1PreviewToneAsync(toneCancellation, youtubePreview);
@@ -5040,7 +5040,7 @@ public partial class MainWindow : Window, IMacroActionHandler
 
     void SetB1AuditionUi(bool listening, string message)
     {
-        var buttonText = listening ? "RELEASE TO STOP B1 TEST" : "HOLD TO TEST B1";
+        var buttonText = listening ? "RELEASE TO STOP CHECK" : "HOLD TO CHECK GAME OUTPUT";
         SetupAuditionB1Button.Content = buttonText;
         AudioAuditionB1Button.Content = buttonText;
         var background = listening
@@ -5067,14 +5067,14 @@ public partial class MainWindow : Window, IMacroActionHandler
             await DeviceTestSound.PlayAsync(gameOutput.ID, cancellation.Token);
             if (ReferenceEquals(_b1PreviewToneCancellation, cancellation) && _b1Audition is not null)
                 SetB1AuditionUi(true, youtubePreview
-                    ? "A short tone was sent through the game output. YouTube stays audible alongside the quieter B1 preview; release to stop."
-                    : "A short tone was sent through the game output. You are hearing the B1 mix at 50%; release to restore normal listening.");
+                    ? "Tone sent through the game output. YouTube remains audible; release to stop. Check game or Discord input separately."
+                    : "Tone sent through the game output. Release to restore local headphone listening. Check game or Discord input separately.");
         }
         catch (OperationCanceledException) when (cancellation.IsCancellationRequested) { }
         catch (Exception error)
         {
             if (ReferenceEquals(_b1PreviewToneCancellation, cancellation) && _b1Audition is not null)
-                SetB1AuditionUi(true, "Game mix preview is open, but the test tone could not play: " + error.Message);
+                SetB1AuditionUi(true, "Game output check could not play its tone: " + error.Message);
         }
         finally
         {
