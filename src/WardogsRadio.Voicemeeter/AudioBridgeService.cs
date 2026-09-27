@@ -31,10 +31,16 @@ public sealed record AudioOperationResult(bool Success, string Detail, AudioRout
 /// <summary>Owns the supported Banana connection and verifies route mutations before recording ownership.</summary>
 public sealed class AudioBridgeService(IVoicemeeterRemote remote, TimeProvider? clock = null, string? recoveryPath = null)
 {
+    public static readonly TimeSpan FastTelemetryInterval = TimeSpan.FromMilliseconds(40);
+    public static readonly TimeSpan LifecycleTelemetryInterval = TimeSpan.FromSeconds(1);
     readonly TimeProvider _clock = clock ?? TimeProvider.System;
     readonly SemaphoreSlim _operations = new(1, 1);
     readonly List<AudioRouteLease> _leases = [];
     readonly List<AudioDeviceLease> _deviceLeases = [];
+    // Writers own the lists under _operations; readers use immutable published
+    // copies so a 40 ms UI snapshot never waits for a slow verified mixer write.
+    volatile IReadOnlyList<AudioRouteLease> _publishedRoutes = Array.AsReadOnly(Array.Empty<AudioRouteLease>());
+    volatile IReadOnlyList<AudioDeviceLease> _publishedDevices = Array.AsReadOnly(Array.Empty<AudioDeviceLease>());
     readonly Queue<AudioBridgeFault> _faults = new();
     CancellationTokenSource? _telemetryCancellation;
     Task? _telemetryTask;
@@ -49,10 +55,17 @@ public sealed class AudioBridgeService(IVoicemeeterRemote remote, TimeProvider? 
     public VoicemeeterTopology Topology => VoicemeeterTopology.Banana;
     public VoicemeeterStripLimiter Limiter { get; } = new(remote);
     public bool RecoveryReady => _recoveryChecked;
-    public AudioBridgeSnapshot Snapshot => new(_state, _telemetry?.Status.Edition ?? remote.Probe().Edition,
-        _leases.ToArray(), ReadFaults(), _clock.GetUtcNow(), _detail)
-        { Telemetry = _telemetry, OwnedDevices = _deviceLeases.ToArray() };
-    public IReadOnlyList<AudioDeviceLease> OwnedDevices => _deviceLeases.ToArray();
+    public AudioBridgeSnapshot Snapshot
+    {
+        get
+        {
+            var telemetry = _telemetry;
+            return new(_state, telemetry?.Status.Edition ?? remote.ProbeFast().Edition,
+                _publishedRoutes, ReadFaults(), _clock.GetUtcNow(), _detail)
+                { Telemetry = telemetry, OwnedDevices = _publishedDevices };
+        }
+    }
+    public IReadOnlyList<AudioDeviceLease> OwnedDevices => _publishedDevices;
 
     AudioBridgeFault[] ReadFaults() { lock (_faults) return _faults.ToArray(); }
 
@@ -65,13 +78,18 @@ public sealed class AudioBridgeService(IVoicemeeterRemote remote, TimeProvider? 
         var token = _telemetryCancellation.Token;
         _telemetryTask = Task.Run(async () =>
         {
-            using var timer = new PeriodicTimer(TimeSpan.FromMilliseconds(200));
+            using var timer = new PeriodicTimer(FastTelemetryInterval);
+            var ticks = 0;
             try
             {
                 do
                 {
                     await _operations.WaitAsync(token);
-                    try { SampleTelemetry(_telemetryMicrophoneStrip, _telemetryMusicStrip); }
+                    try
+                    {
+                        if (ticks++ % 25 == 0) SampleTelemetry(_telemetryMicrophoneStrip, _telemetryMusicStrip);
+                        else SampleFastTelemetry(_telemetryMicrophoneStrip, _telemetryMusicStrip);
+                    }
                     finally { _operations.Release(); }
                 } while (await timer.WaitForNextTickAsync(token));
             }
@@ -100,11 +118,7 @@ public sealed class AudioBridgeService(IVoicemeeterRemote remote, TimeProvider? 
     {
         var status = knownStatus ?? remote.Probe();
         var connected = status is { Connected: true, Edition: "Banana" };
-        if (!connected && _state == AudioBridgeConnectionState.Connected)
-        {
-            _state = AudioBridgeConnectionState.Recovering;
-            _detail = "Audio Bridge lost its Voicemeeter Banana connection; reconnecting.";
-        }
+        UpdateConnectionFromTelemetry(connected);
         var monitor = new VoicemeeterSignalMonitor(remote);
         SignalLevel ReadStrip(int? strip) => connected && strip is >= 0 and <= 4
             ? monitor.ReadStrip(status.Edition, strip) : new(false, 0);
@@ -115,6 +129,40 @@ public sealed class AudioBridgeService(IVoicemeeterRemote remote, TimeProvider? 
             ReadRoute(musicStrip), ReadStrip(microphoneStrip), ReadStrip(musicStrip),
             connected ? monitor.ReadBus(status.Edition, Topology.GameBus) : new(false, 0), _clock.GetUtcNow());
         return _telemetry;
+    }
+
+    public AudioBridgeTelemetry SampleFastTelemetry(int? microphoneStrip, int? musicStrip)
+    {
+        var status = remote.ProbeFast();
+        var connected = status is { Connected: true, Edition: "Banana" };
+        UpdateConnectionFromTelemetry(connected);
+        var previous = _telemetry;
+        var monitor = new VoicemeeterSignalMonitor(remote);
+        SignalLevel ReadStrip(int? strip) => connected && strip is >= 0 and <= 4
+            ? monitor.ReadStrip(status.Edition, strip) : new(false, 0);
+        var sameTargets = previous?.MicrophoneStrip == microphoneStrip && previous?.MusicStrip == musicStrip;
+        _telemetry = new(status, microphoneStrip, musicStrip,
+            connected && sameTargets ? previous?.MicrophoneDevice : null,
+            connected && sameTargets ? previous?.MicrophoneGameRoute : null,
+            connected && sameTargets ? previous?.MusicGameRoute : null,
+            ReadStrip(microphoneStrip), ReadStrip(musicStrip),
+            connected ? monitor.ReadBus(status.Edition, Topology.GameBus) : new(false, 0), _clock.GetUtcNow());
+        return _telemetry;
+    }
+
+    void UpdateConnectionFromTelemetry(bool connected)
+    {
+        if (!connected && _state == AudioBridgeConnectionState.Connected)
+        {
+            _state = AudioBridgeConnectionState.Recovering;
+            _detail = "Audio Bridge lost its Voicemeeter Banana connection; reconnecting.";
+        }
+        else if (connected && _recoveryChecked && _state is
+                 AudioBridgeConnectionState.Faulted or AudioBridgeConnectionState.Starting or AudioBridgeConnectionState.Recovering or AudioBridgeConnectionState.Connecting)
+        {
+            _state = AudioBridgeConnectionState.Connected;
+            _detail = "Audio Bridge connected to Voicemeeter Banana after engine startup.";
+        }
     }
     public bool TryReadRoute(int strip, string bus, out bool enabled)
     {
@@ -324,6 +372,7 @@ public sealed class AudioBridgeService(IVoicemeeterRemote remote, TimeProvider? 
             }
             _leases.Clear();
             _leases.AddRange(saved);
+            _publishedRoutes = Array.AsReadOnly(_leases.ToArray());
             if (saved.Length == 0) SaveRecovery();
             foreach (var lease in saved.Reverse())
             {
@@ -512,6 +561,7 @@ public sealed class AudioBridgeService(IVoicemeeterRemote remote, TimeProvider? 
             return Failure("Recovery", "Device recovery record contains an unsupported or duplicate assignment; record retained.", "validate device recovery");
         _deviceLeases.Clear();
         _deviceLeases.AddRange(saved);
+        _publishedDevices = Array.AsReadOnly(_deviceLeases.ToArray());
         if (saved.Length == 0) SaveDeviceRecovery();
         foreach (var lease in saved.Reverse())
         {
@@ -552,6 +602,7 @@ public sealed class AudioBridgeService(IVoicemeeterRemote remote, TimeProvider? 
 
     void SaveDeviceRecovery()
     {
+        _publishedDevices = Array.AsReadOnly(_deviceLeases.ToArray());
         if (_recoveryPath is null) return;
         var path = _recoveryPath + ".devices";
         if (_deviceLeases.Count == 0)
@@ -626,6 +677,7 @@ public sealed class AudioBridgeService(IVoicemeeterRemote remote, TimeProvider? 
 
     void SaveRecovery()
     {
+        _publishedRoutes = Array.AsReadOnly(_leases.ToArray());
         if (_recoveryPath is null) return;
         if (_leases.Count == 0)
         {

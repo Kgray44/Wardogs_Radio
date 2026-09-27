@@ -196,6 +196,38 @@ public sealed class OutputHealthTests
         }
     }
 
+    [Fact]
+    public void MicrophoneOnlyClipProducesWarningNotMusicOvercorrection()
+    {
+        var controller = new ClipGuardController();
+        var settings = new ClipGuardSettings { Mode = ClipGuardMode.Protect, AttackMilliseconds = 50 };
+        OutputHealthSnapshot? health = null;
+        for (var index = 0; index < 15; index++)
+            health = controller.Sample(settings, Level(.05), Level(1), Level(1), true,
+                Start.AddMilliseconds(index * 40));
+
+        Assert.NotNull(health);
+        Assert.Equal(0, health.ProtectionReductionDb);
+        Assert.Equal(1, health.ProtectionGain);
+        Assert.Contains("Microphone is too hot", health.Diagnosis);
+    }
+
+    [Fact]
+    public void ProtectAttenuatesCombinedGameFeedAtFortyMillisecondSamples()
+    {
+        var controller = new ClipGuardController();
+        var settings = new ClipGuardSettings { Mode = ClipGuardMode.Protect, AttackMilliseconds = 50 };
+        OutputHealthSnapshot? health = null;
+        for (var index = 0; index < 15; index++)
+            health = controller.Sample(settings, Level(.6), Level(.6), Level(1), true,
+                Start.AddMilliseconds(index * 40));
+
+        Assert.NotNull(health);
+        Assert.True(health.AutoProtectionAvailable);
+        Assert.True(health.ProtectionReductionDb > 0);
+        Assert.True(ClipGuardMath.EffectiveGameGain(1, 1, health.ProtectionGain) < 1);
+    }
+
     static AudioLevelSnapshot Level(double linear) => AudioLevelSnapshot.FromLinear(true, linear);
 
     static OutputHealthSnapshot Sample(ClipGuardController controller, ClipGuardSettings settings, double gamePeak,

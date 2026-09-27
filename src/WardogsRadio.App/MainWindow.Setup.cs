@@ -1,3 +1,4 @@
+using System.IO;
 using System.Windows;
 using WardogsRadio.Core;
 using WardogsRadio.Playback;
@@ -9,6 +10,8 @@ public partial class MainWindow
 {
     CancellationTokenSource? _gameFeedTestCancellation;
     SetupVisitState? _setupVisit;
+    bool _setupConnectInProgress;
+    bool _setupVisitRecoveryBlocked;
 
     sealed record SetupAudioConfiguration(
         string? MicrophoneDeviceId, string? MonitorDeviceId, int? MicrophoneStripIndex,
@@ -60,13 +63,21 @@ public partial class MainWindow
         }
     }
 
-    sealed class SetupVisitState(SetupAudioConfiguration original)
+    sealed record SetupFloatChange(float Prior, float Applied);
+    sealed record SetupDeviceChange(string Prior, string Applied, string Driver);
+    sealed record SetupVisitDiskState(int Version, SetupAudioConfiguration Original,
+        Dictionary<string, SetupFloatChange> Routes, Dictionary<int, SetupDeviceChange> Devices);
+
+    sealed class SetupVisitState(SetupAudioConfiguration original, Action save)
     {
         public SetupAudioConfiguration Original { get; } = original;
-        public Dictionary<string, (float Prior, float Applied)> Routes { get; } = [];
-        public Dictionary<int, (string Prior, string Applied, string Driver)> Devices { get; } = [];
-        public void RecordFloat(string parameter, float prior, float applied) =>
-            Routes[parameter] = (Routes.TryGetValue(parameter, out var earlier) ? earlier.Prior : prior, applied);
+        public Dictionary<string, SetupFloatChange> Routes { get; } = [];
+        public Dictionary<int, SetupDeviceChange> Devices { get; } = [];
+        public void RecordFloat(string parameter, float prior, float applied)
+        {
+            Routes[parameter] = new(Routes.TryGetValue(parameter, out var earlier) ? earlier.Prior : prior, applied);
+            save();
+        }
         public void RecordRoute(int strip, string bus, bool prior, bool applied)
         {
             var key = $"Strip[{strip}].{bus}";
@@ -75,11 +86,81 @@ public partial class MainWindow
         public void RecordDevice(int strip, string prior, string applied, string driver)
         {
             Devices[strip] = Devices.TryGetValue(strip, out var earlier)
-                ? (earlier.Prior, applied, earlier.Driver) : (prior, applied, driver);
+                ? new(earlier.Prior, applied, earlier.Driver) : new(prior, applied, driver);
+            save();
         }
     }
 
-    void BeginSetupVisit() => _setupVisit = new(SetupAudioConfiguration.Capture(_config));
+    string SetupVisitPath => Path.Combine(Path.GetDirectoryName(_store.Path)!, "setup-visit-recovery.json");
+    DurableJsonCheckpoint<SetupVisitDiskState> SetupVisitCheckpoint => new(SetupVisitPath);
+
+    void SaveSetupVisit()
+    {
+        if (_setupVisit is not { } visit) return;
+        SetupVisitCheckpoint.Save(new SetupVisitDiskState(1, visit.Original, visit.Routes, visit.Devices));
+    }
+
+    void ClearSetupVisit()
+    {
+        SetupVisitCheckpoint.Clear();
+        _setupVisit = null;
+        _setupHasUncommittedChanges = false;
+    }
+
+    void BeginSetupVisit()
+    {
+        _setupVisit = new(SetupAudioConfiguration.Capture(_config), SaveSetupVisit);
+        SaveSetupVisit();
+    }
+
+    async Task<bool> CommitSetupLeasesAsync()
+    {
+        foreach (var lease in _bridge.OwnedDevices.Where(x => x.Owner == "automatic microphone setup").ToArray())
+        {
+            var result = await _bridge.CommitDeviceAsync(lease);
+            if (!result.Success) { Footer.Text = "SETUP OWNERSHIP NEEDS ATTENTION · " + result.Detail; return false; }
+        }
+        foreach (var lease in _bridge.Snapshot.OwnedRoutes.Where(x =>
+            x.Owner is "automatic microphone setup" or "automatic music setup" or "setup").ToArray())
+        {
+            var result = await _bridge.CommitRouteAsync(lease);
+            if (!result.Success) { Footer.Text = "SETUP OWNERSHIP NEEDS ATTENTION · " + result.Detail; return false; }
+            _setupRouteLeases.Remove(lease);
+        }
+        return true;
+    }
+
+    bool TryLoadSetupVisit(out string issue)
+    {
+        issue = "";
+        if (!SetupVisitCheckpoint.Exists) return false;
+        try
+        {
+            var saved = SetupVisitCheckpoint.Load();
+            if (saved is not { Version: 1, Original: not null, Routes: not null, Devices: not null } ||
+                saved.Routes.Any(x => string.IsNullOrWhiteSpace(x.Key) || x.Value is null ||
+                    !float.IsFinite(x.Value.Prior) || !float.IsFinite(x.Value.Applied)) ||
+                saved.Devices.Any(x => x.Key is < 0 or > 2 || x.Value is null ||
+                    string.IsNullOrWhiteSpace(x.Value.Applied) || x.Value.Driver is not ("mme" or "wdm")))
+                throw new InvalidOperationException("The saved Setup checkpoint is invalid.");
+            if (saved.Routes.Count == 0 && saved.Devices.Count == 0 &&
+                saved.Original == SetupAudioConfiguration.Capture(_config))
+            {
+                SetupVisitCheckpoint.Clear();
+                return false;
+            }
+            _setupVisit = new(saved.Original, SaveSetupVisit);
+            foreach (var entry in saved.Routes) _setupVisit.Routes.Add(entry.Key, entry.Value);
+            foreach (var entry in saved.Devices) _setupVisit.Devices.Add(entry.Key, entry.Value);
+            _setupHasUncommittedChanges = true;
+            return true;
+        }
+        catch (Exception error)
+        {
+            issue = "UNFINISHED AUDIO SETUP NEEDS ATTENTION · " + error.Message;
+            return false;
+        }
+    }
 
     async Task<bool> UndoSetupVisitAsync()
     {
@@ -139,65 +220,119 @@ public partial class MainWindow
         SetupGameHeard.IsChecked = false;
         try { await _store.SaveAsync(_config); }
         catch (Exception error) { Footer.Text = "SETUP UNDO NEEDS ATTENTION · Configuration save: " + error.Message; return false; }
-        _setupHasUncommittedChanges = false;
-        _setupVisit = null;
         await LoadMpvOutputsAsync();
         await LoadAudioEndpointsAsync();
         RefreshSetupWizard();
+        ClearSetupVisit();
         if (SetupView.Visibility == Visibility.Visible) BeginSetupVisit();
         return true;
+    }
+
+    async Task ResolveInterruptedSetupAsync()
+    {
+        if (_setupVisit is null) return;
+        var choice = RadioDialogWindow.ChooseThree(this, "Unfinished audio setup",
+            "WARDOGS found audio changes from an interrupted Setup visit. Continue Setup to check the route again, keep the saved choices, or undo the changes it can still identify. Your current audio state will be checked before any restoration.",
+            "CONTINUE SETUP", "KEEP CHANGES", "UNDO CHANGES");
+        if (choice == 0)
+        {
+            Setup_Click(this, new RoutedEventArgs());
+            Footer.Text = "UNFINISHED SETUP · Check your devices and press Connect again if a route was restored after the interruption.";
+        }
+        else if (choice == 1)
+        {
+            if (!_bridge.RecoveryReady)
+            {
+                Footer.Text = "UNFINISHED SETUP NEEDS ATTENTION · Audio Bridge recovery is unresolved. Open Diagnostics before keeping these choices.";
+                return;
+            }
+            ClearSetupVisit();
+            PublishReadiness(CaptureReadiness());
+            Footer.Text = "SETUP CHOICES KEPT · Check the current route before marking Setup verified.";
+        }
+        else if (choice == 2)
+        {
+            if (!await UndoSetupVisitAsync()) return;
+            Footer.Text = "UNFINISHED SETUP UNDONE · Prior saved choices restored where WARDOGS still owned them.";
+        }
+        else Footer.Text = "UNFINISHED SETUP · Open Setup & Repair to continue, keep, or undo the saved changes.";
     }
 
     async void UndoWizard_Click(object sender, RoutedEventArgs e) => await UndoSetupVisitAsync();
 
     async void SetupAutoConfigure_Click(object sender, RoutedEventArgs e)
     {
+        if (_setupConnectInProgress) return;
+        _setupConnectInProgress = true;
+        SetupConnectButton.IsEnabled = false;
+        SetupConnectButton.Content = "CONNECTING…";
+        SetupConnectFeedback.Text = "Connecting your microphone, listening output, and game feed…";
+        try
+        {
         if (SetupMicrophoneBox.SelectedItem is not WindowsAudioEndpoint microphone ||
             SetupMonitorBox.SelectedItem is not WindowsAudioEndpoint headphones)
         {
+            SetupConnectFeedback.Text = "Choose a microphone and listening output to continue.";
             Footer.Text = "CHOOSE YOUR MICROPHONE AND HEADPHONES FIRST.";
             return;
         }
         var bridge = await _bridge.EnsureReadyAsync();
-        if (!bridge.Success) { Footer.Text = "AUDIO BRIDGE NEEDS ATTENTION · " + bridge.Detail; return; }
-        var summary = $"WARDOGS will assign {microphone.Name} to an available physical input, send it to game voice, and turn off microphone self-monitoring. " +
-            $"Radio music will use Voicemeeter AUX and B1, with duplicate A1 music off. Local listening will use {headphones.Name}. " +
-            "Existing unrelated Voicemeeter routes will be left alone. Apply these changes?";
-        if (!RadioDialogWindow.Confirm(this, "Connect your radio to game voice?", summary, "APPLY ROUTING")) return;
+        if (!bridge.Success) { SetupConnectFeedback.Text = "Audio Bridge needs attention: " + bridge.Detail; Footer.Text = "AUDIO BRIDGE NEEDS ATTENTION · " + bridge.Detail; return; }
+        var summary = $"WARDOGS will connect {microphone.Name} and radio music to game voice. " +
+            $"You will hear the radio through {headphones.Name}. " +
+            $"In your game, select Voicemeeter Out {_config.GameBus} as the microphone. Apply these changes?";
+        if (!RadioDialogWindow.Confirm(this, "Connect your radio to game voice?", summary, "APPLY ROUTING"))
+        { SetupConnectFeedback.Text = "No audio changes were applied."; return; }
         var priorMonitor = _config.MonitorDeviceId;
         if (!await ConfigureAutomaticMicrophoneAsync(microphone))
         {
+            SetupConnectFeedback.Text = "Microphone connection failed. Previous changes are being restored.";
             if (_setupHasUncommittedChanges && !await UndoSetupVisitAsync())
                 Footer.Text = "AUDIO SETUP NEEDS ATTENTION · Microphone setup failed and prior changes need review.";
             return;
         }
         if (!await ConfigureAutomaticMusicAsync())
         {
+            SetupConnectFeedback.Text = "Radio game feed connection failed. Previous changes are being restored.";
             if (!await UndoSetupVisitAsync())
                 Footer.Text = "AUDIO SETUP NEEDS ATTENTION · Music setup failed and the setup visit could not be fully undone. Open Diagnostics.";
             return;
         }
         try
         {
-            _config.MonitorDeviceId = headphones.Id;
-            await _store.SaveAsync(_config);
+            if (!await SetListeningOutputAsync(headphones))
+                throw new InvalidOperationException("The selected listening output did not become active. Choose another output or refresh devices.");
             if (priorMonitor != headphones.Id) _setupHasUncommittedChanges = true;
             _loadingAudioRouteControls = true;
             MicrophoneBox.SelectedItem = (MicrophoneBox.ItemsSource as IEnumerable<WindowsAudioEndpoint>)?.FirstOrDefault(x => x.Id == microphone.Id);
-            MonitorBox.SelectedItem = (MonitorBox.ItemsSource as IEnumerable<WindowsAudioEndpoint>)?.FirstOrDefault(x => x.Id == headphones.Id);
             _loadingAudioRouteControls = false;
             Footer.Text = "RECOMMENDED AUDIO ROUTING APPLIED · Run the live checks to verify it.";
+            SetupConnectFeedback.Text = "✓ Radio connected. Continue to test your sound.";
             RefreshSetupWizard();
             PublishReadiness(CaptureReadiness());
         }
         catch (Exception error)
         {
+            SetupConnectFeedback.Text = "Audio setup did not finish: " + error.Message;
             _config.MonitorDeviceId = priorMonitor;
             if (!await UndoSetupVisitAsync())
                 Footer.Text = "AUDIO SETUP NEEDS ATTENTION · Save failed and route restoration needs review: " + error.Message;
             else Footer.Text = "AUDIO SETUP DID NOT SAVE · This setup visit was restored: " + error.Message;
         }
         finally { _loadingAudioRouteControls = false; }
+        }
+        finally
+        {
+            _setupConnectInProgress = false;
+            SetupConnectButton.Content = "CONNECT MY RADIO";
+            SetupConnectButton.IsEnabled = true;
+        }
+    }
+
+    void SetupCopyGameOutputName_Click(object sender, RoutedEventArgs e)
+    {
+        Clipboard.SetText(_gameOutputEndpointName ?? "Voicemeeter Out B1");
+        SetupConnectFeedback.Text = "✓ Game voice input name copied.";
     }
 
     async void SetupPlayGameFeedTest_Click(object sender, RoutedEventArgs e)

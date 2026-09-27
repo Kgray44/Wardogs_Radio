@@ -137,16 +137,34 @@
         </StackPanel></ScrollViewer>
         <ScrollViewer x:Name="AudioView" Visibility="Collapsed" VerticalScrollBarVisibility="Auto"><StackPanel MaxWidth="1250" HorizontalAlignment="Left">
           <DockPanel LastChildFill="False" Margin="0,0,0,14"><TextBlock Text="YOUR LIVE AUDIO PATH" Foreground="{StaticResource OliveBrush}" FontSize="11" FontWeight="Bold" VerticalAlignment="Center"/><Button DockPanel.Dock="Right" Content="REFRESH DEVICE LISTS" Click="RefreshAudioEndpoints_Click"/></DockPanel>
-          <TextBlock Text="Choose a device at the point where its sound enters or leaves the path. A changed selection takes effect immediately and saves automatically. A moving meter proves signal at that point—not that a game received it." TextWrapping="Wrap" Opacity=".75" Margin="0,0,0,16"/>
+          <TextBlock Text="Choose your microphone and listening output here. The lines show where your voice and radio music go. Moving meters show live sound; use the audio check to verify game voice." TextWrapping="Wrap" Opacity=".75" Margin="0,0,0,16"/>
+
+          <Border Background="{StaticResource PanelBrush}" BorderBrush="{StaticResource OliveBrush}" BorderThickness="1" Padding="20" CornerRadius="5" Margin="0,0,0,14"><StackPanel>
+            <DockPanel Margin="0,0,0,16"><TextBlock Text="AUDIO BRIDGE" Foreground="{StaticResource OliveBrush}" FontSize="16" FontWeight="Bold"/><TextBlock x:Name="AudioGraphBridgeState" Text="● CHECKING" HorizontalAlignment="Right" Foreground="{StaticResource OliveBrush}" FontWeight="Bold"/></DockPanel>
+            <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="2*"/><ColumnDefinition Width="48"/><ColumnDefinition Width="1.3*"/><ColumnDefinition Width="48"/><ColumnDefinition Width="1.7*"/></Grid.ColumnDefinitions><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="16"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+              <Border Grid.Row="0" Grid.Column="0" Background="#17211C" BorderBrush="{StaticResource LineBrush}" BorderThickness="1" Padding="14" CornerRadius="5"><StackPanel><TextBlock Text="🎙 MICROPHONE" Foreground="{StaticResource OliveBrush}" FontWeight="Bold"/><ComboBox x:Name="MicrophoneBox" ItemTemplate="{StaticResource AudioEndpointChoice}" SelectionChanged="MicrophoneBox_SelectionChanged" MinHeight="38" Margin="0,10,0,0"/><ProgressBar x:Name="AudioMicMeter" Height="8" Margin="0,12,0,0"/><TextBlock x:Name="AudioGraphMicState" Text="Choose your microphone" Opacity=".7" Margin="0,7,0,0" TextWrapping="Wrap"/></StackPanel></Border>
+              <TextBlock Grid.Row="0" Grid.Column="1" Text="══▶" Foreground="{StaticResource OliveBrush}" FontSize="20" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+              <Border Grid.Row="0" Grid.Column="2" Grid.RowSpan="3" Background="#1D2A22" BorderBrush="{StaticResource OliveBrush}" BorderThickness="1" Padding="14" CornerRadius="5" VerticalAlignment="Center"><StackPanel><TextBlock Text="AUDIO BRIDGE" Foreground="{StaticResource OliveBrush}" FontWeight="Bold" TextAlignment="Center"/><TextBlock x:Name="AudioGraphCenterState" Text="Checking connection" TextAlignment="Center" Margin="0,10,0,0" TextWrapping="Wrap"/></StackPanel></Border>
+              <TextBlock Grid.Row="0" Grid.Column="3" Text="══▶" Foreground="{StaticResource OliveBrush}" FontSize="20" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+              <Border Grid.Row="0" Grid.Column="4" Background="#17211C" BorderBrush="{StaticResource LineBrush}" BorderThickness="1" Padding="14" CornerRadius="5"><StackPanel><TextBlock Text="🎮 GAME / VOICE INPUT" Foreground="{StaticResource OliveBrush}" FontWeight="Bold"/><TextBlock Text="Voicemeeter Out B1" FontSize="16" FontWeight="SemiBold" Margin="0,8,0,0"/><ProgressBar x:Name="AudioGameMeter" Height="8" Margin="0,12,0,0"/><TextBlock x:Name="AudioGraphGameState" Text="Waiting for game voice" Opacity=".7" Margin="0,7,0,0" TextWrapping="Wrap"/><Button Content="COPY INPUT NAME" Click="CopyGameOutputName_Click" HorizontalAlignment="Left" Margin="0,8,0,0"/></StackPanel></Border>
+              <Border Grid.Row="2" Grid.Column="0" Background="#17211C" BorderBrush="{StaticResource LineBrush}" BorderThickness="1" Padding="14" CornerRadius="5"><StackPanel><TextBlock Text="📻 RADIO GAME FEED" Foreground="{StaticResource OliveBrush}" FontWeight="Bold"/><TextBlock x:Name="AudioGraphRadioState" Text="No station playing" Margin="0,8,0,0" TextWrapping="Wrap"/><TextBlock Text="Separate from what you hear" Opacity=".65" Margin="0,6,0,0"/></StackPanel></Border>
+              <TextBlock Grid.Row="2" Grid.Column="1" Text="══▶" Foreground="{StaticResource OliveBrush}" FontSize="20" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+              <TextBlock Grid.Row="2" Grid.Column="3" Text="◀══" Foreground="{StaticResource OliveBrush}" FontSize="20" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+              <Border Grid.Row="2" Grid.Column="4" Background="#17211C" BorderBrush="{StaticResource LineBrush}" BorderThickness="1" Padding="14" CornerRadius="5"><StackPanel><TextBlock Text="🎧 LISTENING OUTPUT" Foreground="{StaticResource OliveBrush}" FontWeight="Bold"/><ComboBox x:Name="MonitorBox" ItemTemplate="{StaticResource AudioEndpointChoice}" SelectionChanged="MonitorBox_SelectionChanged" MinHeight="38" Margin="0,10,0,0"/><ProgressBar x:Name="AudioHeadsetMeter" Height="8" Margin="0,12,0,0"/><TextBlock x:Name="AudioGraphListeningState" Text="Choose headphones or speakers" Opacity=".7" Margin="0,7,0,0" TextWrapping="Wrap"/></StackPanel></Border>
+            </Grid>
+            <TextBlock Text="Microphone and radio audio both reach game voice. Your listening output is selected separately." Opacity=".7" TextWrapping="Wrap" Margin="0,16,0,0"/>
+          </StackPanel></Border>
+
+          <Expander Header="ADVANCED ROUTING · mixer paths and exact outputs" Margin="0,0,0,12"><StackPanel Margin="0,12,0,0">
 
           <Border Background="{StaticResource PanelBrush}" BorderBrush="{StaticResource LineBrush}" BorderThickness="1" Padding="18" CornerRadius="5" Margin="0,0,0,12"><StackPanel>
             <TextBlock Text="MICROPHONE → GAME VOICE" Foreground="{StaticResource OliveBrush}" FontWeight="Bold" Margin="0,0,0,12"/>
             <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="2*"/><ColumnDefinition Width="42"/><ColumnDefinition Width="1.5*"/><ColumnDefinition Width="42"/><ColumnDefinition Width="1.4*"/></Grid.ColumnDefinitions>
-              <StackPanel><TextBlock Text="1 · MICROPHONE DEVICE" Margin="0,0,0,5"/><Button Content="CHOOSE MICROPHONE" Click="AudioPickMicrophone_Click" HorizontalAlignment="Left"/><ComboBox x:Name="MicrophoneBox" Visibility="Collapsed" ItemTemplate="{StaticResource AudioEndpointChoice}" SelectionChanged="MicrophoneBox_SelectionChanged"/><TextBlock x:Name="MicrophoneRouteText" Text="Not selected" TextWrapping="Wrap" Opacity=".65" Margin="0,7,0,0"/></StackPanel>
+              <StackPanel><TextBlock Text="1 · MICROPHONE DEVICE" Margin="0,0,0,5"/><TextBlock x:Name="MicrophoneRouteText" Text="Not selected" TextWrapping="Wrap" Opacity=".65" Margin="0,7,0,0"/></StackPanel>
               <TextBlock Grid.Column="1" Text="→" Foreground="{StaticResource OliveBrush}" FontSize="24" HorizontalAlignment="Center" VerticalAlignment="Center"/>
               <StackPanel Grid.Column="2"><TextBlock Text="2 · VOICEMEETER INPUT" Margin="0,0,0,5"/><TextBlock x:Name="AudioMicStripNode" Text="Not assigned" FontWeight="SemiBold" TextWrapping="Wrap"/><TextBlock Text="Mic goes in; headphone self-monitoring stays off." TextWrapping="Wrap" Opacity=".65" Margin="0,7,0,0"/></StackPanel>
               <TextBlock Grid.Column="3" Text="→" Foreground="{StaticResource OliveBrush}" FontSize="24" HorizontalAlignment="Center" VerticalAlignment="Center"/>
-              <StackPanel Grid.Column="4"><TextBlock Text="3 · GAME VOICE OUTPUT" Margin="0,0,0,5"/><TextBlock x:Name="GameRouteText" Text="B1 needs verification" FontWeight="SemiBold" TextWrapping="Wrap"/><TextBlock Text="Choose Voicemeeter Out B1 as your game's microphone." TextWrapping="Wrap" Opacity=".65" Margin="0,7,0,0"/><ProgressBar x:Name="AudioMicMeter" Height="7" Margin="0,9,0,0"/></StackPanel>
+              <StackPanel Grid.Column="4"><TextBlock Text="3 · GAME VOICE OUTPUT" Margin="0,0,0,5"/><TextBlock x:Name="GameRouteText" Text="B1 needs verification" FontWeight="SemiBold" TextWrapping="Wrap"/><TextBlock Text="Choose Voicemeeter Out B1 as your game's microphone." TextWrapping="Wrap" Opacity=".65" Margin="0,7,0,0"/></StackPanel>
             </Grid>
             <TextBlock Text="MICROPHONE LEVEL · 100% is normal, up to 160% boosts the mic and can clip" Margin="0,14,0,4" TextWrapping="Wrap"/>
             <Slider x:Name="AudioMicrophoneVolume" Minimum="0" Maximum="1.6" Value="1" ValueChanged="MicrophoneVolume_ValueChanged" AutoToolTipPlacement="TopLeft" AutoToolTipPrecision="2"/>
@@ -158,9 +176,9 @@
             <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="1.3*"/><ColumnDefinition Width="42"/><ColumnDefinition Width="2*"/><ColumnDefinition Width="42"/><ColumnDefinition Width="1.4*"/></Grid.ColumnDefinitions>
               <StackPanel><TextBlock Text="1 · ACTIVE STATION" Margin="0,0,0,5"/><TextBlock x:Name="MusicRouteText" Text="No station selected" TextWrapping="Wrap" FontWeight="SemiBold"/><TextBlock Text="Local tracks play through the headset music player." TextWrapping="Wrap" Opacity=".65" Margin="0,7,0,0"/></StackPanel>
               <TextBlock Grid.Column="1" Text="→" Foreground="{StaticResource OliveBrush}" FontSize="24" HorizontalAlignment="Center" VerticalAlignment="Center"/>
-              <StackPanel Grid.Column="2"><TextBlock Text="2 · HEADPHONES / SPEAKERS" Margin="0,0,0,5"/><Button Content="CHOOSE HEADPHONES" Click="AudioPickMonitor_Click" HorizontalAlignment="Left"/><ComboBox x:Name="MonitorBox" Visibility="Collapsed" ItemTemplate="{StaticResource AudioEndpointChoice}" SelectionChanged="MonitorBox_SelectionChanged"/><TextBlock x:Name="MonitorRouteText" Text="Not selected" TextWrapping="Wrap" Opacity=".65" Margin="0,7,0,0"/></StackPanel>
+              <StackPanel Grid.Column="2"><TextBlock Text="2 · HEADPHONES / SPEAKERS" Margin="0,0,0,5"/><TextBlock x:Name="MonitorRouteText" Text="Not selected" TextWrapping="Wrap" Opacity=".65" Margin="0,7,0,0"/></StackPanel>
               <TextBlock Grid.Column="3" Text="→" Foreground="{StaticResource OliveBrush}" FontSize="24" HorizontalAlignment="Center" VerticalAlignment="Center"/>
-              <StackPanel Grid.Column="4"><TextBlock Text="3 · WHAT YOU HEAR" Margin="0,0,0,5"/><TextBlock x:Name="AudioListeningNodeText" Text="Selected headphones" FontWeight="SemiBold" TextWrapping="Wrap"/><TextBlock Text="Meter at the actual listening output." TextWrapping="Wrap" Opacity=".65" Margin="0,7,0,0"/><ProgressBar x:Name="AudioHeadsetMeter" Height="7" Margin="0,9,0,0"/></StackPanel>
+              <StackPanel Grid.Column="4"><TextBlock Text="3 · WHAT YOU HEAR" Margin="0,0,0,5"/><TextBlock x:Name="AudioListeningNodeText" Text="Selected headphones" FontWeight="SemiBold" TextWrapping="Wrap"/><TextBlock Text="Meter at the actual listening output." TextWrapping="Wrap" Opacity=".65" Margin="0,7,0,0"/></StackPanel>
             </Grid>
           </StackPanel></Border>
 
@@ -171,9 +189,10 @@
               <TextBlock Grid.Column="1" Text="→" Foreground="{StaticResource OliveBrush}" FontSize="24" HorizontalAlignment="Center" VerticalAlignment="Center"/>
               <StackPanel Grid.Column="2"><TextBlock Text="2 · VOICEMEETER MUSIC INPUT" Margin="0,0,0,5"/><TextBlock x:Name="AudioMusicStripNode" Text="Not assigned" FontWeight="SemiBold" TextWrapping="Wrap"/><TextBlock x:Name="MusicStripState" Text="No music strip selected." TextWrapping="Wrap" Opacity=".65" Margin="0,7,0,0"/></StackPanel>
               <TextBlock Grid.Column="3" Text="→" Foreground="{StaticResource OliveBrush}" FontSize="24" HorizontalAlignment="Center" VerticalAlignment="Center"/>
-              <StackPanel Grid.Column="4"><TextBlock Text="3 · GAME VOICE OUTPUT" Margin="0,0,0,5"/><TextBlock Text="Voicemeeter Out B1" FontWeight="SemiBold"/><TextBlock Text="A1 stays off to avoid doubled music in your headphones." TextWrapping="Wrap" Opacity=".65" Margin="0,7,0,0"/><TextBlock Text="Live B1 mix level" Foreground="{StaticResource OliveBrush}" FontSize="11" Margin="0,9,0,0"/><ProgressBar x:Name="AudioGameMeter" Height="7" Margin="0,4,0,0"/></StackPanel>
+              <StackPanel Grid.Column="4"><TextBlock Text="3 · GAME VOICE OUTPUT" Margin="0,0,0,5"/><TextBlock Text="Voicemeeter Out B1" FontWeight="SemiBold"/><TextBlock Text="A1 stays off to avoid doubled music in your headphones." TextWrapping="Wrap" Opacity=".65" Margin="0,7,0,0"/></StackPanel>
             </Grid>
           </StackPanel></Border>
+          </StackPanel></Expander>
 
           <Border Background="#17211C" BorderBrush="{StaticResource LineBrush}" BorderThickness="1" Padding="18" CornerRadius="5" Margin="0,12,0,0"><StackPanel>
             <TextBlock Text="OUTPUT HEALTH · LIVE VOICEMEETER METERS" Foreground="{StaticResource OliveBrush}" FontWeight="Bold"/>
@@ -210,7 +229,7 @@
 
           <Border Background="{StaticResource PanelBrush}" BorderBrush="{StaticResource LineBrush}" BorderThickness="1" Padding="18" CornerRadius="5" Margin="0,12,0,0"><StackPanel>
             <TextBlock Text="HEAR THE GAME VOICE MIX" Foreground="{StaticResource OliveBrush}" FontWeight="Bold"/>
-            <TextBlock Text="Hold the button to hear Voicemeeter's actual B1 output at 50% preview level. Direct station listening is muted while held, so you hear the B1 mix alone; release to restore it. YouTube isolation requires its temporary Voicemeeter headset route. Use headphones at a comfortable level; saved routes do not change." TextWrapping="Wrap" Opacity=".7" Margin="0,6,0,10"/>
+            <TextBlock Text="Hold to hear the real game voice mix at a quieter preview level. Your regular radio listening pauses while held and returns when released. Keep your headphones at a comfortable level." TextWrapping="Wrap" Opacity=".7" Margin="0,6,0,10"/>
             <Button x:Name="AudioAuditionB1Button" Content="HOLD TO TEST B1" PreviewMouseLeftButtonDown="B1Hold_MouseDown" PreviewMouseLeftButtonUp="B1Hold_MouseUp" LostMouseCapture="B1Hold_LostCapture" PreviewKeyDown="B1Hold_KeyDown" PreviewKeyUp="B1Hold_KeyUp" HorizontalAlignment="Left"/>
             <TextBlock x:Name="AudioAuditionB1State" Text="Ready when B1 and your headphones are connected." TextWrapping="Wrap" Margin="0,7,0,0"/>
           </StackPanel></Border>
@@ -225,7 +244,7 @@
           </StackPanel></Expander>
           <Expander Header="ADVANCED · MIXER REPAIR AND TESTS" Margin="0,15,0,20"><WrapPanel Margin="0,10,0,0"><Button Content="REPAIR AUDIO BRIDGE" Click="Reconnect_Click"/><Button Content="TEST MUSIC" Click="TestMusic_Click"/><Button Content="TEST MICROPHONE" Click="TestMicrophone_Click"/><Button Content="RESTORE SAVED AUTO ROUTES" Click="RestoreRoute_Click"/><Button Content="OPEN VOICEMEETER BANANA" Click="OpenVm_Click"/></WrapPanel></Expander>
         </StackPanel></ScrollViewer>
-        <ScrollViewer x:Name="SettingsView" Visibility="Collapsed" VerticalScrollBarVisibility="Auto"><StackPanel MaxWidth="900" HorizontalAlignment="Left">
+        <ScrollViewer x:Name="SettingsView" Visibility="Collapsed" VerticalScrollBarVisibility="Auto"><StackPanel MaxWidth="1250" HorizontalAlignment="Stretch">
           <Border Background="{StaticResource PanelBrush}" BorderBrush="{StaticResource LineBrush}" BorderThickness="1" Padding="24" CornerRadius="5"><StackPanel>
             <TextBlock Text="PLAYBACK &amp; BEHAVIOR" FontSize="11" FontWeight="Bold" Foreground="{StaticResource OliveBrush}"/>
             <TextBlock Text="Choose what happens when you return to a station. Local music supports all three modes." Opacity=".7" TextWrapping="Wrap" Margin="0,6,0,12"/>
@@ -272,95 +291,91 @@
           </StackPanel></DataTemplate></ItemsControl.ItemTemplate></ItemsControl>
           <Expander Header="ADVANCED TECHNICAL DATA" Margin="0,8,0,20"><ItemsControl x:Name="DiagnosticList" Margin="0,10"><ItemsControl.ItemTemplate><DataTemplate><Border Background="{StaticResource PanelBrush}" BorderBrush="{StaticResource LineBrush}" BorderThickness="1" Padding="10" Margin="0,3"><StackPanel><TextBlock Text="{Binding Area}" FontWeight="Bold" Foreground="{StaticResource OliveBrush}"/><TextBlock Text="{Binding Status}"/><TextBlock Text="{Binding Summary}" TextWrapping="Wrap"/><Expander Header="RAW EVIDENCE"><TextBlock Text="{Binding Detail}" TextWrapping="Wrap"/></Expander></StackPanel></Border></DataTemplate></ItemsControl.ItemTemplate></ItemsControl></Expander>
         </StackPanel></ScrollViewer>
-        <ScrollViewer x:Name="SetupView" Visibility="Collapsed" VerticalScrollBarVisibility="Auto"><StackPanel MaxWidth="840" HorizontalAlignment="Left">
-          <TextBlock Text="SYSTEM → AUDIO DEVICES → CONNECT → VERIFY → READY" FontSize="11" Foreground="{StaticResource OliveBrush}" FontWeight="Bold" Margin="0,4,0,7"/>
-          <TextBlock Text="Get your radio ready" FontSize="26" FontWeight="SemiBold"/>
-          <TextBlock Text="Choose your devices here, connect the game feed, then test what you hear and send. You can leave and return at any time; setup is only verified after the live checks pass." TextWrapping="Wrap" Opacity=".7" Margin="0,10,0,18"/>
+        <ScrollViewer x:Name="SetupView" Visibility="Collapsed" VerticalScrollBarVisibility="Auto"><StackPanel MaxWidth="760" HorizontalAlignment="Left">
+          <TextBlock Text="Set up your radio" FontSize="26" FontWeight="SemiBold"/>
+          <TextBlock Text="Choose your mic and headphones. WARDOGS handles the rest." TextWrapping="Wrap" Opacity=".7" Margin="0,7,0,18"/>
           <TextBlock x:Name="SetupStepTitle" Text="STEP 1 OF 5 · SYSTEM CHECK" Foreground="{StaticResource OliveBrush}" FontWeight="Bold" Margin="0,0,0,6"/>
           <ProgressBar x:Name="SetupProgress" Minimum="0" Maximum="5" Value="1" Height="7" Margin="0,0,0,16"/>
           <Border x:Name="SetupStepSystem" Background="{StaticResource PanelBrush}" Padding="20" CornerRadius="5" Margin="0,0,0,10"><StackPanel>
-            <TextBlock Text="1 · SYSTEM CHECK" Foreground="{StaticResource OliveBrush}" FontWeight="Bold"/>
-            <TextBlock Text="WARDOGS checks the essentials before making audio changes." TextWrapping="Wrap" Opacity=".7" Margin="0,6,0,12"/>
+            <TextBlock Text="Is your audio ready to connect?" FontSize="19" FontWeight="SemiBold"/>
             <TextBlock x:Name="SetupSystemChecks" Text="Checking…" TextWrapping="Wrap" FontSize="15" Margin="0,0,0,10"/>
-            <Button Content="RUN SYSTEM CHECK" Click="SetupSystemCheck_Click" HorizontalAlignment="Left"/>
+            <Button Content="CHECK AGAIN" Click="SetupSystemCheck_Click" HorizontalAlignment="Left"/>
           </StackPanel></Border>
           <Border x:Name="SetupStepConnect" Background="{StaticResource PanelBrush}" Padding="20" CornerRadius="5" Margin="0,0,0,10"><StackPanel>
-            <TextBlock Text="AUDIO BRIDGE" Foreground="{StaticResource OliveBrush}" FontWeight="Bold"/>
+            <TextBlock Text="NEEDS REPAIR" Foreground="{StaticResource OliveBrush}" FontWeight="Bold"/>
             <TextBlock x:Name="SetupVmState" Text="Checking engine…" TextWrapping="Wrap" Margin="0,9,0,9"/>
-            <WrapPanel><Button Content="REPAIR AUDIO" Click="Reconnect_Click"/><Expander Header="ADVANCED TROUBLESHOOTING"><Button Content="OPEN VOICEMEETER BANANA" Click="OpenVm_Click"/></Expander></WrapPanel>
+            <WrapPanel><Button Content="REPAIR AUDIO" Click="Reconnect_Click"/><Expander Header="TECHNICAL OPTIONS"><Button Content="OPEN VOICEMEETER BANANA" Click="OpenVm_Click"/></Expander></WrapPanel>
           </StackPanel></Border>
           <Border x:Name="SetupStepDevices" Background="{StaticResource PanelBrush}" Padding="20" CornerRadius="5" Margin="0,0,0,10"><StackPanel>
-            <TextBlock Text="2 · YOUR MICROPHONE" Foreground="{StaticResource OliveBrush}" FontWeight="Bold"/>
-            <TextBlock Text="Choose the microphone your game should hear. The audio route changes when you review and apply Step 3." TextWrapping="Wrap" Opacity=".7" Margin="0,6,0,12"/>
-            <TextBlock Text="MICROPHONE DEVICE" Margin="0,0,0,5"/><Button Content="CHOOSE MICROPHONE" Click="SetupPickMicrophone_Click" HorizontalAlignment="Left"/><ComboBox x:Name="SetupMicrophoneBox" Visibility="Collapsed" ItemTemplate="{StaticResource AudioEndpointChoice}" SelectionChanged="SetupMicrophoneBox_SelectionChanged"/>
-            <TextBlock Text="A Bluetooth headset mic can lower that headset's music quality. A separate microphone keeps stereo listening available." TextWrapping="Wrap" Opacity=".65" Margin="0,7,0,10"/>
-            <TextBlock x:Name="SetupMicChoiceState" Text="Choose a microphone." TextWrapping="Wrap" Margin="0,0,0,8"/>
-            <TextBlock Text="MIC LEVEL" Margin="0,4,0,4"/><ProgressBar x:Name="SetupMicSelectionMeter" Height="9"/>
-            <TextBlock Text="MICROPHONE VOLUME · 100% normal; 160% maximum boost" Margin="0,12,0,4" TextWrapping="Wrap"/>
-            <Slider x:Name="SetupMicrophoneVolume" Minimum="0" Maximum="1.6" Value="1" ValueChanged="MicrophoneVolume_ValueChanged" AutoToolTipPlacement="TopLeft" AutoToolTipPrecision="2"/>
-            <TextBlock x:Name="SetupMicrophoneVolumeText" Text="100% · Changes Voicemeeter mic strip immediately" Opacity=".65" TextWrapping="Wrap"/>
-            <WrapPanel Margin="0,10,0,0"><Button Content="TEST MICROPHONE" Click="TestMicrophone_Click"/><Button Content="REFRESH MICROPHONES" Click="RefreshAudioEndpoints_Click"/></WrapPanel>
-            <TextBlock x:Name="SetupMicTestState" Text="Speak after pressing Test Microphone." TextWrapping="Wrap" Margin="0,8,0,0"/>
+            <TextBlock Text="Microphone" FontSize="19" FontWeight="SemiBold" Margin="0,0,0,9"/>
+            <ComboBox x:Name="SetupMicrophoneBox" ItemTemplate="{StaticResource AudioEndpointChoice}" SelectionChanged="SetupMicrophoneBox_SelectionChanged" MinHeight="46"/>
+            <ProgressBar x:Name="SetupMicSelectionMeter" Height="7" Margin="0,10,0,0"/>
+            <TextBlock x:Name="SetupMicChoiceState" Text="Choose a microphone." TextWrapping="Wrap" Margin="0,8,0,0"/>
+            <Expander Header="TEST OR ADJUST MICROPHONE" Margin="0,15,0,0"><StackPanel Margin="0,9,0,0">
+              <TextBlock Text="A Bluetooth headset mic can reduce stereo listening quality." TextWrapping="Wrap" Opacity=".65" Margin="0,0,0,8"/>
+              <WrapPanel><Button Content="TEST MICROPHONE" Click="TestMicrophone_Click"/><Button Content="REFRESH MICROPHONES" Click="RefreshAudioEndpoints_Click"/></WrapPanel>
+              <TextBlock x:Name="SetupMicTestState" Text="Speak after pressing Test Microphone." TextWrapping="Wrap" Margin="0,8,0,0"/>
+              <TextBlock Text="MICROPHONE VOLUME" Margin="0,12,0,4"/><Slider x:Name="SetupMicrophoneVolume" Minimum="0" Maximum="1.6" Value="1" ValueChanged="MicrophoneVolume_ValueChanged" AutoToolTipPlacement="TopLeft" AutoToolTipPrecision="2"/>
+              <TextBlock x:Name="SetupMicrophoneVolumeText" Text="100%" Opacity=".65" TextWrapping="Wrap"/>
+            </StackPanel></Expander>
           </StackPanel></Border>
           <Border x:Name="SetupStepMonitor" Background="{StaticResource PanelBrush}" Padding="20" CornerRadius="5" Margin="0,0,0,10"><StackPanel>
-            <TextBlock Text="2 · YOUR HEADPHONES" Foreground="{StaticResource OliveBrush}" FontWeight="Bold"/>
-            <TextBlock Text="Choose the headphones or speakers that should play your stations. Review the change in Step 3." TextWrapping="Wrap" Opacity=".7" Margin="0,6,0,12"/>
-            <TextBlock Text="HEADPHONES / SPEAKERS" Margin="0,0,0,5"/><Button Content="CHOOSE HEADPHONES" Click="SetupPickMonitor_Click" HorizontalAlignment="Left"/><ComboBox x:Name="SetupMonitorBox" Visibility="Collapsed" ItemTemplate="{StaticResource AudioEndpointChoice}" SelectionChanged="SetupMonitorBox_SelectionChanged"/>
-            <TextBlock x:Name="SetupDeviceState" Text="Choose your listening output." TextWrapping="Wrap" Margin="0,10,0,0"/>
-            <TextBlock Text="LISTENING LEVEL" Margin="0,10,0,4"/><ProgressBar x:Name="SetupMonitorSelectionMeter" Height="9"/>
-            <WrapPanel Margin="0,10,0,0"><Button Content="PLAY TEST SOUND" Click="SetupPlayTestSound_Click"/><Button Content="REFRESH OUTPUTS" Click="RefreshAudioEndpoints_Click"/></WrapPanel>
-            <TextBlock x:Name="SetupSoundTestState" Text="Play a short test sound, then confirm it reached your headphones." TextWrapping="Wrap" Margin="0,8,0,0"/>
-            <Expander Header="ADVANCED · EXACT HEADSET PLAYER OUTPUT" Margin="0,12,0,0"><StackPanel Margin="0,9,0,0">
-              <TextBlock Text="Use this only if the headphone selector cannot match an MPV device. This selector also applies immediately." TextWrapping="Wrap" Opacity=".7" Margin="0,0,0,6"/>
-              <ComboBox x:Name="SetupMpvOutputBox" ItemTemplate="{StaticResource MpvOutputChoice}" SelectionChanged="SetupMpvOutputBox_SelectionChanged" MinHeight="36"/>
+            <TextBlock Text="Headphones / speakers" FontSize="19" FontWeight="SemiBold" Margin="0,0,0,9"/>
+            <ComboBox x:Name="SetupMonitorBox" ItemTemplate="{StaticResource AudioEndpointChoice}" SelectionChanged="SetupMonitorBox_SelectionChanged" MinHeight="46"/>
+            <ProgressBar x:Name="SetupMonitorSelectionMeter" Height="7" Margin="0,10,0,0"/>
+            <TextBlock x:Name="SetupDeviceState" Text="Choose where you want to hear your radio." TextWrapping="Wrap" Margin="0,8,0,0"/>
+            <Button Content="PLAY TEST SOUND" Click="SetupPlayTestSound_Click" HorizontalAlignment="Left" Margin="0,12,0,0"/>
+            <TextBlock x:Name="SetupSoundTestState" Text="" TextWrapping="Wrap" Margin="0,8,0,0"/>
+            <Expander Header="TROUBLESHOOT OUTPUT" Margin="0,12,0,0"><StackPanel Margin="0,9,0,0">
+              <Button Content="REFRESH OUTPUTS" Click="RefreshAudioEndpoints_Click" HorizontalAlignment="Left"/>
+              <TextBlock Text="Exact player output" Margin="0,10,0,4"/><ComboBox x:Name="SetupMpvOutputBox" ItemTemplate="{StaticResource MpvOutputChoice}" SelectionChanged="SetupMpvOutputBox_SelectionChanged" MinHeight="36"/>
               <TextBlock x:Name="SetupMpvOutputState" Text="Current output: Windows default until changed." TextWrapping="Wrap" Margin="0,7,0,0"/>
+              <Button Content="REFRESH PLAYER OUTPUTS" Click="RefreshMpvOutputs_Click" HorizontalAlignment="Left" Margin="0,10,0,0"/>
             </StackPanel></Expander>
-            <Button Content="REFRESH PLAYER OUTPUTS" Click="RefreshMpvOutputs_Click" HorizontalAlignment="Left" Margin="0,10,0,0"/>
           </StackPanel></Border>
           <Border x:Name="SetupStepRouting" Background="{StaticResource PanelBrush}" Padding="20" CornerRadius="5" Margin="0,0,0,10"><StackPanel>
-            <TextBlock Text="3 · CONNECT TO GAME VOICE" Foreground="{StaticResource OliveBrush}" FontWeight="Bold"/>
-            <TextBlock x:Name="SetupRoutingDevices" Text="Chosen mic and headphones appear here." TextWrapping="Wrap" Margin="0,9,0,12"/>
-            <Border BorderBrush="{StaticResource LineBrush}" BorderThickness="1" CornerRadius="4" Padding="14"><StackPanel>
-              <TextBlock Text="MICROPHONE + RADIO MUSIC → GAME VOICE" Foreground="{StaticResource OliveBrush}" FontWeight="Bold" TextWrapping="Wrap" Margin="0,0,0,8"/>
-              <TextBlock Text="1 · WARDOGS prepares a separate radio feed for game voice." TextWrapping="Wrap"/>
-              <TextBlock x:Name="SetupGameRouteState" Text="Checking music route…" TextWrapping="Wrap" Opacity=".7" Margin="0,7,0,0"/>
-              <TextBlock Text="2 · SELECT THIS INPUT IN YOUR GAME / VOICE APP" Margin="0,13,0,5"/><TextBlock x:Name="SetupGameOutputEndpointName" Text="Voicemeeter Out B1 · select this as the microphone in your game or voice app" TextWrapping="Wrap"/>
+            <TextBlock Text="Connect your radio" FontSize="19" FontWeight="SemiBold"/>
+            <TextBlock Text="WARDOGS will connect your mic and radio music to game voice." TextWrapping="Wrap" Opacity=".7" Margin="0,7,0,14"/>
+            <Button x:Name="SetupConnectButton" Content="CONNECT MY RADIO" Click="SetupAutoConfigure_Click" HorizontalAlignment="Left" Background="#33452E"/>
+            <TextBlock x:Name="SetupConnectFeedback" Text="Ready to connect." TextWrapping="Wrap" Margin="0,12,0,0"/>
+            <Border BorderBrush="{StaticResource LineBrush}" BorderThickness="1" CornerRadius="4" Padding="14" Margin="0,18,0,0"><StackPanel>
+              <TextBlock Text="GAME / VOICE INPUT" Foreground="{StaticResource OliveBrush}" FontWeight="Bold"/>
+              <TextBlock x:Name="SetupGameOutputEndpointName" Text="Voicemeeter Out B1" FontSize="18" TextWrapping="Wrap" Margin="0,7,0,0"/>
+              <TextBlock Text="Select this as your microphone in your game or voice app." TextWrapping="Wrap" Opacity=".7" Margin="0,5,0,0"/>
+              <Button Content="COPY INPUT NAME" Click="SetupCopyGameOutputName_Click" HorizontalAlignment="Left" Margin="0,10,0,0"/>
             </StackPanel></Border>
-            <TextBlock Text="CONNECT YOUR RADIO" Foreground="{StaticResource OliveBrush}" FontWeight="Bold" Margin="0,15,0,5"/>
-            <TextBlock Text="WARDOGS will preview the microphone, headphones, and game-voice changes before applying them. Active music may pause briefly." TextWrapping="Wrap" Opacity=".75" Margin="0,0,0,7"/>
-            <Button Content="CONNECT TO GAME VOICE" Click="SetupAutoConfigure_Click" HorizontalAlignment="Left" Background="#33452E" Margin="0,0,0,10"/>
-            <Button Content="VERIFY B1 OUTPUT" Click="SetupVerifyB1_Click" HorizontalAlignment="Left" Margin="0,0,0,10"/>
-            <TextBlock x:Name="SetupB1TestState" Text="Play a station, then verify the B1 output." TextWrapping="Wrap" Margin="0,0,0,10"/>
-            <Button Content="UNDO WIZARD DEVICE AND ROUTE CHANGES" Click="UndoWizard_Click" HorizontalAlignment="Left"/>
-            <Expander Header="ADVANCED · CHECK OR CHANGE INDIVIDUAL MIXER STRIPS" Margin="0,12,0,0"><StackPanel Margin="0,10,0,0">
-              <TextBlock Text="Exact second-player output"/><ComboBox x:Name="SetupGameMpvOutputBox" ItemTemplate="{StaticResource MpvOutputChoice}" SelectionChanged="SetupGameMpvOutputBox_SelectionChanged" MinHeight="36" Margin="0,4,0,10"/>
-              <TextBlock Text="A strip is a Voicemeeter mixer channel. These selectors identify strips only; the buttons below change B1/A1 route switches, not the input device." TextWrapping="Wrap" Opacity=".7" Margin="0,0,0,10"/>
-              <TextBlock Text="Microphone hardware strip"/><ComboBox x:Name="SetupMicStripBox" DisplayMemberPath="Label" SelectionChanged="SetupMicStripBox_SelectionChanged" MinHeight="36" Margin="0,4,0,10"/>
-              <TextBlock Text="Game-music virtual strip"/><ComboBox x:Name="SetupMusicStripBox" DisplayMemberPath="Label" SelectionChanged="SetupMusicStripBox_SelectionChanged" MinHeight="36" Margin="0,4,0,10"/>
-              <TextBlock x:Name="SetupStripState" Text="Choose strips and watch the live meters." TextWrapping="Wrap" Margin="0,4,0,0"/>
+            <Expander Header="UNDO OR ADVANCED ROUTING" Margin="0,16,0,0"><StackPanel Margin="0,10,0,0">
+              <Button Content="UNDO SETUP CHANGES" Click="UndoWizard_Click" HorizontalAlignment="Left"/>
+              <TextBlock x:Name="SetupRoutingDevices" Text="Chosen devices" TextWrapping="Wrap" Margin="0,12,0,5"/>
+              <TextBlock x:Name="SetupGameRouteState" Text="Checking music route…" TextWrapping="Wrap" Margin="0,0,0,10"/>
+              <Button Content="VERIFY B1 OUTPUT" Click="SetupVerifyB1_Click" HorizontalAlignment="Left"/>
+              <TextBlock x:Name="SetupB1TestState" Text="" TextWrapping="Wrap" Margin="0,7,0,10"/>
+              <TextBlock Text="Exact game-feed output"/><ComboBox x:Name="SetupGameMpvOutputBox" ItemTemplate="{StaticResource MpvOutputChoice}" SelectionChanged="SetupGameMpvOutputBox_SelectionChanged" MinHeight="36" Margin="0,4,0,10"/>
+              <TextBlock Text="Microphone mixer input"/><ComboBox x:Name="SetupMicStripBox" DisplayMemberPath="Label" SelectionChanged="SetupMicStripBox_SelectionChanged" MinHeight="36" Margin="0,4,0,10"/>
+              <TextBlock Text="Radio mixer input"/><ComboBox x:Name="SetupMusicStripBox" DisplayMemberPath="Label" SelectionChanged="SetupMusicStripBox_SelectionChanged" MinHeight="36" Margin="0,4,0,10"/>
+              <TextBlock x:Name="SetupStripState" Text="" TextWrapping="Wrap"/>
               <WrapPanel Margin="0,10,0,0"><Button Content="SEND MIC TO B1" Click="SetupRouteMic_Click"/><Button x:Name="SetupRouteMusicButton" Content="SEND MUSIC TO B1 + A1" Click="SetupRouteMusic_Click"/></WrapPanel>
+              <ProgressBar x:Name="SetupMicMeter" Height="8" Margin="0,12,0,4"/><ProgressBar x:Name="SetupMusicMeter" Height="8"/>
             </StackPanel></Expander>
-            <TextBlock Text="Selected mic's live level" Margin="0,14,0,3"/><ProgressBar x:Name="SetupMicMeter" Height="8"/>
-            <TextBlock Text="Voicemeeter game-music input's live level" Margin="0,10,0,3"/><ProgressBar x:Name="SetupMusicMeter" Height="8"/>
           </StackPanel></Border>
           <Border x:Name="SetupStepVerify" Background="{StaticResource PanelBrush}" Padding="20" CornerRadius="5" Margin="0,0,0,10"><StackPanel>
-            <TextBlock Text="4 · VERIFY YOUR RADIO" Foreground="{StaticResource OliveBrush}" FontWeight="Bold"/>
-            <TextBlock x:Name="SetupVerifyDescription" Text="B1 is the game-voice output. The lower meter shows your chosen listening output." TextWrapping="Wrap" Opacity=".7" Margin="0,6,0,10"/>
-            <TextBlock x:Name="SetupBusState" Text="Checking B1 and A1…" TextWrapping="Wrap"/>
-            <TextBlock Text="Game voice bus B1" Margin="0,10,0,3"/><ProgressBar x:Name="SetupGameMeter" Height="8"/>
-            <TextBlock x:Name="SetupB1EndpointLabel" Text="Voicemeeter Out B1 · Windows output" Margin="0,10,0,3"/><ProgressBar x:Name="SetupB1EndpointMeter" Height="8"/>
-            <TextBlock x:Name="SetupListeningMeterLabel" Text="Selected listening output" Margin="0,10,0,3"/><ProgressBar x:Name="SetupMonitorMeter" Height="8"/>
-            <WrapPanel Margin="0,12,0,0"><Button Content="TEST MICROPHONE" Click="TestMicrophone_Click"/><Button Content="PLAY TEST SOUND" Click="SetupPlayTestSound_Click"/><Button Content="TEST GAME FEED" Click="SetupPlayGameFeedTest_Click"/><Button Content="VERIFY B1" Click="SetupVerifyB1_Click"/></WrapPanel>
-            <TextBlock x:Name="SetupGameFeedTestState" Text="Run the built-in game feed test; no station is required." TextWrapping="Wrap" Margin="0,8,0,0"/>
-            <TextBlock x:Name="SetupChainTestState" Text="Run each test while your microphone and a station are active." TextWrapping="Wrap" Margin="0,8,0,0"/>
-            <Border BorderBrush="{StaticResource LineBrush}" BorderThickness="1" CornerRadius="4" Padding="12" Margin="0,16,0,0"><StackPanel>
-              <TextBlock Text="HEAR THE ACTUAL B1 OUTPUT" Foreground="{StaticResource OliveBrush}" FontWeight="Bold"/>
-              <TextBlock Text="Hold to hear the real B1 mix at 50% preview level. Direct station listening is muted while held and restored when released, including YouTube when its isolated Voicemeeter route is available. Speak to hear your mic too; use headphones at a comfortable level." TextWrapping="Wrap" Opacity=".7" Margin="0,5,0,8"/>
-              <Button x:Name="SetupAuditionB1Button" Content="HOLD TO TEST B1" PreviewMouseLeftButtonDown="B1Hold_MouseDown" PreviewMouseLeftButtonUp="B1Hold_MouseUp" LostMouseCapture="B1Hold_LostCapture" PreviewKeyDown="B1Hold_KeyDown" PreviewKeyUp="B1Hold_KeyUp" HorizontalAlignment="Left"/>
-              <TextBlock x:Name="SetupAuditionB1State" Text="Ready when B1 and your headphones are connected." TextWrapping="Wrap" Margin="0,7,0,0"/>
-            </StackPanel></Border>
-            <CheckBox x:Name="SetupHeardMusic" Content="I heard WARDOGS music in my selected headphones" Checked="SetupConfirmation_Changed" Unchecked="SetupConfirmation_Changed" Margin="0,16,0,4"/>
-            <CheckBox x:Name="SetupGameHeard" Content="I verified a game/voice app receives the B1 mix" Checked="SetupConfirmation_Changed" Unchecked="SetupConfirmation_Changed"/>
+            <TextBlock Text="Test your radio" FontSize="19" FontWeight="SemiBold"/>
+            <TextBlock x:Name="SetupVerifyDescription" Text="WARDOGS can check the game feed without a station." TextWrapping="Wrap" Opacity=".7" Margin="0,7,0,14"/>
+            <Button Content="TEST GAME VOICE" Click="SetupPlayGameFeedTest_Click" HorizontalAlignment="Left" Background="#33452E"/>
+            <TextBlock x:Name="SetupGameFeedTestState" Text="No audio check run yet." TextWrapping="Wrap" Margin="0,11,0,0"/>
+            <CheckBox x:Name="SetupHeardMusic" Content="I heard the test sound in my headphones or speakers" Checked="SetupConfirmation_Changed" Unchecked="SetupConfirmation_Changed" Margin="0,18,0,4"/>
+            <CheckBox x:Name="SetupGameHeard" Content="My game or voice app receives the WARDOGS input" Checked="SetupConfirmation_Changed" Unchecked="SetupConfirmation_Changed"/>
+            <Expander Header="MORE TESTS AND LIVE METERS" Margin="0,16,0,0"><StackPanel Margin="0,10,0,0">
+              <TextBlock x:Name="SetupChainTestState" Text="" TextWrapping="Wrap" Margin="0,0,0,8"/>
+              <TextBlock x:Name="SetupBusState" Text="Checking game voice…" TextWrapping="Wrap"/>
+              <TextBlock Text="Game voice mix" Margin="0,10,0,3"/><ProgressBar x:Name="SetupGameMeter" Height="8"/>
+              <TextBlock x:Name="SetupB1EndpointLabel" Text="Voicemeeter Out B1" Margin="0,10,0,3"/><ProgressBar x:Name="SetupB1EndpointMeter" Height="8"/>
+              <TextBlock x:Name="SetupListeningMeterLabel" Text="Listening output" Margin="0,10,0,3"/><ProgressBar x:Name="SetupMonitorMeter" Height="8"/>
+              <WrapPanel Margin="0,12,0,0"><Button Content="TEST MICROPHONE" Click="TestMicrophone_Click"/><Button Content="PLAY TEST SOUND" Click="SetupPlayTestSound_Click"/><Button Content="VERIFY B1" Click="SetupVerifyB1_Click"/></WrapPanel>
+              <TextBlock Text="Hold to hear the actual game voice mix. Release to restore normal listening." TextWrapping="Wrap" Opacity=".7" Margin="0,14,0,7"/>
+              <Button x:Name="SetupAuditionB1Button" Content="HOLD TO HEAR GAME MIX" PreviewMouseLeftButtonDown="B1Hold_MouseDown" PreviewMouseLeftButtonUp="B1Hold_MouseUp" LostMouseCapture="B1Hold_LostCapture" PreviewKeyDown="B1Hold_KeyDown" PreviewKeyUp="B1Hold_KeyUp" HorizontalAlignment="Left"/>
+              <TextBlock x:Name="SetupAuditionB1State" Text="Ready when game voice and your headphones are connected." TextWrapping="Wrap" Margin="0,7,0,0"/>
+            </StackPanel></Expander>
           </StackPanel></Border>
           <Border x:Name="SetupStepProviders" Background="{StaticResource PanelBrush}" Padding="20" CornerRadius="5" Margin="0,0,0,10"><StackPanel>
             <TextBlock Text="7 · MUSIC SERVICES" Foreground="{StaticResource OliveBrush}" FontWeight="Bold"/>
@@ -384,14 +399,12 @@
             <WrapPanel><Button Content="CREATE MACRO" Click="CreateMacro_Click"/><Button Content="EDIT MACROS" Click="ManageMacros_Click"/></WrapPanel>
           </StackPanel></Border>
           <Border x:Name="SetupStepFinish" Background="{StaticResource PanelBrush}" Padding="20" CornerRadius="5" Margin="0,0,0,10"><StackPanel>
-            <TextBlock Text="5 · READY CHECK" Foreground="{StaticResource OliveBrush}" FontWeight="Bold"/>
-            <TextBlock Text="Your core audio path is checked independently of stations, optional providers, and controllers. Confirm the game receives the B1 mix before finishing." TextWrapping="Wrap" Opacity=".7" Margin="0,6,0,10"/>
-            <Button Content="OPEN DASHBOARD / PLAY" Click="Dashboard_Click" HorizontalAlignment="Left"/>
-            <TextBlock x:Name="SetupReadiness" Text="Run checks to see what remains." TextWrapping="Wrap" Margin="0,12,0,8"/>
-            <WrapPanel><Button Content="RECHECK EVERYTHING" Click="SetupRecheck_Click"/><Button Content="FINISH VERIFIED SETUP" Click="SetupFinish_Click" Background="#33452E"/><Button Content="LEAVE UNFINISHED" Click="Dashboard_Click"/></WrapPanel>
-            <TextBlock Text="OPTIONAL NEXT STEPS · Create a station · Set shortcuts · Bind a controller · Explore the Library" Opacity=".7" TextWrapping="Wrap" Margin="0,14,0,0"/>
+            <TextBlock Text="Ready to listen" FontSize="21" FontWeight="SemiBold"/>
+            <TextBlock x:Name="SetupReadiness" Text="Checking your audio…" TextWrapping="Wrap" Margin="0,12,0,14"/>
+            <WrapPanel><Button Content="FINISH SETUP" Click="SetupFinish_Click" Background="#33452E"/><Button Content="CHECK AGAIN" Click="SetupRecheck_Click"/><Button Content="GO TO RADIO" Click="Dashboard_Click"/></WrapPanel>
           </StackPanel></Border>
           <WrapPanel Margin="0,12,0,20"><Button x:Name="SetupBackButton" Content="← BACK" Click="SetupBack_Click"/><Button x:Name="SetupNextButton" Content="NEXT →" Click="SetupNext_Click" Background="#33452E"/></WrapPanel>
+          <TextBlock x:Name="SetupNextFeedback" Text="" TextWrapping="Wrap" Margin="0,0,0,18" Foreground="{StaticResource OliveBrush}"/>
         </StackPanel></ScrollViewer>
       </Grid>
     </Grid>

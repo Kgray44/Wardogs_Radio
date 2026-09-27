@@ -7,7 +7,7 @@ public enum RepairAction { ConnectVoicemeeter, RefreshDevices, ChooseMicrophone,
 
 public sealed record ReadinessCheck(string Id, ReadinessCategory Category, ReadinessSeverity Severity,
     bool BlocksCoreReadiness, string Title, string Summary, string? TechnicalDetail = null,
-    RepairAction? Repair = null);
+    RepairAction? Repair = null, bool IsLiveVerification = false);
 
 public sealed record SystemReadinessSnapshot(OverallReadiness Overall, IReadOnlyList<ReadinessCheck> Checks,
     DateTimeOffset CheckedAt)
@@ -16,6 +16,8 @@ public sealed record SystemReadinessSnapshot(OverallReadiness Overall, IReadOnly
         check.Severity is ReadinessSeverity.Error or ReadinessSeverity.Unavailable or ReadinessSeverity.NeedsAction or ReadinessSeverity.Warning or ReadinessSeverity.NotTested);
     public int CorePassed => Checks.Count(check => check.BlocksCoreReadiness && check.Severity == ReadinessSeverity.Ready);
     public int CoreTotal => Checks.Count(check => check.BlocksCoreReadiness);
+    public int LiveVerificationPassed => Checks.Count(check => check.IsLiveVerification && check.Severity == ReadinessSeverity.Ready);
+    public int LiveVerificationTotal => Checks.Count(check => check.IsLiveVerification);
 }
 
 // Each part is independently invalidated when its physical identity or mixer assignment changes.
@@ -79,8 +81,8 @@ public static class SystemReadinessService
             saved.VoicemeeterEdition == evidence.VoicemeeterEdition;
         var checks = new List<ReadinessCheck>();
         void Add(string id, ReadinessCategory category, ReadinessSeverity severity, bool core, string title, string summary,
-            RepairAction? repair = null, string? technical = null) =>
-            checks.Add(new(id, category, severity, core, title, summary, technical, repair));
+            RepairAction? repair = null, string? technical = null, bool live = false) =>
+            checks.Add(new(id, category, severity, core, title, summary, technical, repair, live));
 
         Add("application", ReadinessCategory.Application, ReadinessSeverity.Ready, true, "WARDOGS Radio", "Application is running.");
         Add("playback", ReadinessCategory.Playback, evidence.MpvAvailable ? ReadinessSeverity.Ready : ReadinessSeverity.Error,
@@ -101,39 +103,53 @@ public static class SystemReadinessService
             config.GameBus == "B1" ? null : RepairAction.OpenAudioRouting);
         Add("microphone", ReadinessCategory.Microphone,
             !evidence.MicrophonePresent || !evidence.MicrophoneAssigned || !evidence.MicrophoneRoutedToGame ? ReadinessSeverity.NeedsAction :
-            evidence.MicrophoneObserved || micVerified && saved!.MicrophoneObserved ? ReadinessSeverity.Ready : ReadinessSeverity.NotTested,
+            ReadinessSeverity.Ready,
             true, "Microphone to game voice", !evidence.MicrophonePresent ? "Choose a microphone that is connected now." :
-            !evidence.MicrophoneAssigned ? "The microphone is not assigned to a Voicemeeter input." :
+            !evidence.MicrophoneAssigned ? "The microphone is not assigned to the selected audio input." :
             !evidence.MicrophoneRoutedToGame ? "The microphone is not routed to game voice." :
-            evidence.MicrophoneObserved ? "Live microphone signal was detected." : micVerified && saved!.MicrophoneObserved ? "Microphone was verified previously; no live signal is present now." : "Speak to verify microphone signal.",
+            "Microphone is connected to game voice.",
             !evidence.MicrophonePresent ? RepairAction.ChooseMicrophone : RepairAction.OpenAudioRouting);
+        Add("microphone-observation", ReadinessCategory.Microphone,
+            evidence.MicrophoneObserved ? ReadinessSeverity.Ready : ReadinessSeverity.Info,
+            false, "Microphone signal", evidence.MicrophoneObserved ? "Microphone audio was observed this session." :
+            micVerified && saved!.MicrophoneObserved ? "Microphone audio was verified previously; none has been observed this session. Speak to test it if desired." :
+            "No microphone audio has been observed this session. Speak to test it if desired.", live: true);
         Add("listening", ReadinessCategory.Listening,
-            !evidence.HeadphonesPresent ? ReadinessSeverity.NeedsAction :
-            evidence.ListeningConfirmed || listenVerified && saved!.ListeningConfirmed ? ReadinessSeverity.Ready : ReadinessSeverity.NotTested,
-            true, "Headphones", !evidence.HeadphonesPresent ? "Choose headphones or speakers that are connected now." :
-            evidence.ListeningConfirmed ? "You confirmed hearing the selected output." : listenVerified && saved!.ListeningConfirmed ? "Listening was confirmed previously." : "Play the test sound and confirm that you heard it.",
+            !evidence.HeadphonesPresent ? ReadinessSeverity.NeedsAction : ReadinessSeverity.Ready,
+            true, "Listening output", !evidence.HeadphonesPresent ? "Choose headphones or speakers that are connected now." :
+            "The selected listening output is present.",
             !evidence.HeadphonesPresent ? RepairAction.ChooseHeadphones : null);
+        Add("listening-confirmation", ReadinessCategory.Listening,
+            evidence.ListeningConfirmed ? ReadinessSeverity.Ready : ReadinessSeverity.Info,
+            false, "Listening test", evidence.ListeningConfirmed ? "You confirmed hearing the selected output this session." :
+            listenVerified && saved!.ListeningConfirmed ? "Listening was confirmed previously. Run the test sound again if desired." :
+            "Play the test sound and confirm that you heard it if desired.", live: true);
         Add("game-route", ReadinessCategory.GameVoice,
             !evidence.MusicPlayerTargetsGame || !evidence.MusicRoutedToGame ? ReadinessSeverity.NeedsAction : ReadinessSeverity.Ready,
             true, "Radio feed to game voice", !evidence.MusicPlayerTargetsGame ? "The game music player is not targeting Voicemeeter AUX." :
             !evidence.MusicRoutedToGame ? "Game music is not routed to B1." : "Radio feed is configured for B1.", RepairAction.FixRoute);
         Add("game-music-observed", ReadinessCategory.GameVoice,
-            evidence.MusicObserved || gameVerified && saved!.MusicObserved ? ReadinessSeverity.Ready : ReadinessSeverity.NotTested,
-            true, "Radio feed signal", evidence.MusicObserved ? "Live radio feed signal was detected at the music input." :
+            evidence.MusicObserved ? ReadinessSeverity.Ready : ReadinessSeverity.Info,
+            false, "Radio feed signal", evidence.MusicObserved ? "Live radio feed signal was detected at the music input." :
             gameVerified && saved!.MusicObserved ? "Radio feed was verified previously; no station is playing now." :
-            "Run the built-in game feed test to observe the actual music input.");
+            "No radio feed signal has been observed this session. The built-in test needs no station.", live: true);
         Add("game-output", ReadinessCategory.GameVoice,
-            !evidence.GameEndpointPresent ? ReadinessSeverity.NeedsAction : evidence.TelemetryConflict ? ReadinessSeverity.Warning :
-            evidence.WindowsBusObserved && evidence.MixerBusObserved || gameVerified && saved!.WindowsBusObserved && saved.MixerBusObserved ? ReadinessSeverity.Ready : ReadinessSeverity.NotTested,
+            !evidence.GameEndpointPresent ? ReadinessSeverity.NeedsAction : evidence.TelemetryConflict ? ReadinessSeverity.Warning : ReadinessSeverity.Ready,
             true, "Windows B1 output", !evidence.GameEndpointPresent ? "Voicemeeter Out B1 is missing from Windows recording devices." :
             evidence.TelemetryConflict ? "Voicemeeter and Windows B1 meters disagree. Output is not verified." :
-            evidence.WindowsBusObserved && evidence.MixerBusObserved ? "Signal reached Voicemeeter B1 and the Windows B1 endpoint." :
-            gameVerified && saved!.WindowsBusObserved ? "B1 was verified previously; waiting for fresh signal." : "Run the built-in game feed test to observe B1.",
+            "The game voice output is present and no telemetry conflict is known.",
             !evidence.GameEndpointPresent ? RepairAction.RefreshDevices : null);
+        Add("game-output-observation", ReadinessCategory.GameVoice,
+            evidence.WindowsBusObserved && evidence.MixerBusObserved ? ReadinessSeverity.Ready : ReadinessSeverity.Info,
+            false, "Game voice signal", evidence.WindowsBusObserved && evidence.MixerBusObserved ?
+            "Signal reached the mixer and Windows game voice output this session." :
+            gameVerified && saved!.WindowsBusObserved && saved.MixerBusObserved ? "Game voice was verified previously; no fresh signal is present." :
+            "Run the built-in game feed test to observe game voice without a station.", live: true);
         Add("game-confirmation", ReadinessCategory.GameVoice,
-            evidence.GameReceiveConfirmed || gameVerified && saved!.GameReceiveConfirmed ? ReadinessSeverity.Ready : ReadinessSeverity.NotTested,
-            true, "Game or voice app reception", evidence.GameReceiveConfirmed || gameVerified && saved!.GameReceiveConfirmed ? "You confirmed that your game receives the B1 mix." :
-            "Select Voicemeeter Out B1 in your game, then confirm that it receives sound.", RepairAction.VerifyGameInput);
+            evidence.GameReceiveConfirmed ? ReadinessSeverity.Ready : ReadinessSeverity.Info,
+            false, "Game or voice app reception", evidence.GameReceiveConfirmed ? "You confirmed that your game receives the B1 mix this session." :
+            gameVerified && saved!.GameReceiveConfirmed ? "Game reception was confirmed previously." :
+            "Select Voicemeeter Out B1 in your game, then confirm reception when convenient.", RepairAction.VerifyGameInput, live: true);
         Add("youtube", ReadinessCategory.Providers, evidence.YoutubeAvailable ? ReadinessSeverity.Info : ReadinessSeverity.Optional,
             false, "YouTube", evidence.YoutubeAvailable ? "Player is available; individual videos still need testing." : "Optional player is unavailable.");
         Add("soundcloud", ReadinessCategory.Providers, ReadinessSeverity.Optional, false, "SoundCloud", "Optional account connection is not configured.");

@@ -27,18 +27,53 @@ internal sealed class TemporaryYouTubeRoute(AudioBridgeService bridge) : IDispos
 
     internal sealed record Snapshot(string PriorConsole, string PriorMultimedia, string VirtualOutput,
         float PriorA1, float PriorB1, float PriorVirtualGain, string PriorA1Device, string? PriorA1Driver,
-        string ChosenHeadsetName, float? AppliedA1 = null, float? AppliedVirtualGain = null);
+        string ChosenHeadsetName, float? AppliedA1 = null, float? AppliedVirtualGain = null,
+        string? PendingHeadsetName = null);
 
     public bool IsActive => _snapshot is not null;
     public bool IsAuditioning => _auditioning;
+    public string? CurrentHeadsetName => _snapshot?.ChosenHeadsetName;
+
+    public void SwitchHeadset(string endpointId)
+    {
+        var current = _snapshot ?? throw new InvalidOperationException("The YouTube listening route is not active.");
+        if (WindowsDefaultWasOverridden)
+            throw new InvalidOperationException("Windows output was changed manually; WARDOGS will not reclaim it.");
+        using var endpoints = new MMDeviceEnumerator();
+        using var endpoint = endpoints.GetDevice(endpointId.Split('\\').Last());
+        if (endpoint.DataFlow != DataFlow.Render || endpoint.State != DeviceState.Active)
+            throw new InvalidOperationException("The requested listening output is unavailable.");
+        var choice = VoicemeeterSharedOutputSelector.Find(bridge.ListAudioDevices(false), endpoint.FriendlyName)
+            ?? throw new InvalidOperationException("A shared Voicemeeter output could not be matched to this device.");
+        if (choice.Name.Equals(current.ChosenHeadsetName, StringComparison.OrdinalIgnoreCase)) return;
+        SaveSnapshot(current with { PendingHeadsetName = choice.Name });
+        try
+        {
+            SetVerifiedDevice("Bus[0].device." + choice.InterfaceName.ToLowerInvariant(), choice.Name,
+                "Could not switch YouTube listening output.");
+            SaveSnapshot(current with { ChosenHeadsetName = choice.Name, PendingHeadsetName = null });
+        }
+        catch
+        {
+            var former = bridge.ListAudioDevices(false).FirstOrDefault(x =>
+                x.Name.Equals(current.ChosenHeadsetName, StringComparison.OrdinalIgnoreCase));
+            if (former is not null && bridge.TrySetDeviceVerified("Bus[0].device." + former.InterfaceName.ToLowerInvariant(),
+                    "Bus[0].device.name", current.ChosenHeadsetName))
+                SaveSnapshot(current);
+            throw;
+        }
+    }
+
+    public bool WindowsDefaultWasOverridden => _snapshot is { } snapshot &&
+        (!WindowsDefaultRender.Current(Role.Console).Equals(snapshot.VirtualOutput, StringComparison.OrdinalIgnoreCase) ||
+         !WindowsDefaultRender.Current(Role.Multimedia).Equals(snapshot.VirtualOutput, StringComparison.OrdinalIgnoreCase));
 
     public bool TryCheckHealth(out string issue)
     {
         issue = "";
         if (_snapshot is not { } snapshot) return true;
-        if (!WindowsDefaultRender.Current(Role.Console).Equals(snapshot.VirtualOutput, StringComparison.OrdinalIgnoreCase) ||
-            !WindowsDefaultRender.Current(Role.Multimedia).Equals(snapshot.VirtualOutput, StringComparison.OrdinalIgnoreCase))
-            issue = "Windows playback route changed.";
+        if (WindowsDefaultWasOverridden)
+            issue = "Windows playback output was changed by the owner.";
         else if (!bridge.TryReadString("Bus[0].device.name", out var device) ||
                  !device.Equals(snapshot.ChosenHeadsetName, StringComparison.OrdinalIgnoreCase))
             issue = "Voicemeeter's headset output changed.";
@@ -188,7 +223,8 @@ internal sealed class TemporaryYouTubeRoute(AudioBridgeService bridge) : IDispos
         if (!bridge.TryReadString("Bus[0].device.name", out var currentDevice))
             throw new InvalidOperationException("Could not read current A1 output; recovery record retained.");
         if (currentDevice.Equals(snapshot.PriorA1Device, StringComparison.OrdinalIgnoreCase)) return;
-        if (!currentDevice.Equals(snapshot.ChosenHeadsetName, StringComparison.OrdinalIgnoreCase))
+        if (!currentDevice.Equals(snapshot.ChosenHeadsetName, StringComparison.OrdinalIgnoreCase) &&
+            !currentDevice.Equals(snapshot.PendingHeadsetName, StringComparison.OrdinalIgnoreCase))
             throw new InvalidOperationException("A1 output changed outside WARDOGS; it was left untouched. Recovery record retained for review.");
         if (string.IsNullOrWhiteSpace(snapshot.PriorA1Device))
         {

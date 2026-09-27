@@ -1,6 +1,28 @@
 # Readiness and Audio Bridge owner review
 
-This is an unreleased feature-branch candidate. The review boundary is source, Release build, and simulated tests. No native WPF or physical audio acceptance run has been recorded.
+This is an unreleased feature-branch candidate. The first PR #1 build received owner-live testing and exposed the regressions below. Any follow-up fixes require renewed source, build, simulated, and owner-live review before acceptance.
+
+## Owner-live findings from the first PR #1 candidate
+
+The owner ran the first candidate on the intended Windows audio setup. These are physical observations, distinct from the simulated tests below:
+
+- Setup and Diagnostics reached 9/10 core checks, while the quiet microphone left overall System Health at Needs Verification.
+- YouTube playback changed Windows default output from the Razer Barracuda Pro to Voicemeeter Input. The owner heard worse treble and somewhat worse bass through that path.
+- When the owner manually restored the real headphones as Windows default, WARDOGS repeatedly reclaimed Voicemeeter Input. The route eventually stopped reclaiming it and Audio & Routing reported Needs Attention.
+- Audio & Routing accepted laptop speakers as the listening choice while active YouTube audio kept playing through the Razer headset.
+- Clip Guard Protect made no perceptible or functional difference from Off. Source inspection confirmed that actuation was disabled in that candidate.
+- Meters visibly lagged audio. Several important buttons lacked nearby working/result feedback.
+- Settings cards were noticeably narrower than other pages. Setup & Repair and Audio & Routing still exposed too much mixer terminology; Audio & Routing remained mostly textual.
+
+The follow-up amendment uses these as regression evidence. A later build or simulated test does not erase or supersede them. The owner has also reported that the later Audio & Routing preview is somewhat better while Setup & Repair still contains far too much information. A substantially simpler Setup page is open for renewed owner review. Repeat owner-live acceptance is required before merge readiness can be claimed.
+
+## Follow-up candidate in progress
+
+The branch now routes a WebView2 audio session to the selected physical output with a Windows per-app endpoint policy; a separate process-loopback copy continues to feed AUX/B1. A synthetic WebView2 tone probe observed active switching between two endpoints, independent session listening level, unchanged Windows global default, and a continuing game copy. These observations are process and signal evidence on the development machine, not the owner's listening or game-reception acceptance. The old Windows-default route remains only for recovery of an interrupted earlier candidate session. Active local and YouTube output changes now use the same UI operation and require provider readback before the selection is saved.
+
+Core readiness treats a silent configured microphone as informational. Clip Guard can now apply reduction to the independent local or YouTube game feed only when both B1 telemetry sources agree; it leaves the listening and microphone levels alone. The bridge meter worker and UI signal timer run at 40 ms nominal intervals. Setup's main page now centers on choosing a microphone and listening output, connecting, and confirming game reception, with technical controls collapsed. The owner is reviewing this page. A visit-wide Setup checkpoint is written to disk and offers Continue, Keep, or Undo after an interrupted session. The restart path still needs owner-live testing, as does the full acceptance procedure below. No merge or release is authorized.
+
+The follow-up Release solution build succeeds with zero errors. The current automated suite passes 301/301 tests, including a checkpoint reload across store instances and a concurrent bridge-snapshot stress test. These results do not establish rendered UI or physical audio behavior.
 
 ## Original overhaul review
 
@@ -31,11 +53,11 @@ This is an unreleased feature-branch candidate. The review boundary is source, R
 | 7 | Ownership | Route/device leases name owner, resource, prior/applied value, and time; releases compare current value before restoration. |
 | 8 | Crash recovery | Local route/device journals are validated before use. Startup recovers supported owned values before fresh routing; invalid/unreadable records block new lease writes. |
 | 9 | External mutation | A different current value is left untouched and recorded as a fault or Needs Attention. Whole device-name matching avoids substring ownership. |
-| 10 | YouTube route decision | Retains Windows default Console/Multimedia switching because the current WebView playback path depends on it. Separate process loopback feeds AUX/B1. |
+| 10 | YouTube route decision | The first candidate used Windows default Console/Multimedia switching. The follow-up replaces new playback with a per-app WebView2 session route; process loopback still feeds AUX/B1. |
 | 11 | Restore bug | Empty prior A1 assignment is cleared through the matching driver interfaces and read back. Ambiguous states keep the recovery record; live regression remains pending. |
 | 12 | YouTube feed recovery | Faulted capture/output gets up to three restart attempts; an inactive but recoverable listening route reloads the visible player. Station identity is checked before a feed attaches. |
 | 13 | Local feed recovery | Missing second MPV game player gets up to three reload attempts and seeks to the headset player's current position; headset playback is left running. |
-| 14 | Telemetry worker | A stoppable 200 ms bridge worker samples mixer state into immutable records. The UI timer consumes them and separately measures Windows endpoints. Raw channel forensics run only in Diagnostics. |
+| 14 | Telemetry worker | The first candidate used 200 ms. The follow-up uses a 40 ms nominal bridge meter worker and 40 ms UI signal timer. Raw channel forensics run only in Diagnostics. |
 | 15 | Device identity | A complete endpoint GUID maps an MPV WASAPI device to a Windows endpoint; ambiguous/partial names do not match. Banana physical-strip assignment also checks device name and live meter before takeover. |
 | 16 | Engine restart | Disconnect marks Recovering and triggers up to three reconnect/recovery attempts. Wrong edition or unresolved journals remain Needs Attention. |
 | 17 | Endpoint return | Bounded Windows endpoint discovery runs every 15 seconds; disappearance changes readiness, return refreshes identities and resets game-feed recovery attempts. It cannot guarantee every physical device resumes playback. |
@@ -48,8 +70,8 @@ This is an unreleased feature-branch candidate. The review boundary is source, R
 | 24 | Integration tests | No native hardware integration test was run. Existing opt-in live probe infrastructure remains separate from generic CI. |
 | 25 | Live evidence | None obtained for this candidate. Build and simulated tests do not prove audio or rendered UI. |
 | 26 | Pending acceptance | Complete the checklist in [ReadinessAudioBridgeCandidate.md](ReadinessAudioBridgeCandidate.md), including Banana auto-start, mic/AUX/B1, local/YouTube, game reception, restart, hotplug, shutdown, and crash restore. |
-| 27 | Reliability limits | Windows default switching uses PolicyConfig; physical endpoint return may still need repair. Wizard visit checkpoint is in memory, while in-flight bridge writes have durable journals. Limiter automation is paused and has no crash journal. Native timing/device naming requires live acceptance. |
+| 27 | Reliability limits | The follow-up per-app Windows audio policy is undocumented and needs live validation. The wizard visit checkpoint and in-flight bridge writes now have separate durable journals; restart behavior still needs owner-live acceptance. Native timing/device naming also requires live acceptance. |
 | 28 | Manual Voicemeeter interaction | Intended normal path requires none on a supported Banana installation. The real machine path has not yet been demonstrated. |
-| 29 | Owner-review readiness | Source is committed on an isolated clean branch, solution tests pass, and live checks are specified. It is ready for owner testing, with the evidence boundary above. |
+| 29 | Owner-review readiness | This row described the original committed candidate. Follow-up edits are still in progress on the same PR branch and an open preview is awaiting owner review. |
 
 No merge, tag, public release, or installed-app replacement was performed.

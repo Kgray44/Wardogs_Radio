@@ -1,6 +1,7 @@
 using NAudio.CoreAudioApi;
 using NAudio.Wave;
 using System.Runtime.InteropServices;
+using WardogsRadio.Playback;
 
 namespace WardogsRadio.App;
 
@@ -49,11 +50,10 @@ internal sealed class YouTubeGameFeed : IAsyncDisposable
     async Task StartCoreAsync(uint browserProcessId, string outputName, double gain)
     {
         if (browserProcessId == 0) throw new InvalidOperationException("WebView2 browser process is not ready.");
-        var endpointGuid = outputName.Split('{').LastOrDefault()?.TrimEnd('}');
-        if (string.IsNullOrWhiteSpace(endpointGuid))
+        if (string.IsNullOrWhiteSpace(outputName))
             throw new InvalidOperationException("Choose a specific Voicemeeter game output first.");
         _renderDevice = _endpoints.EnumerateAudioEndPoints(DataFlow.Render, DeviceState.Active)
-            .FirstOrDefault(device => device.ID.Contains(endpointGuid, StringComparison.OrdinalIgnoreCase));
+            .SingleOrDefault(device => AudioDeviceIdentity.SameEndpoint(device.ID, outputName));
         if (_renderDevice is null)
             throw new InvalidOperationException("The selected Voicemeeter game output is not available in Windows.");
 

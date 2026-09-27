@@ -27,6 +27,9 @@ public static class VoicemeeterSharedOutputSelector
 public interface IVoicemeeterRemote : IDisposable
 {
     VoicemeeterStatus Probe();
+    // Meter sampling must not enumerate Windows processes. Test doubles may
+    // delegate to Probe; the native implementation uses only Remote API state.
+    VoicemeeterStatus ProbeFast() => Probe();
     bool TryLogin(out string detail);
     bool TryRunVoicemeeter(int edition, out string detail) { detail = "Voicemeeter launch is unavailable."; return false; }
     bool TryGetLevel(int type, int channel, out float value);
@@ -43,6 +46,7 @@ public interface IVoicemeeterRemote : IDisposable
 public sealed unsafe class VoicemeeterRemote : IVoicemeeterRemote
 {
     IntPtr _dll;
+    string? _knownDllPath;
     bool _loggedIn;
     delegate* unmanaged<int> _login;
     delegate* unmanaged<int> _logout;
@@ -84,10 +88,26 @@ public sealed unsafe class VoicemeeterRemote : IVoicemeeterRemote
         { Connected = connected };
     }
 
+    public VoicemeeterStatus ProbeFast()
+    {
+        var path = _knownDllPath ?? FindDll();
+        if (path is null) return new(false, false, null, null, null, "Voicemeeter Remote API DLL was not detected.");
+        if (!_loggedIn || _isParametersDirty == null)
+            return new(true, false, null, null, path, "Remote API is installed; live connection not tested.");
+        var connected = _isParametersDirty() >= 0;
+        int type = 0;
+        var edition = connected && _getVoicemeeterType != null && _getVoicemeeterType(&type) == 0
+            ? type switch { 1 => "Standard", 2 => "Banana", 3 => "Potato", _ => $"Type {type}" } : null;
+        return new(true, connected, edition, null, path,
+            connected ? "Remote API connected to a running Voicemeeter engine." : "Remote API registered; engine disconnected.")
+        { Connected = connected };
+    }
+
     public bool TryLogin(out string detail)
     {
         var status = Probe();
         if (status.DllPath is null) { detail = status.Detail; return false; }
+        _knownDllPath = status.DllPath;
         try
         {
             if (_dll == IntPtr.Zero)

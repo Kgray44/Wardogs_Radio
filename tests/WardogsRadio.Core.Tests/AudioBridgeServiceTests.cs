@@ -11,12 +11,18 @@ public sealed class AudioBridgeServiceTests
         public string Edition = "Banana";
         public int StartCalls;
         public int ProbeCalls;
+        public int FastProbeCalls;
         public Dictionary<string, float> Values { get; } = [];
         public Dictionary<string, string> Strings { get; } = [];
         public VoicemeeterStatus Probe()
         {
             Interlocked.Increment(ref ProbeCalls);
             return new(Installed, Running, Connected ? Edition : null, null, "fake", "fake") { Connected = Connected };
+        }
+        public VoicemeeterStatus ProbeFast()
+        {
+            Interlocked.Increment(ref FastProbeCalls);
+            return new(Installed, Connected, Connected ? Edition : null, null, "fake", "fast fake") { Connected = Connected };
         }
         public bool TryLogin(out string detail) { detail = "registered"; return Connected; }
         public bool TryRunVoicemeeter(int edition, out string detail)
@@ -104,9 +110,68 @@ public sealed class AudioBridgeServiceTests
             await Task.Delay(50);
         Assert.False(bridge.Snapshot.Telemetry!.Status.Connected);
         await bridge.StopTelemetryAsync();
-        var count = remote.ProbeCalls;
+        var count = remote.ProbeCalls + remote.FastProbeCalls;
         await Task.Delay(250);
-        Assert.Equal(count, remote.ProbeCalls);
+        Assert.Equal(count, remote.ProbeCalls + remote.FastProbeCalls);
+    }
+
+    [Fact]
+    public void LateBananaStartupAfterInitialTimeoutRecovers()
+    {
+        var remote = new Remote { Connected = false, Running = true };
+        var bridge = new AudioBridgeService(remote);
+        Assert.False(bridge.EnsureReadyAsync().GetAwaiter().GetResult().Success);
+        Assert.Equal(AudioBridgeConnectionState.Faulted, bridge.Snapshot.Connection);
+        remote.Connected = true;
+        bridge.SampleFastTelemetry(null, null);
+        Assert.Equal(AudioBridgeConnectionState.Connected, bridge.Snapshot.Connection);
+    }
+
+    [Fact]
+    public void FastMeterTelemetryDoesNotEnumerateProcesses()
+    {
+        var remote = new Remote { Connected = true, Running = true };
+        var bridge = new AudioBridgeService(remote);
+        for (var i = 0; i < 100; i++) bridge.SampleFastTelemetry(0, 4);
+        Assert.Equal(0, remote.ProbeCalls);
+        Assert.Equal(100, remote.FastProbeCalls);
+    }
+
+    [Fact]
+    public async Task AudioBridgeSnapshotConcurrentReadsAreSafe()
+    {
+        var remote = new Remote { Connected = true, Running = true };
+        remote.Values["Strip[4].B1"] = 0;
+        remote.Strings["Strip[0].device.name"] = "Owner microphone";
+        var bridge = new AudioBridgeService(remote);
+        using var stop = new CancellationTokenSource();
+        var readers = Enumerable.Range(0, 4).Select(_ => Task.Run(() =>
+        {
+            while (!stop.IsCancellationRequested)
+            {
+                var snapshot = bridge.Snapshot;
+                Assert.True(snapshot.OwnedRoutes.Count <= 1);
+                Assert.True(snapshot.OwnedDevices.Count <= 1);
+                foreach (var lease in snapshot.OwnedRoutes) Assert.Equal("Strip[4].B1", lease.Resource);
+                foreach (var lease in snapshot.OwnedDevices) Assert.Equal("Strip[0].device.name", lease.ReadbackResource);
+            }
+        })).ToArray();
+        try
+        {
+            for (var repeat = 0; repeat < 8; repeat++)
+            {
+                var route = await bridge.ApplyRouteAsync("setup", 4, "B1", true);
+                Assert.True(route.Success);
+                Assert.Equal(AudioLeaseReleaseState.Restored, await bridge.ReleaseRouteAsync(route.Lease!));
+                var device = await bridge.SetDeviceAsync("setup", "Strip[0].device.wdm",
+                    "Strip[0].device.name", "WARDOGS microphone", persistLease: true);
+                Assert.True(device.Success);
+                Assert.Equal(AudioLeaseReleaseState.Restored, await bridge.ReleaseDeviceAsync(device.DeviceLease!));
+            }
+        }
+        finally { stop.Cancel(); await Task.WhenAll(readers); }
+        Assert.Empty(bridge.Snapshot.OwnedRoutes);
+        Assert.Empty(bridge.Snapshot.OwnedDevices);
     }
 
     [Fact]

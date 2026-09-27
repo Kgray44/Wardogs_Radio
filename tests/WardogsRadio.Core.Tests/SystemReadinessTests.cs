@@ -51,8 +51,9 @@ public sealed class SystemReadinessTests
         var config = Config();
         config.MicrophoneDeviceId = "mic-b";
         var readiness = SystemReadinessService.Evaluate(config, Evidence());
-        Assert.Equal(OverallReadiness.NeedsVerification, readiness.Overall);
-        Assert.Equal(ReadinessSeverity.NotTested, readiness.Checks.Single(check => check.Id == "microphone").Severity);
+        Assert.Equal(OverallReadiness.Ready, readiness.Overall);
+        Assert.Equal(ReadinessSeverity.Ready, readiness.Checks.Single(check => check.Id == "microphone").Severity);
+        Assert.Equal(ReadinessSeverity.Info, readiness.Checks.Single(check => check.Id == "microphone-observation").Severity);
         Assert.Equal(ReadinessSeverity.Ready, readiness.Checks.Single(check => check.Id == "listening").Severity);
     }
 
@@ -86,18 +87,46 @@ public sealed class SystemReadinessTests
     public void ChangedWindowsB1EndpointInvalidatesOnlyGameVerification()
     {
         var readiness = SystemReadinessService.Evaluate(Config(), Evidence() with { GameEndpointId = "b1-b" });
-        Assert.Equal(OverallReadiness.NeedsVerification, readiness.Overall);
+        Assert.Equal(OverallReadiness.Ready, readiness.Overall);
         Assert.Equal(ReadinessSeverity.Ready, readiness.Checks.Single(check => check.Id == "microphone").Severity);
-        Assert.Equal(ReadinessSeverity.NotTested, readiness.Checks.Single(check => check.Id == "game-output").Severity);
+        Assert.Equal(ReadinessSeverity.Ready, readiness.Checks.Single(check => check.Id == "game-output").Severity);
+        Assert.Equal(ReadinessSeverity.Info, readiness.Checks.Single(check => check.Id == "game-output-observation").Severity);
     }
 
     [Fact]
-    public void ConfiguredWithoutLiveOrSavedProofNeedsVerification()
+    public void ConfiguredWithoutLiveOrSavedProofStillHasHealthyCore()
     {
         var config = Config();
         config.SetupVerification = null;
         var readiness = SystemReadinessService.Evaluate(config, Evidence());
-        Assert.Equal(OverallReadiness.NeedsVerification, readiness.Overall);
-        Assert.Equal(ReadinessSeverity.NotTested, readiness.Checks.Single(check => check.Id == "game-confirmation").Severity);
+        Assert.Equal(OverallReadiness.Ready, readiness.Overall);
+        Assert.Equal(readiness.CoreTotal, readiness.CorePassed);
+        Assert.Equal(0, readiness.LiveVerificationPassed);
+        Assert.Equal(ReadinessSeverity.Info, readiness.Checks.Single(check => check.Id == "game-confirmation").Severity);
+    }
+
+    [Fact]
+    public void QuietConfiguredMicrophoneDoesNotBlockSystemReady()
+    {
+        var config = Config();
+        config.SetupVerification = null;
+        var readiness = SystemReadinessService.Evaluate(config, Evidence());
+        Assert.Equal(OverallReadiness.Ready, readiness.Overall);
+        Assert.Equal(ReadinessSeverity.Ready, readiness.Checks.Single(check => check.Id == "microphone").Severity);
+        Assert.Equal(ReadinessSeverity.Info, readiness.Checks.Single(check => check.Id == "microphone-observation").Severity);
+        Assert.False(readiness.Checks.Single(check => check.Id == "microphone-observation").BlocksCoreReadiness);
+    }
+
+    [Fact]
+    public void LiveMicObservationAddsEvidenceButIsNotRequiredForHealth()
+    {
+        var config = Config();
+        config.SetupVerification = null;
+        var quiet = SystemReadinessService.Evaluate(config, Evidence());
+        var observed = SystemReadinessService.Evaluate(config, Evidence() with { MicrophoneObserved = true });
+        Assert.Equal(OverallReadiness.Ready, quiet.Overall);
+        Assert.Equal(OverallReadiness.Ready, observed.Overall);
+        Assert.Equal(quiet.LiveVerificationPassed + 1, observed.LiveVerificationPassed);
+        Assert.Equal(ReadinessSeverity.Ready, observed.Checks.Single(check => check.Id == "microphone-observation").Severity);
     }
 }

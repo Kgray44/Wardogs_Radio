@@ -81,9 +81,8 @@ public partial class MainWindow
         }
         if (!status.Connected || now < _nextGameFeedRecovery || _gameFeedRecoveryAttempts >= 3 ||
             _active is not { Runtime.WasPlaying: true } station) return;
-        if (station.ProviderId == "youtube" && (!_youtubeRoute.IsActive ||
-            _youtubeGameFeed?.Fault is not null ||
-            _youtubeGameFeed is null && _youtubeGameFeedError is not null))
+        if (station.ProviderId == "youtube" && (_youtubeGameFeed?.Fault is not null ||
+            _youtubeGameFeed is null && _youtubePlayerReady && _youtubeGameFeedError is not null))
         {
             _nextGameFeedRecovery = now.AddSeconds(10);
             _ = RecoverGameFeedAsync(station);
@@ -120,7 +119,8 @@ public partial class MainWindow
             else
             {
                 Footer.Text = "AUDIO BRIDGE RECONNECTED · Verify the live headset and game voice signals.";
-                if (_active is { ProviderId: "youtube", Runtime.WasPlaying: true } station && !_youtubeRoute.IsActive)
+                if (_active is { ProviderId: "youtube", Runtime.WasPlaying: true } station &&
+                    _youtubeGameFeed is null && _youtubePlayerReady)
                     await RecoverGameFeedAsync(station);
             }
             RefreshSetupWizard();
@@ -146,13 +146,6 @@ public partial class MainWindow
                     if (!EnsureYouTubeRouteHealthy(out var routeDetail))
                     {
                         Footer.Text = "YOUTUBE GAME FEED NEEDS ATTENTION · " + routeDetail;
-                        return;
-                    }
-                    if (!_youtubeRoute.IsActive)
-                    {
-                        await LoadYouTubeAsync(station, startPaused: false);
-                        if (_youtubeRoute.IsActive)
-                            Footer.Text = "YOUTUBE ROUTE RECONNECTED · Reloading the visible player and game feed.";
                         return;
                     }
                     await StartYouTubeGameFeedAsync(station);
@@ -240,11 +233,13 @@ public partial class MainWindow
             _ => "OFFLINE"
         };
         HealthText.Text = $"● {label}";
-        HealthText.ToolTip = snapshot.FirstAction?.Summary ?? "Core audio path is ready.";
+        var quietMicrophone = snapshot.Checks.FirstOrDefault(check => check.Id == "microphone-observation" &&
+            check.Severity == ReadinessSeverity.Info)?.Summary;
+        HealthText.ToolTip = snapshot.FirstAction?.Summary ?? quietMicrophone ?? "Core audio path is ready.";
         RouteStatus.Text = snapshot.Checks.First(check => check.Id == "game-output").Severity == ReadinessSeverity.Ready
-            ? "GAME VOICE: B1 VERIFIED" : "GAME VOICE: " + label;
+            ? "GAME VOICE: READY" : "GAME VOICE: " + label;
         VmStatus.Text = snapshot.Checks.First(check => check.Id == "voicemeeter").Severity == ReadinessSeverity.Ready
-            ? "VM: CONNECTED" : "VM: " + label;
-        OperationalStatus.Text = snapshot.FirstAction?.Summary ?? "Core audio path is ready.";
+            ? "AUDIO BRIDGE: READY" : "AUDIO BRIDGE: " + label;
+        OperationalStatus.Text = snapshot.FirstAction?.Summary ?? quietMicrophone ?? "Core audio path is ready.";
     }
 }

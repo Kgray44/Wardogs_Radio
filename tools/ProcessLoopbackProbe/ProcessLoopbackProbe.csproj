@@ -1,12 +1,15 @@
 <Project Sdk="Microsoft.NET.Sdk">
-  <PropertyGroup><OutputType>Exe</OutputType></PropertyGroup>
+  <PropertyGroup><OutputType>Exe</OutputType><UseWindowsForms>true</UseWindowsForms></PropertyGroup>
   <ItemGroup>
     <PackageReference Include="NAudio" Version="3.1.0" />
+    <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.2903.40" />
     <ProjectReference Include="..\..\src\WardogsRadio.Core\WardogsRadio.Core.csproj" />
+    <ProjectReference Include="..\..\src\WardogsRadio.Playback\WardogsRadio.Playback.csproj" />
     <ProjectReference Include="..\..\src\WardogsRadio.Voicemeeter\WardogsRadio.Voicemeeter.csproj" />
     <Compile Include="..\..\src\WardogsRadio.App\YouTubeGameFeed.cs" Link="YouTubeGameFeed.cs" />
     <Compile Include="..\..\src\WardogsRadio.App\B1Audition.cs" Link="B1Audition.cs" />
     <Compile Include="..\..\src\WardogsRadio.App\WindowsDefaultRender.cs" Link="WindowsDefaultRender.cs" />
     <Compile Include="..\..\src\WardogsRadio.App\TemporaryYouTubeRoute.cs" Link="TemporaryYouTubeRoute.cs" />
+    <Compile Include="..\..\src\WardogsRadio.App\YouTubeListeningRoute.cs" Link="YouTubeListeningRoute.cs" />
   </ItemGroup>
 </Project>

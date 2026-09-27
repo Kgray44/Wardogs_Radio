@@ -12,7 +12,7 @@ public partial class MainWindow
 
     sealed record DiagnosticRow(ReadinessCheck Check)
     {
-        public string Heading => $"{Check.Severity.ToString().ToUpperInvariant()} · {Check.Title.ToUpperInvariant()}";
+        public string Heading => $"{(Check.IsLiveVerification && Check.Severity == ReadinessSeverity.Info ? "NOT OBSERVED THIS SESSION" : Check.Severity.ToString().ToUpperInvariant())} · {Check.Title.ToUpperInvariant()}";
         public string Summary => Check.Summary;
         public string? TechnicalDetail => Check.TechnicalDetail;
         public RepairAction? Repair => Check.Repair;
@@ -44,13 +44,16 @@ public partial class MainWindow
             var rows = matching.Select(check => new DiagnosticRow(check)).ToArray();
             if (rows.Length > 0) sections.Add(new(title, rows));
         }
-        Group("REQUIRES ATTENTION", checks.Where(check => check.BlocksCoreReadiness &&
-            check.Severity is ReadinessSeverity.NeedsAction or ReadinessSeverity.Warning or ReadinessSeverity.Error or ReadinessSeverity.Unavailable));
-        Group("CORE AUDIO PATH", checks.Where(check => check.BlocksCoreReadiness && check.Category is
+        var actionable = checks.Where(check => check.BlocksCoreReadiness &&
+            check.Severity is ReadinessSeverity.NeedsAction or ReadinessSeverity.Warning or ReadinessSeverity.Error or ReadinessSeverity.Unavailable)
+            .Select(check => check.Id).ToHashSet();
+        Group("REQUIRES ATTENTION", checks.Where(check => actionable.Contains(check.Id)));
+        Group("CORE AUDIO PATH", checks.Where(check => !actionable.Contains(check.Id) && check.BlocksCoreReadiness && check.Category is
             ReadinessCategory.Application or ReadinessCategory.Voicemeeter or ReadinessCategory.Microphone or ReadinessCategory.GameVoice));
-        Group("PLAYBACK & LISTENING", checks.Where(check => check.BlocksCoreReadiness && check.Category is ReadinessCategory.Playback or ReadinessCategory.Listening));
+        Group("PLAYBACK & LISTENING", checks.Where(check => !actionable.Contains(check.Id) && check.BlocksCoreReadiness && check.Category is ReadinessCategory.Playback or ReadinessCategory.Listening));
+        Group("LIVE VERIFICATION", checks.Where(check => check.IsLiveVerification));
         Group("LIBRARY & CONFIGURATION", checks.Where(check => check.Category is ReadinessCategory.Library or ReadinessCategory.Configuration));
-        Group("OPTIONAL FEATURES", checks.Where(check => !check.BlocksCoreReadiness && check.Category is not (ReadinessCategory.Library or ReadinessCategory.Configuration)));
+        Group("OPTIONAL FEATURES", checks.Where(check => !check.BlocksCoreReadiness && !check.IsLiveVerification && check.Category is not (ReadinessCategory.Library or ReadinessCategory.Configuration)));
         DiagnosticGroups.ItemsSource = sections;
         DiagnosticList.ItemsSource = snapshot.Technical;
         DiagnosticSummary.Text = snapshot.Readiness.Overall switch
@@ -60,7 +63,8 @@ public partial class MainWindow
             OverallReadiness.NeedsAttention => "● NEEDS ATTENTION · " + (snapshot.Readiness.FirstAction?.Title ?? "Check the audio path"),
             _ => "● OFFLINE · Voicemeeter is unavailable"
         };
-        DiagnosticCounts.Text = $"{snapshot.Readiness.CorePassed} / {snapshot.Readiness.CoreTotal} core checks passed · " +
+        DiagnosticCounts.Text = $"{snapshot.Readiness.CorePassed} / {snapshot.Readiness.CoreTotal} configuration checks passed · " +
+            $"{snapshot.Readiness.LiveVerificationPassed} / {snapshot.Readiness.LiveVerificationTotal} live checks exercised · " +
             $"{checks.Count(check => check.Severity == ReadinessSeverity.Info)} informational · " +
             $"{checks.Count(check => check.Severity == ReadinessSeverity.Optional)} optional";
     }
@@ -78,6 +82,10 @@ public partial class MainWindow
                 break;
             case RepairAction.ChooseMicrophone:
             case RepairAction.ChooseHeadphones:
+                Setup_Click(sender, e);
+                _setupStep = 1;
+                ShowSetupStep();
+                return;
             case RepairAction.OpenAudioRouting:
                 Audio_Click(sender, e);
                 return;

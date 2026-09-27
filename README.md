@@ -253,7 +253,7 @@ This lets you monitor your radio in your own headset while also sending the inte
 
 The five-step **Setup & Repair** flow uses the same readiness checks as Dashboard and Diagnostics. Audio & Routing retains the advanced strip, bus, and meter details. A moving B1 meter confirms the measured output, while game reception still needs your confirmation.
 
-For YouTube playback, WARDOGS Radio temporarily manages the Windows listening route needed by the player and checks ownership before restoring it. The [Audio Bridge candidate and live acceptance plan](docs/ReadinessAudioBridgeCandidate.md) describes the remaining hardware checks and limitations.
+For YouTube playback, the current review candidate routes the player's audio session to the selected listening output and sends a separate game-feed copy to Voicemeeter. It records and restores its per-app route without changing the Windows global default for new sessions. The [Audio Bridge candidate and live acceptance plan](docs/ReadinessAudioBridgeCandidate.md) describes the remaining hardware checks and limitations.
 
 ---
 

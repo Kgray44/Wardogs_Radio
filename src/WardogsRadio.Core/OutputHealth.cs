@@ -209,7 +209,12 @@ public sealed class ClipGuardController
         }
 
         var overload = peak is { } db && !double.IsNegativeInfinity(db) && db >= settings.SafetyCeilingDbfs;
-        var protectionAllowed = available && canAutomaticallyAttenuateMusic &&
+        // B1 can clip from a microphone alone. Reducing radio music cannot repair
+        // that source and would make the requested game level misleading.
+        var microphoneOnlyOverload = overload && microphone.PeakDbfs is { } microphoneDb &&
+            microphoneDb >= settings.NearClipThresholdDbfs &&
+            (music.PeakDbfs is null || music.PeakDbfs < -12);
+        var protectionAllowed = available && canAutomaticallyAttenuateMusic && !microphoneOnlyOverload &&
             settings.Mode == ClipGuardMode.Protect && settings.AutoGainEnabled;
         UpdateProtection(settings, overload, peak, protectionAllowed, elapsedSeconds, now);
 
@@ -319,6 +324,9 @@ public sealed class ClipGuardController
         if (musicDb is { } musicPeak && microphoneDb is { } micPeak && game.PeakDbfs is { } gamePeak &&
             musicPeak < -3 && micPeak < -3 && gamePeak >= -1)
             return "Combined mix overload: music and microphone are individually below the hot range, but B1 is near full scale.";
+        if (microphoneDb is { } hotMicrophone && hotMicrophone >= -1 &&
+            (musicDb is null || musicDb < -12))
+            return "Microphone is too hot. Reduce microphone level; game-music protection cannot fix microphone-only clipping.";
         if (musicDb is { } hotMusic && hotMusic >= -1) return "Music input is too hot for the game mix.";
         return state == OutputHealthState.Clip ? "Game mix reached the digital ceiling." : "Game mix is close to the protection ceiling.";
     }
