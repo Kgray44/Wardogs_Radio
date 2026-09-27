@@ -135,7 +135,7 @@ begin
   end;
 end;
 
-procedure CurStep(CurStep: TSetupStep);
+procedure CurStep(SetupStep: TSetupStep);
 begin
-  if CurStep = ssPostInstall then InstallPrerequisites;
+  if SetupStep = ssPostInstall then InstallPrerequisites;
 end;
