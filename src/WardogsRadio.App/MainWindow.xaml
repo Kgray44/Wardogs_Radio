@@ -291,7 +291,7 @@
           </StackPanel></DataTemplate></ItemsControl.ItemTemplate></ItemsControl>
           <Expander Header="ADVANCED TECHNICAL DATA" Margin="0,8,0,20"><ItemsControl x:Name="DiagnosticList" Margin="0,10"><ItemsControl.ItemTemplate><DataTemplate><Border Background="{StaticResource PanelBrush}" BorderBrush="{StaticResource LineBrush}" BorderThickness="1" Padding="10" Margin="0,3"><StackPanel><TextBlock Text="{Binding Area}" FontWeight="Bold" Foreground="{StaticResource OliveBrush}"/><TextBlock Text="{Binding Status}"/><TextBlock Text="{Binding Summary}" TextWrapping="Wrap"/><Expander Header="RAW EVIDENCE"><TextBlock Text="{Binding Detail}" TextWrapping="Wrap"/></Expander></StackPanel></Border></DataTemplate></ItemsControl.ItemTemplate></ItemsControl></Expander>
         </StackPanel></ScrollViewer>
-        <ScrollViewer x:Name="SetupView" Visibility="Collapsed" VerticalScrollBarVisibility="Auto"><StackPanel MaxWidth="760" HorizontalAlignment="Left">
+        <ScrollViewer x:Name="SetupView" Visibility="Collapsed" VerticalScrollBarVisibility="Auto"><StackPanel Width="900" HorizontalAlignment="Left">
           <TextBlock Text="Set up your radio" FontSize="26" FontWeight="SemiBold"/>
           <TextBlock Text="Choose your mic and headphones. WARDOGS handles the rest." TextWrapping="Wrap" Opacity=".7" Margin="0,7,0,18"/>
           <TextBlock x:Name="SetupStepTitle" Text="STEP 1 OF 5 · SYSTEM CHECK" Foreground="{StaticResource OliveBrush}" FontWeight="Bold" Margin="0,0,0,6"/>
