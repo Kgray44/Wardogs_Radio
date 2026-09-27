@@ -22,6 +22,8 @@ The following preview at `d5f5f82` tried WebView's `IsMuted` during the B1 hold.
 
 In the `71479ef` preview, the owner heard the B1 preview continuously, but could not distinguish it from normal YouTube listening because the direct source remained audible. The button now adds a short, quiet test tone to the configured game output while the B1 audition is held, labels YouTube's additive preview honestly, and names Voicemeeter Out B1 as the game/Discord input to select. Hearing that tone locally tests the output-to-B1-to-headphone path; actual game reception still requires checking the game's selected input and hearing it there.
 
+The owner heard that distinct tone clearly in the `4871e43` preview. This confirms the configured game output, B1 path, and local headphone audition for the tone on the owner's machine. The owner has not yet confirmed that a game or Discord receives YouTube music from Voicemeeter Out B1. The current PR checks passed on GitHub, but that CI result does not substitute for this last external-app check.
+
 The follow-up amendment uses these as regression evidence. A later build or simulated test does not erase or supersede them. The owner has also reported that the later Audio & Routing preview is somewhat better while Setup & Repair still contains far too much information. A substantially simpler Setup page is open for renewed owner review. Repeat owner-live acceptance is required before merge readiness can be claimed.
 
 ## Follow-up candidate in progress
