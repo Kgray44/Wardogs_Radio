@@ -131,6 +131,8 @@ public partial class MainWindow : Window, IMacroActionHandler
     readonly WindowsAudioPeakMeter _headsetPeakMeter = new();
     readonly WindowsAudioCapturePeakMeter _gameBusEndpointPeakMeter = new();
     readonly ClipGuardController _clipGuard = new();
+    ClipGuardSettings? _clipGuardTestSettings;
+    bool _clipGuardTestRestoring;
     readonly PrimaryPlaybackStartupCoordinator _youtubeStartupCoordinator = new();
     readonly BroadcastLevelTestSession _broadcastLevelTest = new();
     AppConfiguration _config = new();
@@ -3007,6 +3009,116 @@ public partial class MainWindow : Window, IMacroActionHandler
         RefreshSignalMeters();
     }
 
+    async void ClipGuardLiveTest_Click(object sender, RoutedEventArgs e)
+    {
+        if (_clipGuardTestSettings is not null || _clipGuardTestRestoring) return;
+        if (_active is not { Runtime.WasPlaying: true } station || !HasActiveGameMusicFeed())
+        {
+            ClipGuardLiveTestState.Text = "Play a local or YouTube station with its game output connected first.";
+            return;
+        }
+        if (!_outputTelemetry.CanControlClipGuard)
+        {
+            ClipGuardLiveTestState.Text = "Protection test needs matching live B1 meters. Check the game output and try again.";
+            return;
+        }
+
+        var normal = _config.ClipGuard;
+        var test = new ClipGuardSettings
+        {
+            Mode = ClipGuardMode.Protect,
+            Preset = normal.Preset,
+            SafetyCeilingDbfs = -18,
+            NearClipThresholdDbfs = -17,
+            MaximumReductionDb = 6,
+            AttackMilliseconds = 50,
+            RecoveryDelayMilliseconds = normal.RecoveryDelayMilliseconds,
+            RecoveryDbPerSecond = normal.RecoveryDbPerSecond,
+            PeakHoldMilliseconds = normal.PeakHoldMilliseconds,
+            ClipLatchMilliseconds = normal.ClipLatchMilliseconds,
+            AutoGainEnabled = true,
+            LimiterEnabled = false
+        };
+        var testedFeed = station.ProviderId == "youtube" ? (object?)_youtubeGameFeed : _gameMpvProvider;
+        var baselineGain = GamePlayerGain(station);
+        if (baselineGain <= .005)
+        {
+            ClipGuardLiveTestState.Text = "The game-music level is zero. Raise it before checking protection.";
+            return;
+        }
+        var baselineB1 = _outputHealth?.GameBus.PeakDbfs;
+        var maxReduction = 0d;
+        var lowestCommandedGain = baselineGain;
+        var trustedSamples = 0;
+        var untrustedSamples = 0;
+        var feedChanged = false;
+        string? testIssue = null;
+        string? restoreIssue = null;
+        ClipGuardLiveTestButton.IsEnabled = false;
+        _clipGuardTestSettings = test;
+        ClipGuardLiveTestState.Text = "Testing Protect for four seconds with a temporary lower trigger. Saved levels and mixer routes stay unchanged.";
+        try
+        {
+            for (var sample = 0; sample < 40 && !_closingInProgress; sample++)
+            {
+                await Task.Delay(100);
+                if (!ReferenceEquals(_active, station) ||
+                    !ReferenceEquals(testedFeed, station.ProviderId == "youtube" ? _youtubeGameFeed : _gameMpvProvider))
+                {
+                    feedChanged = true;
+                    break;
+                }
+                if (!_outputTelemetry.CanControlClipGuard) { untrustedSamples++; continue; }
+                trustedSamples++;
+                if (_outputHealth is not { } health) continue;
+                maxReduction = Math.Max(maxReduction, health.ProtectionReductionDb);
+                if (_lastAppliedGameGain is { } commanded &&
+                    ReferenceEquals(_lastAppliedGameGainFeed, testedFeed))
+                    lowestCommandedGain = Math.Min(lowestCommandedGain, commanded);
+                ClipGuardLiveTestState.Text = $"Testing · reduction {health.ProtectionReductionDb:0.0} dB · game feed commanded {lowestCommandedGain:P0} · B1 {DisplayLevel(health.GameBus.PeakDbfs)}";
+            }
+        }
+        catch (Exception error) { testIssue = error.Message; }
+        finally
+        {
+            _clipGuardTestRestoring = true;
+            _clipGuardTestSettings = null;
+            try
+            {
+                if (_outputHealth is { } health)
+                {
+                    var off = new ClipGuardSettings { Mode = ClipGuardMode.Off };
+                    _outputHealth = _clipGuard.Sample(off, health.Music, health.Microphone, health.GameBus,
+                        canAutomaticallyAttenuateMusic: false, now: DateTimeOffset.UtcNow);
+                }
+                for (var attempt = 0; _gameGainUpdateInFlight && attempt < 100; attempt++)
+                    await Task.Delay(50);
+                if (_gameGainUpdateInFlight)
+                    throw new TimeoutException("The previous game level update is still running.");
+                await ApplyActiveGameMusicGainAsync();
+                _lastAppliedGameGainFeed = _active?.ProviderId == "youtube" ? _youtubeGameFeed : _gameMpvProvider;
+                _lastAppliedGameGain = _active is { } current ? GamePlayerGain(current) : null;
+            }
+            catch (Exception error) { restoreIssue = error.Message; _lastAppliedGameGain = null; }
+            _clipGuardTestRestoring = false;
+            ClipGuardLiveTestButton.IsEnabled = true;
+            try { RefreshSignalMeters(); }
+            catch (Exception error) { restoreIssue ??= error.Message; }
+        }
+
+        ClipGuardLiveTestState.Text = restoreIssue is not null
+            ? "GAME LEVEL NEEDS ATTENTION · Could not verify restoration: " + restoreIssue
+            : testIssue is not null
+                ? "Test stopped: " + testIssue + ". Normal game level was restored."
+            : feedChanged
+                ? "Test stopped because the station or game feed changed. The current game level was restored."
+            : trustedSamples == 0 || untrustedSamples > 0
+                ? "Test inconclusive: B1 meter confidence dropped during the check. Normal game level was restored."
+                : maxReduction < .5 || lowestCommandedGain >= baselineGain - .005
+                    ? $"No confirmed intervention. B1 started at {DisplayLevel(baselineB1)}; try a stronger part of the song. Normal level restored."
+                    : $"Protect commanded the game feed from {baselineGain:P0} down to {lowestCommandedGain:P0} ({maxReduction:0.0} dB). Normal level restored. Confirm the level change in your game separately.";
+    }
+
     void BroadcastLevelTest_Click(object sender, RoutedEventArgs e)
     {
         if (!_broadcastLevelTest.IsRunning)
@@ -3072,6 +3184,7 @@ public partial class MainWindow : Window, IMacroActionHandler
 
     void QueueClipGuardGainUpdate()
     {
+        if (_clipGuardTestRestoring) return;
         if (_active is not { } station) return;
         object? feed = station.ProviderId == "youtube" ? _youtubeGameFeed : _gameMpvProvider;
         if (feed is null)
@@ -3259,7 +3372,7 @@ public partial class MainWindow : Window, IMacroActionHandler
         // independent Windows B1 observation agrees. On a mismatch, present it as
         // unavailable to force neutral gain instead of inventing a SAFE result.
         var controlGame = _outputTelemetry.CanControlClipGuard ? game : new SignalLevel(false, 0);
-        _outputHealth = _clipGuard.Sample(_config.ClipGuard,
+        _outputHealth = _clipGuard.Sample(_clipGuardTestSettings ?? _config.ClipGuard,
             AudioLevelSnapshot.FromLinear(music.Available, music.Peak),
             AudioLevelSnapshot.FromLinear(microphone.Available, microphone.Peak),
             AudioLevelSnapshot.FromLinear(controlGame.Available, controlGame.Peak),

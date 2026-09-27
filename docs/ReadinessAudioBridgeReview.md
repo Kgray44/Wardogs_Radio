@@ -26,6 +26,8 @@ The owner heard that distinct tone clearly in the `4871e43` preview. This confir
 
 The owner also changed the listening device from Razer headphones to laptop speakers and back during the same active YouTube station. The song moved both ways without retuning, and Windows' default remained the Razer headset; a separate read-only default-device check agreed. This is owner-live acceptance of the YouTube device-switch path on this machine. The owner could not yet test game/Discord reception. The owner also noted that the held B1 control did not sound like an isolated output preview because YouTube direct listening continued. The UI now calls it a game-output check with a distinct tone and explicitly says YouTube stays audible; it no longer promises an isolated YouTube mix.
 
+The next candidate adds a four-second Live Protection Check in Audio & Routing. It temporarily sets a lower Clip Guard trigger, records whether the controller requested a reduction and the app commanded a lower game-feed gain, then restores the normal protection settings and game-feed command. It does not save the temporary threshold or alter mixer routes. This diagnostic remains unverified on the owner's machine; its commanded gain result alone does not prove an audible level change in the game or Discord.
+
 The follow-up amendment uses these as regression evidence. A later build or simulated test does not erase or supersede them. The owner has also reported that the later Audio & Routing preview is somewhat better while Setup & Repair still contains far too much information. A substantially simpler Setup page is open for renewed owner review. Repeat owner-live acceptance is required before merge readiness can be claimed.
 
 ## Follow-up candidate in progress
