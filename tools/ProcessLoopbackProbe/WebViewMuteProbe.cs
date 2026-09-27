@@ -101,19 +101,16 @@ internal static class WebViewMuteProbe
                                 $"{info.ProcessId}:{info.Kind}")));
                         using var sessionEndpoints = new MMDeviceEnumerator();
                         var activeWebViewAudioPids = new HashSet<uint>();
+                        var probePids = webView.CoreWebView2.Environment.GetProcessInfos()
+                            .Select(info => (uint)info.ProcessId).ToHashSet();
                         foreach (var endpoint in sessionEndpoints.EnumerateAudioEndPoints(DataFlow.Render, DeviceState.Active))
                             for (var index = 0; index < endpoint.AudioSessionManager.Sessions.Count; index++)
                             {
                                 var session = endpoint.AudioSessionManager.Sessions[index];
-                                try
-                                {
-                                    if (!System.Diagnostics.Process.GetProcessById((int)session.GetProcessID).ProcessName.Contains("webview", StringComparison.OrdinalIgnoreCase))
-                                        continue;
-                                    Console.WriteLine($"WebView audio session: pid={session.GetProcessID} on {endpoint.FriendlyName}; peak={session.AudioMeterInformation.MasterPeakValue:F4}; browser pid={webView.CoreWebView2.BrowserProcessId}");
-                                    if (silent || session.AudioMeterInformation.MasterPeakValue > .005f)
-                                        activeWebViewAudioPids.Add(session.GetProcessID);
-                                }
-                                catch (ArgumentException) { }
+                                if (!probePids.Contains(session.GetProcessID)) continue;
+                                Console.WriteLine($"WebView audio session: pid={session.GetProcessID} on {endpoint.FriendlyName}; peak={session.AudioMeterInformation.MasterPeakValue:F4}; browser pid={webView.CoreWebView2.BrowserProcessId}");
+                                if (silent || session.AudioMeterInformation.MasterPeakValue > .005f)
+                                    activeWebViewAudioPids.Add(session.GetProcessID);
                             }
                         if (activeWebViewAudioPids.Count != 1)
                             throw new InvalidOperationException("Could not identify one active WebView audio session.");

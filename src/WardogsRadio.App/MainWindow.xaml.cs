@@ -194,6 +194,7 @@ public partial class MainWindow : Window, IMacroActionHandler
     B1Audition? _b1Audition;
     MpvProvider? _b1AuditionMutedPlayer;
     bool _b1AuditionMutedYouTube;
+    bool _b1AuditionPriorWebViewMuted;
     bool _b1PointerHeld;
     bool _b1KeyboardHeld;
     string? _b1AuditionErrorDetail;
@@ -5017,7 +5018,10 @@ public partial class MainWindow : Window, IMacroActionHandler
                 }
                 else if (_active?.ProviderId == "youtube")
                 {
-                    _youtubeListeningRoute.SetVolume(0);
+                    // Windows session gain also attenuates process-loopback capture.
+                    // WebView mute leaves that capture alive while silencing direct listening.
+                    _b1AuditionPriorWebViewMuted = YouTubeView.CoreWebView2.IsMuted;
+                    YouTubeView.CoreWebView2.IsMuted = true;
                     _b1AuditionMutedYouTube = true;
                 }
                 if (!B1HoldRequested) { await StopB1AuditionCoreAsync("Normal headset listening restored."); return; }
@@ -5077,9 +5081,11 @@ public partial class MainWindow : Window, IMacroActionHandler
         if (_b1AuditionMutedYouTube)
         {
             _b1AuditionMutedYouTube = false;
+            try { YouTubeView.CoreWebView2.IsMuted = _b1AuditionPriorWebViewMuted; }
+            catch (Exception error) { message += " Direct listening could not be restored: " + error.Message; }
             if (_active is { ProviderId: "youtube" } youtubeStation && _youtubeListeningRoute.IsActive)
                 try { _youtubeListeningRoute.SetVolume(_config.MasterVolume * youtubeStation.Volume); }
-                catch (Exception error) { message += " Direct listening could not be restored: " + error.Message; }
+                catch (Exception error) { message += " Headset music level could not be restored: " + error.Message; }
         }
         var mutedPlayer = _b1AuditionMutedPlayer;
         _b1AuditionMutedPlayer = null;
