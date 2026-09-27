@@ -1,5 +1,8 @@
 [CmdletBinding()]
-param([Parameter(Mandatory)] [string] $StageDir)
+param(
+    [Parameter(Mandatory)] [string] $StageDir,
+    [string] $MpvArchivePath
+)
 
 $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent $PSScriptRoot
@@ -27,8 +30,9 @@ try {
         else { foreach ($file in $item.Files) { Copy-Item -LiteralPath (Join-Path $output $file) -Destination $stage -Force } }
     }
     Copy-Item -LiteralPath (Join-Path $repoRoot 'WARDOGS_VERSION') -Destination (Join-Path $stage 'VERSION')
+    & (Join-Path $PSScriptRoot 'stage-mpv.ps1') -StageDir $stage -ArchivePath $MpvArchivePath
     & (Join-Path $PSScriptRoot 'refresh-package-inventory.ps1') -StageDir $stage
-    $required = @('WARDOGS Radio.exe', 'WARDOGS Radio Launcher.exe', 'WARDOGS Radio Update Agent.exe', 'VERSION', 'WARDOGS Radio.dll', 'WARDOGS Radio.runtimeconfig.json', 'WardogsRadio.Core.dll', 'WardogsRadio.Update.dll', 'youtube-player.html', 'PACKAGE_CONTENTS.sha256')
+    $required = @('WARDOGS Radio.exe', 'WARDOGS Radio Launcher.exe', 'WARDOGS Radio Update Agent.exe', 'VERSION', 'WARDOGS Radio.dll', 'WARDOGS Radio.runtimeconfig.json', 'WardogsRadio.Core.dll', 'WardogsRadio.Update.dll', 'youtube-player.html', 'mpv.exe', 'mpv.com', 'd3dcompiler_43.dll', 'THIRD_PARTY_MPV.txt', 'PACKAGE_CONTENTS.sha256')
     foreach ($file in $required) { if (-not (Test-Path -LiteralPath (Join-Path $stage $file) -PathType Leaf)) { throw "Staged package is missing $file." } }
     if ((Get-Content -LiteralPath (Join-Path $stage 'VERSION') -Raw).Trim() -ne $version) { throw 'Staged VERSION does not match WARDOGS_VERSION.' }
     Write-Host "Staged WARDOGS Radio $version at $stage"

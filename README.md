@@ -32,11 +32,11 @@ Macros are editable named action definitions with multiple keyboard and controll
 
 ## Install and updates
 
-Current version: **v0.2.0**
+Current version: **v0.2.3**
 
-Normal Windows users should download [WARDOGS-Radio-Setup-v0.2.0.exe](https://github.com/Kgray44/Wardogs_Radio/releases/download/v0.2.0/WARDOGS-Radio-Setup-v0.2.0.exe) from GitHub Releases. The per-user installer places the app in `%LOCALAPPDATA%\Programs\WARDOGS Radio` and creates a Start Menu shortcut to **WARDOGS Radio Launcher**. The launcher checks only official stable GitHub Releases, verifies the release manifest and installer SHA-256, and always starts the installed app if checking fails. It never requires an internet connection to use an installed copy.
+Normal Windows users should download [WARDOGS-Radio-Setup-v0.2.3.exe](https://github.com/Kgray44/Wardogs_Radio/releases/download/v0.2.3/WARDOGS-Radio-Setup-v0.2.3.exe) from GitHub Releases. The per-user installer places the app in `%LOCALAPPDATA%\Programs\WARDOGS Radio` and creates a Start Menu shortcut to **WARDOGS Radio Launcher**. The launcher checks only official stable GitHub Releases, verifies the release manifest and installer SHA-256, and always starts the installed app if checking fails. It never requires an internet connection to use an installed copy.
 
-The installer does not bundle or alter Voicemeeter, mpv, WebView2, account credentials, or provider setup. Existing WARDOGS Radio settings remain under `%LOCALAPPDATA%\WARDOGS Radio` and are deliberately separate from the installed program files.
+The installer bundles a portable MPV build in its application directory, but does not register or alter a system MPV installation. It does not bundle or alter Voicemeeter, WebView2, account credentials, or provider setup. Existing WARDOGS Radio settings remain under `%LOCALAPPDATA%\WARDOGS Radio` and are deliberately separate from the installed program files.
 
 ## Development
 
@@ -48,4 +48,4 @@ node tests/youtube-player.behavior.test.cjs
 dotnet publish .\src\WardogsRadio.App\WardogsRadio.App.csproj -c Release -r win-x64 --self-contained true -o .\artifacts\win-x64
 ```
 
-Run `artifacts\win-x64\WARDOGS Radio.exe`. The [Build and test workflow](.github/workflows/build.yml) uploads the same Windows x64 output after automated checks. Voicemeeter, mpv, and WebView2 are detected at runtime; they are not redistributed in this repository. No owner music, credentials, personal settings, or local build artifacts are committed.
+Run `artifacts\win-x64\WARDOGS Radio.exe`. The [Build and test workflow](.github/workflows/build.yml) uploads the same Windows x64 output after automated checks. The WARDOGS Radio installer bundles a pinned, hash-verified portable MPV build beside the application so local music works on a fresh install. Voicemeeter and WebView2 are still detected at runtime and are not redistributed. No owner music, credentials, personal settings, or local build artifacts are committed.
