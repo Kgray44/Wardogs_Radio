@@ -2,6 +2,9 @@
 
 WARDOGS Radio is a Windows 10/11 audio-control desktop application for game voice and music routing. It uses a generic Station and Macro model: Cruise, Combat, Comms, and Emergency are editable first-run templates, not special code paths.
 
+
+<img width="2057" height="1282" alt="image" src="https://github.com/user-attachments/assets/d34feeb1-a836-46f3-8678-2b4cc6e2bec3" />
+
 ## First launch
 
 Open **Setup Wizard** in the app. It guides device selection, Voicemeeter strip mapping, live signal checks, and a B1 listening test one step at a time. Device and route selections apply immediately and the wizard can restore routes it changed. Live meter observations and your listening/game-receive checks are required before setup is marked verified. The Diagnostics page stays separate and reports installed, connected, configured, and verified states distinctly. WARDOGS Radio does not alter driver-owned Windows endpoint names.
