@@ -146,6 +146,8 @@ public sealed class ClipGuardController
     int _clipEvents;
     int _protectionInterventions;
     bool? _telemetryAvailable;
+    bool _wasNearClip;
+    bool _wasClipping;
     OutputHealthState _lastState = OutputHealthState.Unavailable;
 
     public double ProtectionGain => Math.Pow(10, -_reductionDb / 20d);
@@ -160,6 +162,7 @@ public sealed class ClipGuardController
         _reductionDb = _maximumReductionDb = 0;
         _nearClipEvents = _clipEvents = _protectionInterventions = 0;
         _telemetryAvailable = null;
+        _wasNearClip = _wasClipping = false;
         _lastState = OutputHealthState.Unavailable;
         _events.Clear();
     }
@@ -199,14 +202,19 @@ public sealed class ClipGuardController
             _lastClipMicrophone = microphone.PeakDbfs;
             _lastClipGame = gameBus.PeakDbfs;
             _lastClipDiagnosis = Diagnose(music, microphone, gameBus, OutputHealthState.Clip);
-            _clipEvents++;
-            AddEvent(now, OutputHealthEventKind.ClipDetected, $"Game mix reached {DisplayDb(peak)} dBFS.");
+            if (!_wasClipping)
+            {
+                _clipEvents++;
+                AddEvent(now, OutputHealthEventKind.ClipDetected, $"Game mix reached {DisplayDb(peak)} dBFS.");
+            }
         }
-        else if (nearClipNow && _lastState != OutputHealthState.NearClip)
+        else if (nearClipNow && !_wasNearClip)
         {
             _nearClipEvents++;
             AddEvent(now, OutputHealthEventKind.NearClipEntered, $"Game mix reached {DisplayDb(peak)} dBFS.");
         }
+        _wasNearClip = nearClipNow;
+        _wasClipping = clipNow;
 
         var overload = peak is { } db && !double.IsNegativeInfinity(db) && db >= settings.SafetyCeilingDbfs;
         // B1 can clip from a microphone alone. Reducing radio music cannot repair

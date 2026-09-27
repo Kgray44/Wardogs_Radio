@@ -228,6 +228,30 @@ public sealed class OutputHealthTests
         Assert.True(ClipGuardMath.EffectiveGameGain(1, 1, health.ProtectionGain) < 1);
     }
 
+    [Fact]
+    public void SustainedNearClipAndClipProduceOneEventPerEntryEvenWhileProtected()
+    {
+        var controller = new ClipGuardController();
+        var settings = new ClipGuardSettings { Mode = ClipGuardMode.Protect, SafetyCeilingDbfs = -18,
+            NearClipThresholdDbfs = -17, AttackMilliseconds = 50, MaximumReductionDb = 2 };
+        OutputHealthSnapshot? health = null;
+        for (var index = 0; index < 15; index++)
+            health = controller.Sample(settings, Level(.2), Level(.1), Level(.3), true,
+                Start.AddMilliseconds(index * 40));
+
+        Assert.NotNull(health);
+        Assert.True(health.ProtectionReductionDb > 0);
+        Assert.Equal(1, health.NearClipEvents);
+        Assert.Single(health.RecentEvents, e => e.Kind == OutputHealthEventKind.NearClipEntered);
+
+        for (var index = 15; index < 30; index++)
+            health = controller.Sample(settings, Level(.2), Level(.1), Level(1), true,
+                Start.AddMilliseconds(index * 40));
+
+        Assert.Equal(1, health!.ClipEvents);
+        Assert.Single(health.RecentEvents, e => e.Kind == OutputHealthEventKind.ClipDetected);
+    }
+
     static AudioLevelSnapshot Level(double linear) => AudioLevelSnapshot.FromLinear(true, linear);
 
     static OutputHealthSnapshot Sample(ClipGuardController controller, ClipGuardSettings settings, double gamePeak,

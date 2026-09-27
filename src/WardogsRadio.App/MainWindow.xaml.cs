@@ -131,7 +131,9 @@ public partial class MainWindow : Window, IMacroActionHandler
     readonly WindowsAudioPeakMeter _headsetPeakMeter = new();
     readonly WindowsAudioCapturePeakMeter _gameBusEndpointPeakMeter = new();
     readonly ClipGuardController _clipGuard = new();
+    readonly ClipGuardController _clipGuardTestController = new();
     ClipGuardSettings? _clipGuardTestSettings;
+    OutputHealthSnapshot? _clipGuardTestHealth;
     bool _clipGuardTestRestoring;
     readonly PrimaryPlaybackStartupCoordinator _youtubeStartupCoordinator = new();
     readonly BroadcastLevelTestSession _broadcastLevelTest = new();
@@ -3051,10 +3053,12 @@ public partial class MainWindow : Window, IMacroActionHandler
         var lowestCommandedGain = baselineGain;
         var trustedSamples = 0;
         var untrustedSamples = 0;
+        var confirmedReduction = false;
         var feedChanged = false;
         string? testIssue = null;
         string? restoreIssue = null;
         ClipGuardLiveTestButton.IsEnabled = false;
+        _clipGuardTestController.ResetRuntimeState();
         _clipGuardTestSettings = test;
         ClipGuardLiveTestState.Text = "Testing Protect for four seconds with a temporary lower trigger. Saved levels and mixer routes stay unchanged.";
         try
@@ -3070,11 +3074,15 @@ public partial class MainWindow : Window, IMacroActionHandler
                 }
                 if (!_outputTelemetry.CanControlClipGuard) { untrustedSamples++; continue; }
                 trustedSamples++;
-                if (_outputHealth is not { } health) continue;
+                if (_clipGuardTestHealth is not { } health) continue;
                 maxReduction = Math.Max(maxReduction, health.ProtectionReductionDb);
                 if (_lastAppliedGameGain is { } commanded &&
                     ReferenceEquals(_lastAppliedGameGainFeed, testedFeed))
+                {
                     lowestCommandedGain = Math.Min(lowestCommandedGain, commanded);
+                    confirmedReduction |= health.AutoProtectionAvailable &&
+                        health.ProtectionReductionDb >= .5 && commanded < baselineGain - .005;
+                }
                 ClipGuardLiveTestState.Text = $"Testing · reduction {health.ProtectionReductionDb:0.0} dB · game feed commanded {lowestCommandedGain:P0} · B1 {DisplayLevel(health.GameBus.PeakDbfs)}";
             }
         }
@@ -3083,14 +3091,9 @@ public partial class MainWindow : Window, IMacroActionHandler
         {
             _clipGuardTestRestoring = true;
             _clipGuardTestSettings = null;
+            _clipGuardTestHealth = null;
             try
             {
-                if (_outputHealth is { } health)
-                {
-                    var off = new ClipGuardSettings { Mode = ClipGuardMode.Off };
-                    _outputHealth = _clipGuard.Sample(off, health.Music, health.Microphone, health.GameBus,
-                        canAutomaticallyAttenuateMusic: false, now: DateTimeOffset.UtcNow);
-                }
                 for (var attempt = 0; _gameGainUpdateInFlight && attempt < 100; attempt++)
                     await Task.Delay(50);
                 if (_gameGainUpdateInFlight)
@@ -3112,11 +3115,13 @@ public partial class MainWindow : Window, IMacroActionHandler
                 ? "Test stopped: " + testIssue + ". Normal game level was restored."
             : feedChanged
                 ? "Test stopped because the station or game feed changed. The current game level was restored."
+            : confirmedReduction
+                ? $"Protect commanded the game feed from {baselineGain:P0} down to {lowestCommandedGain:P0} (up to {maxReduction:0.0} dB). Normal level restored." +
+                  (untrustedSamples > 0 ? $" B1 readings disagreed for {untrustedSamples} of {trustedSamples + untrustedSamples} checks; protection paused during those readings." : "") +
+                  " Confirm the level change in your game separately."
             : trustedSamples == 0 || untrustedSamples > 0
-                ? "Test inconclusive: B1 meter confidence dropped during the check. Normal game level was restored."
-                : maxReduction < .5 || lowestCommandedGain >= baselineGain - .005
-                    ? $"No confirmed intervention. B1 started at {DisplayLevel(baselineB1)}; try a stronger part of the song. Normal level restored."
-                    : $"Protect commanded the game feed from {baselineGain:P0} down to {lowestCommandedGain:P0} ({maxReduction:0.0} dB). Normal level restored. Confirm the level change in your game separately.";
+                ? $"Test inconclusive: B1 readings disagreed for {untrustedSamples} of {trustedSamples + untrustedSamples} checks, and no gain reduction was confirmed. Normal game level restored."
+                : $"No confirmed intervention. B1 started at {DisplayLevel(baselineB1)}; try a stronger part of the song. Normal level restored.";
     }
 
     void BroadcastLevelTest_Click(object sender, RoutedEventArgs e)
@@ -3162,9 +3167,13 @@ public partial class MainWindow : Window, IMacroActionHandler
         }
     }
 
-    double GamePlayerGain(Station? station, double? gameMasterOverride = null) => Math.Clamp(ClipGuardMath.EffectiveGameGain(
-        gameMasterOverride ?? _config.GameMasterVolume, station?.GameVolume ?? 1,
-        _outputHealth?.AutoProtectionAvailable == true ? _outputHealth.ProtectionGain : 1), 0, 1);
+    double GamePlayerGain(Station? station, double? gameMasterOverride = null)
+    {
+        var protection = _clipGuardTestHealth ?? _outputHealth;
+        return Math.Clamp(ClipGuardMath.EffectiveGameGain(
+            gameMasterOverride ?? _config.GameMasterVolume, station?.GameVolume ?? 1,
+            protection?.AutoProtectionAvailable == true ? protection.ProtectionGain : 1), 0, 1);
+    }
 
     bool HasActiveGameMusicFeed() => _active?.ProviderId == "youtube"
         ? _youtubeGameFeed is not null
@@ -3242,6 +3251,10 @@ public partial class MainWindow : Window, IMacroActionHandler
             : _config.ClipGuard.Mode == ClipGuardMode.Off ? "OFF · Automatic game-music reduction is disabled."
             : _config.ClipGuard.Mode == ClipGuardMode.Monitor ? "MONITOR · Showing peaks and events without changing game-music gain."
             : "PROTECTION PAUSED · " + _outputTelemetry.Detail;
+        if (_clipGuardTestHealth is { } testHealth)
+            ClipGuardRuntimeText.Text = testHealth.AutoProtectionAvailable
+                ? $"LIVE CHECK · Temporarily reducing game music by {testHealth.ProtectionReductionDb:0.0} dB. WARDOGS does not change headphone gain."
+                : "LIVE CHECK · Protection paused while B1 readings disagree.";
         OutputMusicMeter.Value = Math.Clamp(VoicemeeterSignalMonitor.BarValue(new SignalLevel(health.Music.Available, (float)health.Music.LinearPeak)), 0, 100);
         OutputMicrophoneMeter.Value = Math.Clamp(VoicemeeterSignalMonitor.BarValue(new SignalLevel(health.Microphone.Available, (float)health.Microphone.LinearPeak)), 0, 100);
         OutputGameMeter.Value = Math.Clamp(VoicemeeterSignalMonitor.BarValue(new SignalLevel(health.GameBus.Available, (float)health.GameBus.LinearPeak)), 0, 100);
@@ -3259,7 +3272,7 @@ public partial class MainWindow : Window, IMacroActionHandler
             ? DescribeLevel("Game mix / B1", health.GameBus, health.GamePeakHoldDbfs) + protectionHeadroom + $" · {health.State.ToString().ToUpperInvariant()}"
             : "Game mix / B1: protection telemetry needs verification · " + _outputTelemetry.Detail;
         OutputHealthDiagnosis.Text = telemetryVerified ? health.Diagnosis : _outputTelemetry.Detail;
-        OutputProtectionDetails.Text = $"Requested game music: {_config.GameMasterVolume:P0} × {(_active?.GameVolume ?? 1):P0} · reduction {health.ProtectionReductionDb:0.0} dB · effective {GamePlayerGain(_active ?? new Station { GameVolume = 1 }):P0}\nSession peak: {DisplayLevel(health.SessionPeakDbfs)} · near clips {health.NearClipEvents} · clips {health.ClipEvents}";
+        OutputProtectionDetails.Text = $"Requested game music: {_config.GameMasterVolume:P0} × {(_active?.GameVolume ?? 1):P0} · reduction {(_clipGuardTestHealth?.ProtectionReductionDb ?? health.ProtectionReductionDb):0.0} dB · effective {GamePlayerGain(_active ?? new Station { GameVolume = 1 }):P0}\nSession peak: {DisplayLevel(health.SessionPeakDbfs)} · near clips {health.NearClipEvents} · clips {health.ClipEvents}";
         var latest = health.RecentEvents.LastOrDefault();
         if (latest is not null && latest.Timestamp != _lastOutputEventAt)
         {
@@ -3372,12 +3385,20 @@ public partial class MainWindow : Window, IMacroActionHandler
         // independent Windows B1 observation agrees. On a mismatch, present it as
         // unavailable to force neutral gain instead of inventing a SAFE result.
         var controlGame = _outputTelemetry.CanControlClipGuard ? game : new SignalLevel(false, 0);
-        _outputHealth = _clipGuard.Sample(_clipGuardTestSettings ?? _config.ClipGuard,
+        _outputHealth = _clipGuard.Sample(_config.ClipGuard,
             AudioLevelSnapshot.FromLinear(music.Available, music.Peak),
             AudioLevelSnapshot.FromLinear(microphone.Available, microphone.Peak),
             AudioLevelSnapshot.FromLinear(controlGame.Available, controlGame.Peak),
             canAutomaticallyAttenuateMusic: HasActiveGameMusicFeed() && _outputTelemetry.CanControlClipGuard,
             now: DateTimeOffset.UtcNow);
+        _clipGuardTestHealth = _clipGuardTestSettings is { } testSettings
+            ? _clipGuardTestController.Sample(testSettings,
+                AudioLevelSnapshot.FromLinear(music.Available, music.Peak),
+                AudioLevelSnapshot.FromLinear(microphone.Available, microphone.Peak),
+                AudioLevelSnapshot.FromLinear(controlGame.Available, controlGame.Peak),
+                canAutomaticallyAttenuateMusic: HasActiveGameMusicFeed() && _outputTelemetry.CanControlClipGuard,
+                now: DateTimeOffset.UtcNow)
+            : null;
         QueueClipGuardGainUpdate();
         _broadcastLevelTest.Observe(_outputHealth);
         var directHeadset = HeadsetPlayerTargetsSelectedOutput();
