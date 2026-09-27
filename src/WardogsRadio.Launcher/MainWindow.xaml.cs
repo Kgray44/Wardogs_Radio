@@ -64,12 +64,22 @@ public partial class MainWindow : Window
         {
             using var response = await client.GetAsync(manifest.InstallerUrl, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
             response.EnsureSuccessStatusCode();
-            await using var input = await response.Content.ReadAsStreamAsync(cancellationToken);
-            await using var output = File.Create(candidate);
             var total = response.Content.Headers.ContentLength;
             var buffer = new byte[81920]; long written = 0; int read;
-            while ((read = await input.ReadAsync(buffer, cancellationToken)) > 0) { await output.WriteAsync(buffer.AsMemory(0, read), cancellationToken); written += read; if (total is > 0) Progress.Value = Math.Min(100, written * 100d / total.Value); }
-            await output.FlushAsync(cancellationToken);
+            // Release the destination handle before hashing and atomically moving
+            // the verified installer. On Windows, moving an open FileStream throws
+            // IOException and otherwise makes every update fall back to the old app.
+            await using (var input = await response.Content.ReadAsStreamAsync(cancellationToken))
+            await using (var output = File.Create(candidate))
+            {
+                while ((read = await input.ReadAsync(buffer, cancellationToken)) > 0)
+                {
+                    await output.WriteAsync(buffer.AsMemory(0, read), cancellationToken);
+                    written += read;
+                    if (total is > 0) Progress.Value = Math.Min(100, written * 100d / total.Value);
+                }
+                await output.FlushAsync(cancellationToken);
+            }
             if (!PackageVerifier.VerifySha256(candidate, manifest.Sha256)) { File.Delete(candidate); Log("Downloaded installer hash verification failed."); return null; }
             var verified = Path.Combine(directory, manifest.Installer);
             File.Move(candidate, verified, true); Log("Installer download and SHA-256 verification succeeded."); return verified;
