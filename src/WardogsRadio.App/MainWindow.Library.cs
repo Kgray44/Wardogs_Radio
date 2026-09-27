@@ -9,6 +9,8 @@ public partial class MainWindow
     sealed record LibrarySourceCard(MediaSource SourceRecord, string Name, string ProviderLabel, string Source,
         string CueCountLabel);
     sealed record LibrarySongCard(LibrarySong SongRecord, string Name, string Detail, string StationCountLabel);
+    string _librarySourceSort = "name";
+    string _librarySongSort = "name";
 
     static string LibraryProviderLabel(string providerId) => providerId switch
     {
@@ -28,13 +30,20 @@ public partial class MainWindow
         LibrarySummaryText.Text = $"{library.Songs.Count} {Plural(library.Songs.Count, "song cue", "song cues")} · " +
             $"{library.Sources.Count} {Plural(library.Sources.Count, "source", "sources")} · no media files are copied";
         LibrarySourceCountText.Text = $"{library.Sources.Count} sources";
-        LibrarySourceList.ItemsSource = library.Sources.OrderBy(source => source.Name, StringComparer.OrdinalIgnoreCase)
+        var sourceCards = library.Sources
             .Select(source => new LibrarySourceCard(source, source.Name,
                 LibraryProviderLabel(source.ProviderId),
                 source.Source,
-                $"{library.Songs.Count(song => song.SourceId == source.Id)} {Plural(library.Songs.Count(song => song.SourceId == source.Id), "cue", "cues")}"))
-            .ToList();
+                $"{library.Songs.Count(song => song.SourceId == source.Id)} {Plural(library.Songs.Count(song => song.SourceId == source.Id), "cue", "cues")}"));
+        LibrarySourceList.ItemsSource = _librarySourceSort switch
+        {
+            "name-desc" => sourceCards.OrderByDescending(source => source.Name, StringComparer.OrdinalIgnoreCase).ToList(),
+            "cues" => sourceCards.OrderByDescending(source => library.Songs.Count(song => song.SourceId == source.SourceRecord.Id))
+                .ThenBy(source => source.Name, StringComparer.OrdinalIgnoreCase).ToList(),
+            _ => sourceCards.OrderBy(source => source.Name, StringComparer.OrdinalIgnoreCase).ToList()
+        };
         ShowLibrarySongs(null);
+        RefreshLibraryActions();
     }
 
     void ShowLibrarySongs(Guid? sourceId)
@@ -44,19 +53,26 @@ public partial class MainWindow
             .GroupBy(entry => entry.SongId).ToDictionary(group => group.Key, group => group.Count());
         var search = LibrarySearchBox?.Text?.Trim() ?? "";
         var unusedOnly = (LibraryFilterBox?.SelectedItem as ComboBoxItem)?.Tag?.ToString() == "unused";
-        LibrarySongList.ItemsSource = library.Songs.Where(song => sourceId is null || song.SourceId == sourceId)
+        var songs = library.Songs.Where(song => sourceId is null || song.SourceId == sourceId)
             .Where(song => !unusedOnly || usage.GetValueOrDefault(song.Id) == 0)
             .Where(song => string.IsNullOrWhiteSpace(search) || song.Name.Contains(search, StringComparison.OrdinalIgnoreCase) ||
                 (song.Artist?.Contains(search, StringComparison.OrdinalIgnoreCase) ?? false) ||
                 library.Sources.FirstOrDefault(source => source.Id == song.SourceId)?.Name.Contains(search, StringComparison.OrdinalIgnoreCase) == true)
-            .OrderBy(song => song.Name, StringComparer.OrdinalIgnoreCase)
             .Select(song => new LibrarySongCard(song, song.Name,
                 SongDetail(song, library.Sources.FirstOrDefault(source => source.Id == song.SourceId)),
-                $"Used by {usage.GetValueOrDefault(song.Id)} {Plural(usage.GetValueOrDefault(song.Id), "station", "stations")}"))
-            .ToList();
+                $"Used by {usage.GetValueOrDefault(song.Id)} {Plural(usage.GetValueOrDefault(song.Id), "station", "stations")}"));
+        LibrarySongList.ItemsSource = _librarySongSort switch
+        {
+            "name-desc" => songs.OrderByDescending(song => song.Name, StringComparer.OrdinalIgnoreCase).ToList(),
+            "stations" => songs.OrderByDescending(song => usage.GetValueOrDefault(song.SongRecord.Id))
+                .ThenBy(song => song.Name, StringComparer.OrdinalIgnoreCase).ToList(),
+            _ => songs.OrderBy(song => song.Name, StringComparer.OrdinalIgnoreCase).ToList()
+        };
+        LibrarySongCountText.Text = $"{library.Songs.Count} {Plural(library.Songs.Count, "song", "songs")}";
         LibrarySongHintText.Text = library.Sources.Count == 0
             ? "Add any station source. Local files and single YouTube videos can create reusable timeline cues."
             : "Editing a cue updates every station that references it.";
+        RefreshLibraryActions();
     }
 
     static string Plural(int value, string singular, string plural) => value == 1 ? singular : plural;
@@ -75,6 +91,35 @@ public partial class MainWindow
             ShowLibrarySongs(card.SourceRecord.Id);
             LibrarySongHintText.Text = $"{card.Name} · select a cue to edit its shared title and boundaries.";
         }
+        RefreshLibraryActions();
+    }
+
+    void LibrarySongList_SelectionChanged(object sender, SelectionChangedEventArgs e) => RefreshLibraryActions();
+
+    void LibrarySort_Changed(object sender, SelectionChangedEventArgs e)
+    {
+        if (!IsLoaded) return;
+        _librarySourceSort = (LibrarySourceSortBox?.SelectedItem as ComboBoxItem)?.Tag?.ToString() ?? "name";
+        _librarySongSort = (LibrarySongSortBox?.SelectedItem as ComboBoxItem)?.Tag?.ToString() ?? "name";
+        RefreshLibrary();
+    }
+
+    IReadOnlyList<LibrarySourceCard> SelectedLibrarySources() => LibrarySourceList?.SelectedItems.OfType<LibrarySourceCard>().ToList() ?? [];
+    IReadOnlyList<LibrarySongCard> SelectedLibrarySongs() => LibrarySongList?.SelectedItems.OfType<LibrarySongCard>().ToList() ?? [];
+
+    void RefreshLibraryActions()
+    {
+        if (LibrarySourceSelectionText is null || LibrarySongSelectionText is null) return;
+        var sources = SelectedLibrarySources();
+        var songs = SelectedLibrarySongs();
+        LibrarySourceSelectionText.Text = $"{sources.Count} selected";
+        LibrarySongSelectionText.Text = $"{songs.Count} selected";
+        LibraryOpenSelectedSourceButton.IsEnabled = sources.Count > 0;
+        LibraryDeleteSelectedSourcesButton.IsEnabled = sources.Count > 0;
+        LibrarySongStationsButton.IsEnabled = songs.Count > 0;
+        LibraryDuplicateSelectedSongsButton.IsEnabled = songs.Count > 0;
+        LibraryEditSelectedSongButton.IsEnabled = songs.Count > 0;
+        LibraryDeleteSelectedSongsButton.IsEnabled = songs.Count > 0;
     }
 
     void LibraryFilter_Changed(object sender, RoutedEventArgs e)
@@ -90,10 +135,10 @@ public partial class MainWindow
         await AddLibrarySourceAsync(providerId);
     }
 
-    void LibraryOpenSource_Click(object sender, RoutedEventArgs e)
+    void LibraryOpenSelectedSource_Click(object sender, RoutedEventArgs e)
     {
-        if ((sender as FrameworkElement)?.Tag is not MediaSource source) return;
-        OpenLibrarySource(source);
+        if (SelectedLibrarySources().FirstOrDefault() is not { } source) return;
+        OpenLibrarySource(source.SourceRecord);
     }
 
     void OpenLibrarySource(MediaSource source)
@@ -123,7 +168,8 @@ public partial class MainWindow
 
     async void LibraryEditSong_Click(object sender, RoutedEventArgs e)
     {
-        if ((sender as FrameworkElement)?.Tag is not LibrarySong song) return;
+        if (SelectedLibrarySongs().FirstOrDefault() is not { } selected) return;
+        var song = selected.SongRecord;
         var source = _config.MusicLibrary.Sources.FirstOrDefault(candidate => candidate.Id == song.SourceId);
         if (source is null) return;
         var dialog = new EditSongWindow(new StationSong
@@ -147,20 +193,22 @@ public partial class MainWindow
 
     async void LibraryDuplicateSong_Click(object sender, RoutedEventArgs e)
     {
-        if ((sender as FrameworkElement)?.Tag is not LibrarySong song) return;
+        var songs = SelectedLibrarySongs().Select(card => card.SongRecord).ToList();
+        if (songs.Count == 0) return;
         try
         {
-            MusicLibraryService.DuplicateSong(_config.MusicLibrary, song.Id);
+            foreach (var song in songs) MusicLibraryService.DuplicateSong(_config.MusicLibrary, song.Id);
             await _store.SaveAsync(_config);
             RefreshLibrary();
-            Footer.Text = "ALTERNATE CUE CREATED · Both cues reference the same source.";
+            Footer.Text = $"{songs.Count} {Plural(songs.Count, "ALTERNATE CUE CREATED", "ALTERNATE CUES CREATED")} · Each references the same source.";
         }
         catch (Exception error) { Footer.Text = "COULD NOT DUPLICATE CUE · " + error.Message; }
     }
 
     async void LibrarySongStations_Click(object sender, RoutedEventArgs e)
     {
-        if ((sender as FrameworkElement)?.Tag is not LibrarySong song) return;
+        if (SelectedLibrarySongs().FirstOrDefault() is not { } selected) return;
+        var song = selected.SongRecord;
         var source = _config.MusicLibrary.Sources.FirstOrDefault(candidate => candidate.Id == song.SourceId);
         if (source is null) return;
         var dialog = new LibrarySongMembershipWindow(song, source, _config.Profile.Stations) { Owner = this };
@@ -184,36 +232,39 @@ public partial class MainWindow
 
     async void LibraryDeleteSong_Click(object sender, RoutedEventArgs e)
     {
-        if ((sender as FrameworkElement)?.Tag is not LibrarySong song) return;
-        var usedBy = _config.Profile.Stations.Count(station => station.PlaylistEntries.Any(entry => entry.SongId == song.Id));
-        if (MessageBox.Show(this, $"Delete the library cue '{song.Name}'? It will be removed from {usedBy} {Plural(usedBy, "station", "stations")}, but its source media will remain.",
-            "Delete library cue", MessageBoxButton.OKCancel, MessageBoxImage.Warning) != MessageBoxResult.OK) return;
+        var songs = SelectedLibrarySongs().Select(card => card.SongRecord).ToList();
+        if (songs.Count == 0) return;
+        var usedBy = _config.Profile.Stations.Count(station => station.PlaylistEntries.Any(entry => songs.Any(song => song.Id == entry.SongId)));
+        if (MessageBox.Show(this, $"Delete {songs.Count} selected {Plural(songs.Count, "library cue", "library cues")}? They will be removed from {usedBy} {Plural(usedBy, "station", "stations")}, but their source media will remain.",
+            "Delete library cues", MessageBoxButton.OKCancel, MessageBoxImage.Warning) != MessageBoxResult.OK) return;
         try
         {
-            MusicLibraryService.DeleteSong(_config, song.Id);
+            foreach (var song in songs) MusicLibraryService.DeleteSong(_config, song.Id);
             if (_active is { } active) MusicLibraryService.MaterializeStationPlaylist(_config, active);
             await _store.SaveAsync(_config);
             RefreshLibrary();
             RefreshDashboardPlaylist();
-            Footer.Text = "LIBRARY CUE DELETED · Source media was kept.";
+            Footer.Text = $"{songs.Count} {Plural(songs.Count, "LIBRARY CUE DELETED", "LIBRARY CUES DELETED")} · Source media was kept.";
         }
         catch (Exception error) { Footer.Text = "COULD NOT DELETE CUE · " + error.Message; }
     }
 
-    async void LibraryDeleteSource_Click(object sender, RoutedEventArgs e)
+    async void LibraryDeleteSelectedSources_Click(object sender, RoutedEventArgs e)
     {
-        if ((sender as FrameworkElement)?.Tag is not MediaSource source) return;
-        var cueCount = _config.MusicLibrary.Songs.Count(song => song.SourceId == source.Id);
-        if (MessageBox.Show(this, $"Delete '{source.Name}' and its {cueCount} {Plural(cueCount, "cue", "cues")}? It removes their station references but never deletes the original media file or video.",
-            "Delete library source", MessageBoxButton.OKCancel, MessageBoxImage.Warning) != MessageBoxResult.OK) return;
+        var sources = SelectedLibrarySources().Select(card => card.SourceRecord).ToList();
+        if (sources.Count == 0) return;
+        var sourceIds = sources.Select(source => source.Id).ToHashSet();
+        var cueCount = _config.MusicLibrary.Songs.Count(song => sourceIds.Contains(song.SourceId));
+        if (MessageBox.Show(this, $"Delete {sources.Count} selected {Plural(sources.Count, "source", "sources")} and their {cueCount} {Plural(cueCount, "cue", "cues")}? This removes their station references but never deletes original media files or videos.",
+            "Delete library sources", MessageBoxButton.OKCancel, MessageBoxImage.Warning) != MessageBoxResult.OK) return;
         try
         {
-            MusicLibraryService.DeleteSource(_config, source.Id);
+            foreach (var source in sources) MusicLibraryService.DeleteSource(_config, source.Id);
             if (_active is { } active) MusicLibraryService.MaterializeStationPlaylist(_config, active);
             await _store.SaveAsync(_config);
             RefreshLibrary();
             RefreshDashboardPlaylist();
-            Footer.Text = "SOURCE REMOVED FROM LIBRARY · Original media was kept.";
+            Footer.Text = $"{sources.Count} {Plural(sources.Count, "SOURCE REMOVED", "SOURCES REMOVED")} · Original media was kept.";
         }
         catch (Exception error) { Footer.Text = "COULD NOT DELETE SOURCE · " + error.Message; }
     }

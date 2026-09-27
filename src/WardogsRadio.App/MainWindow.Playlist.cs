@@ -29,6 +29,7 @@ public partial class MainWindow
         var current = station?.ProviderId == "mpv" ? _mpvProvider?.CurrentPlaylistIndex ?? station?.Runtime.SequenceIndex ?? 0
             : station?.Runtime.SequenceIndex ?? 0;
         DashboardShuffleButton.IsEnabled = station?.ProviderId is "mpv" or "youtube" && songs.Count > 1;
+        DashboardPlaylistAddButton.IsEnabled = station?.ProviderId is "mpv" or "youtube";
         DashboardPlaylistHint.Text = station is null ? "Choose a station to see its songs."
             : songs.Count == 0 && !MusicLibraryService.SupportsCueRanges(station.ProviderId, station.Source)
                 ? "This source does not support reliable song segmentation."
@@ -168,12 +169,9 @@ public partial class MainWindow
         var source = _playlistContextSong?.Source
             ?? _active.PlaylistSongs.ElementAtOrDefault(Math.Clamp(_active.Runtime.SequenceIndex, 0, Math.Max(0, _active.PlaylistSongs.Count - 1)))?.Source
             ?? _active.Source;
-        if (!MusicLibraryService.SupportsCueRanges(_active.ProviderId, source) || !onSong && _active.Runtime.DurationSeconds <= 0)
-        {
-            e.Handled = true;
-            return;
-        }
-        PlaylistCreateSongMenuItem.Visibility = onSong ? Visibility.Collapsed : Visibility.Visible;
+        var canCreate = MusicLibraryService.SupportsCueRanges(_active.ProviderId, source) && _active.Runtime.DurationSeconds > 0;
+        PlaylistAddFromLibraryMenuItem.Visibility = onSong ? Visibility.Collapsed : Visibility.Visible;
+        PlaylistCreateSongMenuItem.Visibility = !onSong && canCreate ? Visibility.Visible : Visibility.Collapsed;
         PlaylistEditSongMenuItem.Visibility = onSong ? Visibility.Visible : Visibility.Collapsed;
         PlaylistSongActionsSeparator.Visibility = onSong ? Visibility.Visible : Visibility.Collapsed;
         PlaylistOpenLibraryMenuItem.Visibility = onSong ? Visibility.Visible : Visibility.Collapsed;
@@ -183,6 +181,50 @@ public partial class MainWindow
             _timelineContextSeconds = _active.ProviderId == "mpv"
                 ? _mpvProvider?.Snapshot.PositionSeconds ?? _active.Runtime.PositionSeconds
                 : _active.Runtime.PositionSeconds;
+    }
+
+    void DashboardPlaylistAdd_Click(object sender, RoutedEventArgs e)
+    {
+        if (_active is not { ProviderId: "mpv" or "youtube" } station || sender is not FrameworkElement control) return;
+        _playlistContextSong = null;
+        _timelineContextSeconds = station.ProviderId == "mpv"
+            ? _mpvProvider?.Snapshot.PositionSeconds ?? station.Runtime.PositionSeconds
+            : station.Runtime.PositionSeconds;
+        if (control.ContextMenu is null) return;
+        var source = station.PlaylistSongs.ElementAtOrDefault(Math.Clamp(station.Runtime.SequenceIndex, 0,
+            Math.Max(0, station.PlaylistSongs.Count - 1)))?.Source ?? station.Source;
+        control.ContextMenu.Items.OfType<MenuItem>().FirstOrDefault(item => item.Name == "PlaylistAddCreateSongMenuItem")!.IsEnabled =
+            MusicLibraryService.SupportsCueRanges(station.ProviderId, source) && station.Runtime.DurationSeconds > 0;
+        control.ContextMenu.PlacementTarget = control;
+        control.ContextMenu.IsOpen = true;
+    }
+
+    async void DashboardPlaylist_AddFromLibrary_Click(object sender, RoutedEventArgs e)
+    {
+        if (_active is not { ProviderId: "mpv" or "youtube" } station) return;
+        var picker = new LibrarySongPickerWindow(_config.MusicLibrary, station.ProviderId) { Owner = this };
+        if (picker.ShowDialog() != true || picker.SelectedSongs.Count == 0) return;
+        try
+        {
+            var existing = station.PlaylistEntries.Select(entry => entry.SongId).ToHashSet();
+            var added = 0;
+            foreach (var song in picker.SelectedSongs)
+            {
+                if (existing.Add(song.Id))
+                {
+                    MusicLibraryService.AddSongToStation(station, song.Id);
+                    added++;
+                }
+            }
+            if (added == 0)
+            {
+                Footer.Text = "THE SELECTED LIBRARY CUES ARE ALREADY IN THIS PLAYLIST.";
+                return;
+            }
+            await ApplyPlaylistChangeAsync(CurrentSongId());
+            Footer.Text = $"{added} {Plural(added, "LIBRARY CUE ADDED", "LIBRARY CUES ADDED")} TO {station.Name.ToUpperInvariant()}.";
+        }
+        catch (Exception error) { Footer.Text = "COULD NOT ADD LIBRARY CUES · " + error.Message; }
     }
 
     double? KnownSongDuration(Station station, StationSong song)

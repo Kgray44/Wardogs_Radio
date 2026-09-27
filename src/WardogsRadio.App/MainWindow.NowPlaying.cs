@@ -210,11 +210,13 @@ public partial class MainWindow
         {
             // A shared source-level signal is rendered as a restrained, deterministic meter pattern.
             var shape = .44 + ((index * 5 + 3) % 7) * .075;
-            var desired = 3 + _nowPlayingLevelTarget * 38 * shape;
+            // Keep the compact dock geometry unchanged, but use more of its
+            // existing height range so live audio is easier to read at a glance.
+            var desired = 3 + _nowPlayingLevelTarget * 52 * shape;
             var previous = _nowPlayingBars[index].Height;
             _nowPlayingBars[index].Height = _config.ReduceMotion ? desired : desired >= previous
                 ? previous + (desired - previous) * .58 // quick attack
-                : Math.Max(3, previous - 1.15); // slower signal decay
+                : Math.Max(3, previous - 1.55); // slower signal decay
         }
     }
 
