@@ -28,6 +28,24 @@
       let segments = [];
       let segmentIndex = 0;
       let boundaryPending = false;
+      let routeAudioContext;
+      let routeOscillator;
+      const prepareAudioSession = async () => {
+        // A zero-gain oscillator asks Chromium to create its audio session
+        // before the YouTube source becomes audible. WARDOGS can then route
+        // that session to the selected endpoint without moving Windows default.
+        if (!routeAudioContext) {
+          routeAudioContext = new AudioContext();
+          const silent = routeAudioContext.createGain();
+          silent.gain.value = 0;
+          routeOscillator = routeAudioContext.createOscillator();
+          routeOscillator.connect(silent);
+          silent.connect(routeAudioContext.destination);
+          routeOscillator.start();
+        }
+        await routeAudioContext.resume();
+        return routeAudioContext.state;
+      };
       const currentVideoId = () => player?.getVideoData?.()?.video_id || video;
       const selectSegment = (index, autoPlay = true) => {
         if (!segments.length || index < 0 || index >= segments.length || !player) return;
@@ -103,6 +121,8 @@
         });
       };
       window.wardogs = {
+        prepareAudio: prepareAudioSession,
+        audioState: () => routeAudioContext?.state || 'not started',
         play: () => ended || player?.getPlayerState?.() === YT.PlayerState.ENDED
           ? restart(repeatMode === 'playlist') : player?.playVideo(),
         pause: () => player?.pauseVideo(),

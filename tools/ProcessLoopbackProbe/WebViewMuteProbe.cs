@@ -19,7 +19,7 @@ internal static class WebViewMuteProbe
 
     public static async Task<Result> RunAsync(string? gameOutputName = null, string? listeningEndpointId = null,
         string? policyEndpointId = null, bool silent = false, bool sessionGainTest = false,
-        bool routeTest = false)
+        bool routeTest = false, bool youtubeBootstrap = false)
     {
         var completion = new TaskCompletionSource<Result>(TaskCreationOptions.RunContinuationsAsynchronously);
         var thread = new Thread(() =>
@@ -39,13 +39,26 @@ internal static class WebViewMuteProbe
                     var environment = await CoreWebView2Environment.CreateAsync(null, profile,
                         new CoreWebView2EnvironmentOptions("--autoplay-policy=no-user-gesture-required"));
                     await webView.EnsureCoreWebView2Async(environment);
-                    webView.CoreWebView2.NavigateToString($"<html><body><script>window.startTone=()=>{{let c=new AudioContext();let o=c.createOscillator();let g=c.createGain();window.toneGain=g;g.gain.value={(silent ? "0" : "0.015")};o.frequency.value=523.25;o.connect(g);g.connect(c.destination);o.start();return c.state}};</script></body></html>");
                     var loaded = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
                     webView.NavigationCompleted += (_, _) => loaded.TrySetResult();
+                    if (youtubeBootstrap)
+                    {
+                        var page = Path.GetFullPath("src/WardogsRadio.App/youtube-player.html");
+                        webView.CoreWebView2.Navigate(new Uri(page).AbsoluteUri + "?v=abcde&instance=probe");
+                    }
+                    else webView.CoreWebView2.NavigateToString($"<html><body><script>window.startTone=()=>{{let c=new AudioContext();let o=c.createOscillator();let g=c.createGain();window.toneGain=g;g.gain.value={(silent ? "0" : "0.015")};o.frequency.value=523.25;o.connect(g);g.connect(c.destination);o.start();return c.state}};</script></body></html>");
                     await loaded.Task.WaitAsync(TimeSpan.FromSeconds(10));
-                    var state = await webView.CoreWebView2.ExecuteScriptAsync("window.startTone()");
+                    var state = await webView.CoreWebView2.ExecuteScriptAsync(youtubeBootstrap
+                        ? "window.wardogs?.prepareAudio()" : "window.startTone()");
+                    if (youtubeBootstrap)
+                        for (var attempt = 0; attempt < 30; attempt++)
+                        {
+                            state = await webView.CoreWebView2.ExecuteScriptAsync("window.wardogs?.audioState()");
+                            if (state.Contains("running", StringComparison.OrdinalIgnoreCase)) break;
+                            await Task.Delay(100);
+                        }
                     if (!state.Contains("running", StringComparison.OrdinalIgnoreCase))
-                        throw new InvalidOperationException("WebView2 synthetic audio context did not start: " + state);
+                        throw new InvalidOperationException("WebView2 audio context did not start: " + state);
                     if (routeTest)
                     {
                         using var routeEndpoints = new MMDeviceEnumerator();
@@ -58,13 +71,18 @@ internal static class WebViewMuteProbe
                         try
                         {
                             await route.StartAsync(webView.CoreWebView2, routeDefaultOutput.ID, 1);
-                            await webView.CoreWebView2.ExecuteScriptAsync("window.toneGain.gain.value=0.015");
-                            var first = await CaptureToneAsync(routeDefaultOutput);
-                            await route.SwitchAsync(alternate.ID);
-                            var second = await Task.WhenAll(CaptureToneAsync(routeDefaultOutput), CaptureToneAsync(alternate));
-                            route.SetVolume(.25);
-                            var reduced = await CaptureToneAsync(alternate);
-                            Console.WriteLine($"Production route: initial={first:F4} on {routeDefaultOutput.FriendlyName}; after switch old={second[0]:F4}, new={second[1]:F4}; quarter volume={reduced:F4}; global default unchanged={WindowsDefaultRender.Current(Role.Multimedia).Equals(routeDefaultOutput.ID, StringComparison.OrdinalIgnoreCase)}");
+                            if (youtubeBootstrap)
+                                Console.WriteLine($"YouTube page silent session opened; endpoint policy verified; global default unchanged={WindowsDefaultRender.Current(Role.Multimedia).Equals(routeDefaultOutput.ID, StringComparison.OrdinalIgnoreCase)}");
+                            else
+                            {
+                                await webView.CoreWebView2.ExecuteScriptAsync("window.toneGain.gain.value=0.015");
+                                var first = await CaptureToneAsync(routeDefaultOutput);
+                                await route.SwitchAsync(alternate.ID);
+                                var second = await Task.WhenAll(CaptureToneAsync(routeDefaultOutput), CaptureToneAsync(alternate));
+                                route.SetVolume(.25);
+                                var reduced = await CaptureToneAsync(alternate);
+                                Console.WriteLine($"Production route: initial={first:F4} on {routeDefaultOutput.FriendlyName}; after switch old={second[0]:F4}, new={second[1]:F4}; quarter volume={reduced:F4}; global default unchanged={WindowsDefaultRender.Current(Role.Multimedia).Equals(routeDefaultOutput.ID, StringComparison.OrdinalIgnoreCase)}");
+                            }
                         }
                         finally
                         {

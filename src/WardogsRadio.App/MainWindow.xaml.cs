@@ -541,7 +541,9 @@ public partial class MainWindow : Window, IMacroActionHandler
         if (restoreCollapsed) YouTubeView.Visibility = Visibility.Hidden;
         try
         {
-            await YouTubeView.EnsureCoreWebView2Async();
+            var environment = await CoreWebView2Environment.CreateAsync(null, null,
+                new CoreWebView2EnvironmentOptions("--autoplay-policy=no-user-gesture-required"));
+            await YouTubeView.EnsureCoreWebView2Async(environment);
             YouTubeView.CoreWebView2.WebMessageReceived += YouTubeMessage;
             YouTubeView.CoreWebView2.SetVirtualHostNameToFolderMapping("wardogs-radio.example", AppContext.BaseDirectory, CoreWebView2HostResourceAccessKind.DenyCors);
             _youtubeReady = true;
@@ -682,17 +684,19 @@ public partial class MainWindow : Window, IMacroActionHandler
                 var initialReturnSeconds = _youtubePendingResumeSeconds ?? 0;
                 await _youtubeStartupCoordinator.StartAsync(async () =>
                 {
-                    // A silent WebView audio session is enough to select an exact
-                    // physical endpoint before any YouTube audio becomes audible.
+                    // The page opens a silent audio session before YouTube plays.
+                    // Select its endpoint before any source audio becomes audible.
                     await YouTubeCommandAsync("volume(0)");
                     if (initialReturnSeconds > 0)
                         await YouTubeCommandAsync($"seek({initialReturnSeconds.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture)})");
                     if (!_youtubeStartPaused)
                     {
-                        _youtubeStartupForensics?.Mark("T7 play issued");
-                        await YouTubeCommandAsync("play()");
                         if (await TryStartYouTubeListeningAsync(activeStation))
+                        {
                             await ApplyYouTubeListeningGainAsync(activeStation);
+                            _youtubeStartupForensics?.Mark("T7 play issued");
+                            await YouTubeCommandAsync("play()");
+                        }
                     }
                 }, async () =>
                 {
@@ -823,6 +827,7 @@ public partial class MainWindow : Window, IMacroActionHandler
             var endpoint = _config.MonitorDeviceId;
             if (string.IsNullOrWhiteSpace(endpoint))
                 throw new InvalidOperationException("Choose your headphones or speakers in Audio & Routing.");
+            await YouTubeCommandAsync("prepareAudio()");
             await _youtubeListeningRoute.StartAsync(YouTubeView.CoreWebView2, endpoint,
                 _config.MasterVolume * station.Volume);
             _youtubeHeadsetRouteError = null;

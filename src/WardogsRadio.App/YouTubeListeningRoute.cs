@@ -62,17 +62,17 @@ internal sealed class YouTubeListeningRoute(string configurationRoot)
         {
             var webViewPids = webView.Environment.GetProcessInfos()
                 .Select(info => (uint)info.ProcessId).ToHashSet();
-            var sessions = AudioSessions(webViewPids);
-            if (sessions.Count == 1) { pid = sessions[0].Pid; break; }
-            if (sessions.Count > 1)
-                throw new InvalidOperationException("More than one WebView audio session is active; WARDOGS cannot safely choose one.");
+            var sessionPids = AudioSessions(webViewPids).Select(session => session.Pid).Distinct().ToArray();
+            if (sessionPids.Length == 1) { pid = sessionPids[0]; break; }
+            if (sessionPids.Length > 1)
+                throw new InvalidOperationException("More than one WebView audio process is active; WARDOGS cannot safely choose one.");
             await Task.Delay(100);
         }
         if (pid is null)
-            throw new InvalidOperationException("The YouTube audio session did not appear. Playback remains silent; press Play to retry.");
+            throw new InvalidOperationException("The WebView audio session did not open before playback. The player remains silent; press Play to retry.");
         using var process = Process.GetProcessById((int)pid.Value);
         var processStart = process.StartTime.ToUniversalTime().Ticks;
-        var session = AudioSessions([pid.Value]).Single();
+        var session = AudioSessions([pid.Value]).First();
         using var policy = new WindowsPerAppAudioPolicy();
         var target = WindowsPerAppAudioPolicy.FormatEndpoint(rawEndpoint);
         var snapshot = new Snapshot(pid.Value, processStart, policy.Read(pid.Value, 0),

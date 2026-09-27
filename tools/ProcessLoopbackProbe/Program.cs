@@ -5,7 +5,7 @@ using WardogsRadio.App;
 using WardogsRadio.Core;
 using WardogsRadio.Voicemeeter;
 
-if (args.Length > 0 && args[0] is "--webview-mute" or "--webview-fanout" or "--webview-policy" or "--webview-policy-silent" or "--webview-session-gain" or "--webview-policy-vaio" or "--webview-route")
+if (args.Length > 0 && args[0] is "--webview-mute" or "--webview-fanout" or "--webview-policy" or "--webview-policy-silent" or "--webview-session-gain" or "--webview-policy-vaio" or "--webview-route" or "--webview-youtube-bootstrap")
 {
     string? gameOutput = null, listeningOutput = null;
     if (args[0] is "--webview-fanout" or "--webview-policy" or "--webview-policy-silent" or "--webview-session-gain" or "--webview-policy-vaio")
@@ -67,7 +67,8 @@ if (args.Length > 0 && args[0] is "--webview-mute" or "--webview-fanout" or "--w
             args[0] == "--webview-fanout" ? listeningOutput : null,
             args[0] is "--webview-policy" or "--webview-policy-silent" or "--webview-session-gain" or "--webview-policy-vaio" ? listeningOutput : null,
             args[0] is "--webview-policy-silent" or "--webview-route", args[0] == "--webview-session-gain",
-            args[0] == "--webview-route");
+            args[0] is "--webview-route" or "--webview-youtube-bootstrap",
+            args[0] == "--webview-youtube-bootstrap");
     }
     finally
     {
@@ -86,7 +87,7 @@ if (args.Length > 0 && args[0] is "--webview-mute" or "--webview-fanout" or "--w
             vaioReader.Dispose();
         }
     }
-    if (args[0] == "--webview-route") return;
+    if (args[0] is "--webview-route" or "--webview-youtube-bootstrap") return;
     if (args[0] is "--webview-policy" or "--webview-policy-silent" or "--webview-session-gain" or "--webview-policy-vaio")
     {
         Console.WriteLine($"Per-app policy readback={result.PolicyReadback}");
