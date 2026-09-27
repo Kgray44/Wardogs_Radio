@@ -18,7 +18,7 @@ Create stations like **Cruise**, **Combat**, **Night Ops**, or **Extraction**. F
 
 In other words: it is much closer to a little airborne radio console than a normal playlist player.
 
-> **Important:** WARDOGS Radio requires **Voicemeeter Banana** for its main headset/game audio-routing features. The v0.2.4 installer bundles the official Banana setup and offers to run it when it is missing; its virtual-audio driver still requires administrator approval and a Windows restart.
+> **Fresh install? You do not need to hunt down dependencies yourself.** WARDOGS Radio v0.2.4 handles its full runtime dependency stack through the installer: portable MPV is included, and the installer detects and offers the bundled official installers for **Microsoft Edge WebView2 Runtime** and **Voicemeeter Banana** only when they are missing. Voicemeeter's virtual-audio driver still requires Windows administrator approval and a restart.
 
 <img width="2057" height="1282" alt="image" src="https://github.com/user-attachments/assets/d34feeb1-a836-46f3-8678-2b4cc6e2bec3" />
 
@@ -322,35 +322,50 @@ with a last-known-good backup.
 
 ---
 
-## Requirements
+## Dependencies — handled by the installer
 
-WARDOGS Radio v0.2.4 includes a substantially improved installer and dependency-handling pass. The goal is simple: missing prerequisites should be caught and explained during installation/setup instead of turning into mysterious playback or routing failures later.
+For a normal supported installation, **you do not need to manually install WARDOGS Radio's runtime dependencies first.**
 
-You should still know what the important pieces are:
+v0.2.4 ships with everything needed to handle the supported playback and routing stack:
 
-### Required: Voicemeeter Banana
+| Component | What WARDOGS Radio does |
+| --- | --- |
+| **MPV** | Portable MPV is bundled directly with WARDOGS Radio. No separate MPV install is needed. |
+| **Microsoft Edge WebView2 Runtime** | The installer checks whether WebView2 already exists. If it is missing, the bundled official Microsoft installer is selected automatically and installs it silently. |
+| **Voicemeeter Banana** | The installer checks for Banana or compatible Voicemeeter Potato. If neither exists, the bundled official VB-Audio Banana installer is selected automatically. |
 
-**Voicemeeter Banana is a dependency.**
+### Voicemeeter Banana
 
-WARDOGS Radio relies on Voicemeeter Banana for the music/microphone routing, B1 game mix, live strip/bus metering, and several Output Health features.
+Voicemeeter Banana is still the audio-routing backend used for the supported music/microphone mix, B1 game output, live strip/bus metering, and several Output Health features.
 
-Install Voicemeeter Banana before completing WARDOGS Radio's Setup Wizard:
+The important difference in **v0.2.4** is that **you do not need to go download and install it separately before WARDOGS Radio**.
 
-https://vb-audio.com/Voicemeeter/banana.htm
+If Banana or Potato is already installed, WARDOGS Radio leaves it alone.
 
-The v0.2.4 installer detects an existing Banana (or the compatible Potato) installation. If neither is present, its prerequisite page selects the bundled official Banana setup by default. You may uncheck it, but routing will not work until Banana is installed. Banana's driver setup requires administrator approval and a Windows restart; uninstalling WARDOGS Radio never removes it.
+If neither is installed, the WARDOGS Radio installer offers the bundled official Banana setup automatically.
 
-### Required for YouTube: Microsoft Edge WebView2 Runtime
+Because Voicemeeter installs a Windows virtual-audio driver, Windows will still require:
 
-YouTube playback uses WebView2.
+1. administrator approval for the VB-Audio installer
+2. a Windows restart after the driver installation
 
-Most current Windows systems already have WebView2 installed. If it is missing, the v0.2.4 prerequisite page selects the bundled official Microsoft runtime by default and installs it silently. You may uncheck it, but in-app YouTube playback will remain unavailable until WebView2 is installed.
+WARDOGS Radio does not silently bypass either of those system requirements, and uninstalling WARDOGS Radio does not remove the shared Voicemeeter installation.
 
-### Included: portable MPV
+### Microsoft Edge WebView2 Runtime
 
-MPV is bundled with the WARDOGS Radio installer.
+WebView2 powers WARDOGS Radio's in-app YouTube/web playback surface.
 
-You do **not** need to separately install MPV for normal local-music or compatible-stream playback.
+If WebView2 is already installed, nothing is changed.
+
+If it is missing, the WARDOGS Radio installer automatically selects the bundled official Microsoft Evergreen WebView2 Runtime installer and installs it silently.
+
+### Portable MPV
+
+MPV is packaged directly with WARDOGS Radio and is used for local music and compatible native/stream playback.
+
+There is nothing extra to install, and WARDOGS Radio does not modify an unrelated system-wide MPV installation.
+
+> Advanced users can deliberately uncheck a missing prerequisite on the installer page, but WARDOGS Radio warns which feature will remain unavailable. For the normal supported setup, simply leave the automatically selected prerequisites enabled.
 
 ---
 
@@ -358,23 +373,32 @@ You do **not** need to separately install MPV for normal local-music or compatib
 
 WARDOGS Radio is designed so the complicated audio setup happens **once**, not every time you want to play.
 
-### 1. Install prerequisites
+### 1. Run the WARDOGS Radio installer
 
-During installation, the **Prerequisites** page shows the components being installed. It detects WebView2 and Voicemeeter Banana (or Potato), and preselects only the missing components. You can uncheck an item, but the installer warns which feature will remain unavailable. If Banana is installed, accept its administrator prompt and restart Windows before configuring routes.
+Download **WARDOGS Radio v0.2.4** from [GitHub Releases](https://github.com/Kgray44/Wardogs_Radio/releases/latest) and run the installer.
 
-### 2. Install WARDOGS Radio
+You do **not** need to prepare MPV, WebView2, or Voicemeeter beforehand.
 
-Download **WARDOGS Radio v0.2.4** from [GitHub Releases](https://github.com/Kgray44/Wardogs_Radio/releases/latest).
+The installer checks the machine and shows a **Prerequisites** page:
 
-v0.2.4 includes the updated installer/dependency pass, so fresh installs get much better prerequisite detection and a clearer path through anything the system still needs.
+- already-installed components are left alone
+- missing WebView2 is selected automatically and installed silently
+- missing Voicemeeter Banana is selected automatically and launches the official VB-Audio installer
+- portable MPV is already included with WARDOGS Radio
 
-The installer is per-user and places the application under:
+If Voicemeeter needs to be installed, approve its administrator prompt and **restart Windows after the VB-Audio setup completes**. That restart is required for its virtual audio driver to become available.
+
+### 2. Finish installing WARDOGS Radio
+
+The main WARDOGS Radio application installs per-user under:
 
 ```text
 %LOCALAPPDATA%\Programs\WARDOGS Radio
 ```
 
-It also creates a Start Menu shortcut to **WARDOGS Radio Launcher**.
+and creates a Start Menu shortcut to **WARDOGS Radio Launcher**.
+
+On a machine that already has WebView2 and Voicemeeter, the installer simply skips those prerequisite installs. On a fresh machine, it handles them as part of the same setup flow.
 
 ### 3. Open the Setup Wizard
 
@@ -529,11 +553,11 @@ The Launcher:
 - health-checks the updated application
 - still launches the installed copy if update checking fails
 
-v0.2.4 also includes a major installer/dependency hardening pass aimed specifically at fresh-machine reliability. Dependency problems should be detected and surfaced during installation/setup instead of waiting until the user discovers them halfway through playback or audio routing.
+v0.2.4 turns fresh-machine setup into one installer flow. Portable MPV is included, while missing WebView2 and Voicemeeter Banana are supplied through bundled official installers and only invoked when needed. Existing compatible installations are detected and left alone.
 
 An installed copy does **not** require internet access merely to launch and use local functionality.
 
-The installer bundles portable MPV plus official setup packages for a missing WebView2 Runtime and Voicemeeter Banana. It does not bundle or alter:
+The installer therefore handles the full supported runtime dependency stack without making a new user hunt down separate downloads. It does not bundle or alter:
 
 - account credentials
 - provider authorization
