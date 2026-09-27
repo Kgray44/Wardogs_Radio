@@ -41,6 +41,9 @@ jobs:
           dotnet build WardogsRadio.sln -c Release --no-restore
           dotnet test WardogsRadio.sln -c Release --no-restore
           node tests/youtube-player.behavior.test.cjs
+      - name: Install 7-Zip for MPV packaging
+        shell: pwsh
+        run: choco install 7zip -y --no-progress
       - name: Stage complete self-contained package
         shell: pwsh
         run: .\scripts\stage-package.ps1 -StageDir "$PWD\release\stage"

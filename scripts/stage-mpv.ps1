@@ -25,12 +25,21 @@ $archive = (Resolve-Path -LiteralPath $ArchivePath).Path
 $actualHash = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant()
 if ($actualHash -ne $mpvArchiveSha256) { throw "The MPV archive SHA-256 did not match the pinned value: $actualHash" }
 
-$tar = Get-Command tar.exe -ErrorAction SilentlyContinue
-if ($null -eq $tar) { throw 'Windows tar.exe is required to extract the bundled MPV archive.' }
+$sevenZip = (Get-Command 7z.exe -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty Source)
+if ([string]::IsNullOrWhiteSpace($sevenZip)) {
+    $knownSevenZip = Join-Path ${env:ProgramFiles} '7-Zip\7z.exe'
+    if (Test-Path -LiteralPath $knownSevenZip -PathType Leaf) { $sevenZip = $knownSevenZip }
+}
+$tar = if ([string]::IsNullOrWhiteSpace($sevenZip)) { Get-Command tar.exe -ErrorAction SilentlyContinue } else { $null }
+if ([string]::IsNullOrWhiteSpace($sevenZip) -and $null -eq $tar) { throw '7-Zip or a tar.exe build with 7z/LZMA support is required to extract the bundled MPV archive.' }
 $extract = Join-Path ([IO.Path]::GetTempPath()) ('wardogs-radio-mpv-' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $extract | Out-Null
 try {
-    & $tar.Source -xf $archive -C $extract
+    if (-not [string]::IsNullOrWhiteSpace($sevenZip)) {
+        & $sevenZip x $archive "-o$extract" '-y'
+    } else {
+        & $tar.Source -xf $archive -C $extract
+    }
     if ($LASTEXITCODE -ne 0) { throw "Unable to extract $mpvArchiveName." }
 
     foreach ($file in @('mpv.exe', 'mpv.com', 'd3dcompiler_43.dll')) {
