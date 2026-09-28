@@ -24,16 +24,21 @@ public partial class MainWindow : Window
             if (!PackageVerifier.Verify(_installRoot, localText, out var verificationError)) { Log("Package preflight failed: " + verificationError); Status.Text = "Installation needs repair."; return; }
             Version.Text = "v" + localVersion;
             Log("Launcher started for v" + localVersion);
-            using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(8));
-            using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(8) };
+            // The manifest is small, but the self-contained installer is hundreds
+            // of megabytes. Its transfer must not inherit the manifest deadline.
+            using var client = new HttpClient { Timeout = Timeout.InfiniteTimeSpan };
             string? json = null;
-            try { json = await client.GetStringAsync(ReleaseManifestValidator.LatestManifestUrl, cancellation.Token); }
-            catch (Exception exception) { Log("Manifest fetch unavailable: " + exception.GetType().Name); }
+            using (var manifestCancellation = new CancellationTokenSource(TimeSpan.FromSeconds(8)))
+            {
+                try { json = await client.GetStringAsync(ReleaseManifestValidator.LatestManifestUrl, manifestCancellation.Token); }
+                catch (Exception exception) { Log("Manifest fetch unavailable: " + exception.GetType().Name); }
+            }
             var decision = ReleaseManifestValidator.Decide(json is not null, json, localVersion, localVersion, out var manifest, out var reason);
             Log("Update decision: " + reason);
             if (decision == UpdateDecision.LaunchCurrent || manifest is null) { Status.Text = "Up to date"; await LaunchCurrentSoonAsync(); return; }
             Status.Text = "Downloading v" + manifest.Version + "…";
-            var installer = await DownloadVerifiedInstallerAsync(client, manifest, cancellation.Token);
+            using var installerCancellation = new CancellationTokenSource(TimeSpan.FromMinutes(30));
+            var installer = await DownloadVerifiedInstallerAsync(client, manifest, installerCancellation.Token);
             if (installer is null) { Status.Text = "Update couldn't be completed. Starting WARDOGS Radio."; await LaunchCurrentSoonAsync(); return; }
             Status.Text = "Installing v" + manifest.Version + "…";
             var agentSource = Path.Combine(_installRoot, "WARDOGS Radio Update Agent.exe");
@@ -84,7 +89,7 @@ public partial class MainWindow : Window
             var verified = Path.Combine(directory, manifest.Installer);
             File.Move(candidate, verified, true); Log("Installer download and SHA-256 verification succeeded."); return verified;
         }
-        catch (Exception exception) { if (File.Exists(candidate)) File.Delete(candidate); Log("Installer download failed: " + exception.GetType().Name); return null; }
+        catch (Exception exception) { if (File.Exists(candidate)) File.Delete(candidate); Log("Installer download failed: " + exception.GetType().Name + ": " + exception.Message); return null; }
     }
     async Task LaunchCurrentSoonAsync() { await Task.Delay(700); LaunchCurrent(); Close(); }
     void LaunchCurrent() { var app = Path.Combine(_installRoot, "WARDOGS Radio.exe"); if (File.Exists(app)) { Process.Start(new ProcessStartInfo(app) { UseShellExecute = true, WorkingDirectory = _installRoot }); Log("Launch requested for installed application."); } }
