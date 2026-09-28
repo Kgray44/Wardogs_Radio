@@ -7,19 +7,25 @@ using WardogsRadio.Voicemeeter;
 namespace WardogsRadio.Diagnostics;
 
 public sealed record DiagnosticItem(string Area, string Status, string Summary, string Detail);
+public sealed record DiagnosticSnapshot(SystemReadinessSnapshot Readiness, IReadOnlyList<DiagnosticItem> Technical)
+{
+    public DateTimeOffset CheckedAt => Readiness.CheckedAt;
+    public AudioBridgeSnapshot? AudioBridge { get; init; }
+}
 
-public sealed class DiagnosticService(IVoicemeeterRemote vm, XInputControllerService controllers)
+public sealed class DiagnosticService(AudioBridgeService bridge, XInputControllerService controllers)
 {
     public IReadOnlyList<DiagnosticItem> Collect(AppConfiguration configuration, PlaybackSnapshot? nativePlayback = null,
-        bool youtubePlayerAvailable = false, OutputHealthSnapshot? outputHealth = null)
+        bool youtubePlayerAvailable = false, OutputHealthSnapshot? outputHealth = null,
+        VoicemeeterStatus? knownVmStatus = null)
     {
-        var vmStatus = vm.Probe();
+        var vmStatus = knownVmStatus ?? bridge.Probe();
         var mpv = new MpvLocator().Find(configuration.MpvPath);
         var items = new List<DiagnosticItem>
         {
             new("Application", "READY", "WARDOGS settings are available", Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData)),
-            new("Voicemeeter", vmStatus.Connected ? "CONNECTED" : "NEEDS SETUP",
-                vmStatus.Connected ? $"Voicemeeter connected{(vmStatus.Edition is null ? "" : $" · {vmStatus.Edition}")}; test the game voice output" :
+            new("Voicemeeter", vmStatus is { Connected: true, Edition: "Banana" } ? "CONNECTED" : "NEEDS ATTENTION",
+                vmStatus.Connected ? $"Voicemeeter connected{(vmStatus.Edition is null ? "" : $" · {vmStatus.Edition}")}; automatic routing requires Banana" :
                 vmStatus.Installed ? "Voicemeeter is installed but its audio engine is not connected" : "Voicemeeter was not found",
                 vmStatus.Detail),
             new("Local Music", mpv is null ? "NEEDS SETUP" : nativePlayback?.Health == ProviderHealth.Ready ? nativePlayback.IsPlaying ? "PLAYING" : "READY" : "READY",
@@ -27,21 +33,21 @@ public sealed class DiagnosticService(IVoicemeeterRemote vm, XInputControllerSer
                     ? $"{nativePlayback.Track?.Title ?? "Station"} · {(nativePlayback.IsPlaying ? "playing" : "ready")}; check your headphones and B1 meters"
                     : "Local music player available; tune a station to test playback",
                 mpv ?? "Install mpv or choose its executable in Settings."),
-            new("YouTube", youtubePlayerAvailable ? "READY" : "NEEDS SETUP",
+            new("YouTube", youtubePlayerAvailable ? "READY" : "OPTIONAL",
                 youtubePlayerAvailable ? "YouTube player available; tune a video to test playback" : "YouTube player unavailable",
                 youtubePlayerAvailable ? "WebView2 initialized. A specific video's playback and audio still need to be tested." : "WebView2 failed to initialize. Check the runtime installation."),
-            new("SoundCloud", "NEEDS SETUP", "Account connection required", "Official API credentials and authorization are not configured."),
-            new("Apple Music", "NEEDS SETUP", "Account connection required", "MusicKit developer configuration and authorization are not configured.")
+            new("SoundCloud", "OPTIONAL", "Account connection not configured", "Official API credentials and authorization are not configured."),
+            new("Apple Music", "OPTIONAL", "Account connection not configured", "MusicKit developer configuration and authorization are not configured.")
         };
 
         var found = controllers.Enumerate().ToList();
         items.Add(OutputHealthDiagnostic(configuration.ClipGuard, outputHealth));
-        var limiter = new VoicemeeterStripLimiter(vm).Probe(configuration.MusicStripIndex);
+        var limiter = bridge.Limiter.Probe(configuration.MusicStripIndex);
         items.Add(new("Voicemeeter limiter", configuration.ClipGuard.LimiterEnabled && limiter.Available ? "READY" :
             limiter.Available ? "AVAILABLE" : "UNAVAILABLE",
             configuration.ClipGuard.LimiterEnabled ? "Selected music-strip limiter requested" : "Selected music-strip limiter not enabled",
-            limiter.Detail + " WARDOGS writes only after the user enables the control and always verifies the readback."));
-        items.Add(new("Controllers", found.Count == 0 ? "NEEDS SETUP" : "CONNECTED",
+            limiter.Detail + " Automatic limiter writes are paused in this candidate; Clip Guard reports telemetry only."));
+        items.Add(new("Controllers", found.Count == 0 ? "OPTIONAL" : "CONNECTED",
             found.Count == 0 ? "No game controllers found" : $"{found.Count} game controller{(found.Count == 1 ? "" : "s")} found",
             found.Count == 0 ? "Connect a joystick, gamepad, or multi-axis controller and scan again." : "Open technical details for the device list. Test an actual control press in the Macro editor to verify binding."));
         foreach (var controller in found)
@@ -64,7 +70,7 @@ public sealed class DiagnosticService(IVoicemeeterRemote vm, XInputControllerSer
 
         foreach (var station in configuration.Profile.Stations.OrderBy(x => x.Order))
         {
-            var status = !station.Enabled ? "DISABLED" : string.IsNullOrWhiteSpace(station.Source) ? "NEEDS SETUP" : "CONFIGURED";
+            var status = !station.Enabled ? "OPTIONAL" : string.IsNullOrWhiteSpace(station.Source) ? "INFORMATIONAL" : "CONFIGURED";
             var summary = !station.Enabled ? $"{station.Name} is disabled" : string.IsNullOrWhiteSpace(station.Source) ? $"{station.Name} needs a source" : $"{station.Name} has a source";
             items.Add(new("Station", status, summary, $"Provider: {station.ProviderId}; source: {station.Source}; playlist entries: {station.PlaylistEntries.Count}."));
         }
@@ -97,13 +103,34 @@ public sealed class DiagnosticService(IVoicemeeterRemote vm, XInputControllerSer
 
     static string Display(double? dbfs) => dbfs is { } value && !double.IsNegativeInfinity(value) ? $"{value:0.0} dBFS" : "unknown/quiet";
 
-    public async Task<string> ExportAsync(AppConfiguration configuration, string directory, PlaybackSnapshot? nativePlayback = null,
-        bool youtubePlayerAvailable = false, OutputHealthSnapshot? outputHealth = null, CancellationToken ct = default)
+    public static async Task<string> ExportSnapshotAsync(DiagnosticSnapshot snapshot, string directory,
+        string version, CancellationToken ct = default)
     {
         Directory.CreateDirectory(directory);
-        var path = Path.Combine(directory, $"WARDOGS-Radio-diagnostic-{DateTime.Now:yyyyMMdd-HHmmss}.md");
-        var report = new StringBuilder("# WARDOGS Radio Diagnostic Report\n\n").AppendLine($"Generated: {DateTimeOffset.Now:O}\n");
-        foreach (var item in Collect(configuration, nativePlayback, youtubePlayerAvailable, outputHealth))
+        var path = Path.Combine(directory, $"WARDOGS-Radio-diagnostic-{snapshot.CheckedAt:yyyyMMdd-HHmmss}.md");
+        var report = new StringBuilder("# WARDOGS Radio Diagnostic Report\n\n")
+            .AppendLine($"Version: {version}  ")
+            .AppendLine($"Generated: {snapshot.CheckedAt:O}  ")
+            .AppendLine($"Overall system health: {snapshot.Readiness.Overall}  ")
+            .AppendLine($"Core readiness: {snapshot.Readiness.CorePassed}/{snapshot.Readiness.CoreTotal} checks passed\n");
+        if (snapshot.AudioBridge is { } audio)
+        {
+            report.AppendLine($"Audio Bridge: {audio.Connection} · {audio.Detail}  ");
+            foreach (var fault in audio.Faults.TakeLast(10))
+                report.AppendLine($"- Bridge fault {fault.At:O} / {fault.Subsystem}: {fault.Fault} (action: {fault.Action})");
+            report.AppendLine();
+        }
+        report.AppendLine("## Actionable problems\n");
+        var problems = snapshot.Readiness.Checks.Where(check => check.BlocksCoreReadiness &&
+            check.Severity is not (ReadinessSeverity.Ready or ReadinessSeverity.Info or ReadinessSeverity.Optional));
+        foreach (var check in problems)
+            report.AppendLine($"- **{check.Id} / {check.Severity}** — {check.Title}: {check.Summary}");
+        report.AppendLine("\n## Configured and observed topology\n");
+        foreach (var check in snapshot.Readiness.Checks)
+            report.AppendLine($"- **{check.Id} / {check.Severity}** — {check.Title}: {check.Summary}")
+                .AppendLine(string.IsNullOrWhiteSpace(check.TechnicalDetail) ? "" : $"  {check.TechnicalDetail}");
+        report.AppendLine("\n## Advanced technical evidence\n");
+        foreach (var item in snapshot.Technical)
             report.AppendLine($"- **{item.Area} / {item.Status}** — {item.Summary}  ").AppendLine($"  {item.Detail}");
         await File.WriteAllTextAsync(path, report.ToString(), ct);
         return path;

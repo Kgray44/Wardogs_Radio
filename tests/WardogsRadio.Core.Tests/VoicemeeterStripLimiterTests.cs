@@ -64,4 +64,18 @@ public sealed class VoicemeeterStripLimiterTests
         Assert.False(limiter.IsActive);
         Assert.Equal(1, remote.Parameters["Strip[3].Limit"]);
     }
+
+    [Fact]
+    public void ExternalLimiterChangeIsNotOverwrittenOnRestore()
+    {
+        var remote = new Remote();
+        remote.Parameters["Strip[4].Limit"] = 2;
+        var limiter = new VoicemeeterStripLimiter(remote);
+        Assert.True(limiter.TryApply(4, -3, out _));
+        remote.Parameters["Strip[4].Limit"] = -5;
+        Assert.False(limiter.TryRestore(out var detail));
+        Assert.Contains("outside WARDOGS", detail);
+        Assert.Equal(-5, remote.Parameters["Strip[4].Limit"]);
+        Assert.False(limiter.IsActive);
+    }
 }

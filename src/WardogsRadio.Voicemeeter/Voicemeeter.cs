@@ -27,21 +27,30 @@ public static class VoicemeeterSharedOutputSelector
 public interface IVoicemeeterRemote : IDisposable
 {
     VoicemeeterStatus Probe();
+    // Meter sampling must not enumerate Windows processes. Test doubles may
+    // delegate to Probe; the native implementation uses only Remote API state.
+    VoicemeeterStatus ProbeFast() => Probe();
     bool TryLogin(out string detail);
+    bool TryRunVoicemeeter(int edition, out string detail) { detail = "Voicemeeter launch is unavailable."; return false; }
     bool TryGetLevel(int type, int channel, out float value);
     /// <summary>Returns the native Remote API status code for a level query. 0 is success.</summary>
     int GetLevelResult(int type, int channel, out float value) =>
         TryGetLevel(type, channel, out value) ? 0 : -1;
     bool TryGetParameterFloat(string name, out float value);
     bool TrySetParameterFloat(string name, float value);
+    bool TryGetParameterString(string name, out string value) { value = ""; return false; }
+    bool TrySetParameterString(string name, string value) => false;
+    IReadOnlyList<VoicemeeterAudioDevice> ListAudioDevices(bool inputs) => [];
 }
 
 public sealed unsafe class VoicemeeterRemote : IVoicemeeterRemote
 {
     IntPtr _dll;
+    string? _knownDllPath;
     bool _loggedIn;
     delegate* unmanaged<int> _login;
     delegate* unmanaged<int> _logout;
+    delegate* unmanaged[Stdcall]<int, int> _runVoicemeeter;
     delegate* unmanaged<int> _isParametersDirty;
     delegate* unmanaged<int*, int> _getVoicemeeterType;
     delegate* unmanaged[Stdcall]<int, int, float*, int> _getLevel;
@@ -79,10 +88,26 @@ public sealed unsafe class VoicemeeterRemote : IVoicemeeterRemote
         { Connected = connected };
     }
 
+    public VoicemeeterStatus ProbeFast()
+    {
+        var path = _knownDllPath ?? FindDll();
+        if (path is null) return new(false, false, null, null, null, "Voicemeeter Remote API DLL was not detected.");
+        if (!_loggedIn || _isParametersDirty == null)
+            return new(true, false, null, null, path, "Remote API is installed; live connection not tested.");
+        var connected = _isParametersDirty() >= 0;
+        int type = 0;
+        var edition = connected && _getVoicemeeterType != null && _getVoicemeeterType(&type) == 0
+            ? type switch { 1 => "Standard", 2 => "Banana", 3 => "Potato", _ => $"Type {type}" } : null;
+        return new(true, connected, edition, null, path,
+            connected ? "Remote API connected to a running Voicemeeter engine." : "Remote API registered; engine disconnected.")
+        { Connected = connected };
+    }
+
     public bool TryLogin(out string detail)
     {
         var status = Probe();
         if (status.DllPath is null) { detail = status.Detail; return false; }
+        _knownDllPath = status.DllPath;
         try
         {
             if (_dll == IntPtr.Zero)
@@ -90,6 +115,7 @@ public sealed unsafe class VoicemeeterRemote : IVoicemeeterRemote
                 _dll = NativeLibrary.Load(status.DllPath);
                 _login = (delegate* unmanaged<int>)NativeLibrary.GetExport(_dll, "VBVMR_Login");
                 _logout = (delegate* unmanaged<int>)NativeLibrary.GetExport(_dll, "VBVMR_Logout");
+                _runVoicemeeter = (delegate* unmanaged[Stdcall]<int, int>)NativeLibrary.GetExport(_dll, "VBVMR_RunVoicemeeter");
                 _isParametersDirty = (delegate* unmanaged<int>)NativeLibrary.GetExport(_dll, "VBVMR_IsParametersDirty");
                 _getVoicemeeterType = (delegate* unmanaged<int*, int>)NativeLibrary.GetExport(_dll, "VBVMR_GetVoicemeeterType");
                 _getLevel = (delegate* unmanaged[Stdcall]<int, int, float*, int>)NativeLibrary.GetExport(_dll, "VBVMR_GetLevel");
@@ -117,6 +143,18 @@ public sealed unsafe class VoicemeeterRemote : IVoicemeeterRemote
             detail = ex.Message;
             return false;
         }
+    }
+
+    public bool TryRunVoicemeeter(int edition, out string detail)
+    {
+        if (edition != 2 || !_loggedIn || _runVoicemeeter == null)
+        {
+            detail = "The supported Banana engine cannot be launched through the Remote API.";
+            return false;
+        }
+        var code = _runVoicemeeter(edition);
+        detail = code >= 0 ? "Voicemeeter Banana launch requested." : $"Voicemeeter Banana launch failed (Remote API code {code}).";
+        return code >= 0;
     }
 
     public bool TryGetLevel(int type, int channel, out float value)
@@ -210,6 +248,7 @@ public sealed unsafe class VoicemeeterRemote : IVoicemeeterRemote
         _dll = IntPtr.Zero;
         _login = null;
         _logout = null;
+        _runVoicemeeter = null;
         _isParametersDirty = null;
         _getVoicemeeterType = null;
         _getLevel = null;

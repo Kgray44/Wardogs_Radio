@@ -16,8 +16,10 @@ internal sealed class B1Audition : IDisposable
     WasapiOut? _output;
     BufferedWaveProvider? _buffer;
 
-    public void Start(string b1EndpointId, string headsetEndpointId)
+    public void Start(string b1EndpointId, string headsetEndpointId, float previewGain = .50f)
     {
+        if (!float.IsFinite(previewGain) || previewGain is < 0 or > 1)
+            throw new ArgumentOutOfRangeException(nameof(previewGain));
         try
         {
             _captureDevice = _endpoints.GetDevice(b1EndpointId.Split('\\').Last());
@@ -36,7 +38,7 @@ internal sealed class B1Audition : IDisposable
             // WasapiOut.Volume changes the physical endpoint master, not this preview.
             // Attenuate only our shared-mode audition stream.
             var streamVolume = _output.AudioStreamVolume;
-            streamVolume.SetAllVolumes(Enumerable.Repeat(.50f, streamVolume.ChannelCount).ToArray());
+            streamVolume.SetAllVolumes(Enumerable.Repeat(previewGain, streamVolume.ChannelCount).ToArray());
             _capture.DataAvailable += CaptureDataAvailable;
             _output.Play();
             _capture.StartRecording();

@@ -79,6 +79,9 @@ public readonly record struct AudioLevelSnapshot(bool Available, double LinearPe
 /// <summary>Composition boundary between saved user gain and transient guard gain.</summary>
 public static class ClipGuardMath
 {
+    public static double EffectiveListeningGain(double listeningMaster, double stationListening, double protectionGain) =>
+        EffectiveGameGain(listeningMaster, stationListening, protectionGain);
+
     public static double EffectiveGameGain(double gameMaster, double stationGame, double protectionGain)
     {
         var requested = double.IsFinite(gameMaster) && double.IsFinite(stationGame) ? Math.Max(0, gameMaster) * Math.Max(0, stationGame) : 0;
@@ -146,6 +149,8 @@ public sealed class ClipGuardController
     int _clipEvents;
     int _protectionInterventions;
     bool? _telemetryAvailable;
+    bool _wasNearClip;
+    bool _wasClipping;
     OutputHealthState _lastState = OutputHealthState.Unavailable;
 
     public double ProtectionGain => Math.Pow(10, -_reductionDb / 20d);
@@ -160,6 +165,7 @@ public sealed class ClipGuardController
         _reductionDb = _maximumReductionDb = 0;
         _nearClipEvents = _clipEvents = _protectionInterventions = 0;
         _telemetryAvailable = null;
+        _wasNearClip = _wasClipping = false;
         _lastState = OutputHealthState.Unavailable;
         _events.Clear();
     }
@@ -199,17 +205,27 @@ public sealed class ClipGuardController
             _lastClipMicrophone = microphone.PeakDbfs;
             _lastClipGame = gameBus.PeakDbfs;
             _lastClipDiagnosis = Diagnose(music, microphone, gameBus, OutputHealthState.Clip);
-            _clipEvents++;
-            AddEvent(now, OutputHealthEventKind.ClipDetected, $"Game mix reached {DisplayDb(peak)} dBFS.");
+            if (!_wasClipping)
+            {
+                _clipEvents++;
+                AddEvent(now, OutputHealthEventKind.ClipDetected, $"Game mix reached {DisplayDb(peak)} dBFS.");
+            }
         }
-        else if (nearClipNow && _lastState != OutputHealthState.NearClip)
+        else if (nearClipNow && !_wasNearClip)
         {
             _nearClipEvents++;
             AddEvent(now, OutputHealthEventKind.NearClipEntered, $"Game mix reached {DisplayDb(peak)} dBFS.");
         }
+        _wasNearClip = nearClipNow;
+        _wasClipping = clipNow;
 
         var overload = peak is { } db && !double.IsNegativeInfinity(db) && db >= settings.SafetyCeilingDbfs;
-        var protectionAllowed = available && canAutomaticallyAttenuateMusic &&
+        // B1 can clip from a microphone alone. Reducing radio music cannot repair
+        // that source and would make the requested game level misleading.
+        var microphoneOnlyOverload = overload && microphone.PeakDbfs is { } microphoneDb &&
+            microphoneDb >= settings.NearClipThresholdDbfs &&
+            (music.PeakDbfs is null || music.PeakDbfs < -12);
+        var protectionAllowed = available && canAutomaticallyAttenuateMusic && !microphoneOnlyOverload &&
             settings.Mode == ClipGuardMode.Protect && settings.AutoGainEnabled;
         UpdateProtection(settings, overload, peak, protectionAllowed, elapsedSeconds, now);
 
@@ -270,10 +286,10 @@ public sealed class ClipGuardController
             if (prior <= .05 && _reductionDb > .05)
             {
                 _protectionInterventions++;
-                AddEvent(now, OutputHealthEventKind.ProtectionEngaged, $"Attenuating game music by {_reductionDb:0.0} dB.");
+                AddEvent(now, OutputHealthEventKind.ProtectionEngaged, $"Attenuating listening and game music by {_reductionDb:0.0} dB.");
             }
             else if (_reductionDb - prior >= .25)
-                AddEvent(now, OutputHealthEventKind.ProtectionAdjusted, $"Game music protection is {_reductionDb:0.0} dB.");
+                AddEvent(now, OutputHealthEventKind.ProtectionAdjusted, $"Music protection is {_reductionDb:0.0} dB.");
             return;
         }
 
@@ -283,7 +299,7 @@ public sealed class ClipGuardController
         var priorReduction = _reductionDb;
         _reductionDb = Math.Max(0, _reductionDb - settings.RecoveryDbPerSecond * elapsedSeconds);
         if (priorReduction > .05 && _reductionDb <= .05)
-            AddEvent(now, OutputHealthEventKind.ProtectionReleased, "Game music protection returned to neutral.");
+            AddEvent(now, OutputHealthEventKind.ProtectionReleased, "Music protection returned to neutral.");
     }
 
     void TrackPeak(ref double? held, ref DateTimeOffset? heldAt, double? incoming, DateTimeOffset now,
@@ -313,12 +329,15 @@ public sealed class ClipGuardController
     {
         if (!game.Available) return "Game-bus metering is unavailable; automatic protection is paused.";
         if (state is OutputHealthState.Safe or OutputHealthState.Healthy) return "Game mix has usable headroom.";
-        if (state == OutputHealthState.Protected) return "Clip Guard is reducing game music before the final broadcast mix.";
+        if (state == OutputHealthState.Protected) return "Clip Guard is reducing listening and game music.";
         var musicDb = music.PeakDbfs;
         var microphoneDb = microphone.PeakDbfs;
         if (musicDb is { } musicPeak && microphoneDb is { } micPeak && game.PeakDbfs is { } gamePeak &&
             musicPeak < -3 && micPeak < -3 && gamePeak >= -1)
             return "Combined mix overload: music and microphone are individually below the hot range, but B1 is near full scale.";
+        if (microphoneDb is { } hotMicrophone && hotMicrophone >= -1 &&
+            (musicDb is null || musicDb < -12))
+            return "Microphone is too hot. Reduce microphone level; game-music protection cannot fix microphone-only clipping.";
         if (musicDb is { } hotMusic && hotMusic >= -1) return "Music input is too hot for the game mix.";
         return state == OutputHealthState.Clip ? "Game mix reached the digital ceiling." : "Game mix is close to the protection ceiling.";
     }

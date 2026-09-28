@@ -21,9 +21,16 @@ public sealed class WindowsAudioEndpointService
         });
         if (process is null) return [];
         var outputTask = process.StandardOutput.ReadToEndAsync(ct);
-        await process.WaitForExitAsync(ct);
+        try { await process.WaitForExitAsync(ct); }
+        catch (OperationCanceledException)
+        {
+            if (!process.HasExited) process.Kill(entireProcessTree: true);
+            throw;
+        }
         var output = await outputTask;
-        if (process.ExitCode != 0 || string.IsNullOrWhiteSpace(output)) return [];
+        if (process.ExitCode != 0)
+            throw new InvalidOperationException($"Windows audio endpoint discovery exited with code {process.ExitCode}.");
+        if (string.IsNullOrWhiteSpace(output)) return [];
         using var document = JsonDocument.Parse(output);
         var entries = document.RootElement.ValueKind == JsonValueKind.Array ? document.RootElement.EnumerateArray().ToList() : [document.RootElement];
         return entries.Select(entry =>

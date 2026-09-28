@@ -60,4 +60,17 @@ public sealed class VoicemeeterRouteControllerTests
         Assert.False(routes.TryRead(0, "A4", out _));
         Assert.Empty(remote.Parameters);
     }
+
+    [Fact]
+    public void RestoreLeavesExternallyChangedRouteUntouched()
+    {
+        var remote = new Remote();
+        remote.Parameters["Strip[4].B1"] = 0;
+        var routes = new VoicemeeterRouteController(remote);
+        var context = new MacroExecutionContext();
+        routes.Change(4, "B1", true, context);
+        remote.Parameters["Strip[4].B1"] = .4f;
+        Assert.Throws<InvalidOperationException>(() => routes.Restore(4, "B1", context));
+        Assert.Equal(.4f, remote.Parameters["Strip[4].B1"]);
+    }
 }

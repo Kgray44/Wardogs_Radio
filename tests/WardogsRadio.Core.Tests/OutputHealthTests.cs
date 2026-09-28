@@ -181,6 +181,19 @@ public sealed class OutputHealthTests
     }
 
     [Fact]
+    public void SharedYoutubeSessionReductionReachesHeadphonesAndGameOnce()
+    {
+        var protection = Math.Pow(10, -6d / 20d);
+        var listeningSession = ClipGuardMath.EffectiveListeningGain(1, 1, protection);
+        var youtubeGameStream = ClipGuardMath.EffectiveGameGain(.5, 1, 1);
+        var localGameStream = ClipGuardMath.EffectiveGameGain(.5, 1, protection);
+
+        Assert.InRange(listeningSession, .50, .502);
+        Assert.InRange(youtubeGameStream * listeningSession, .25, .252);
+        Assert.Equal(localGameStream, youtubeGameStream * listeningSession, 6);
+    }
+
+    [Fact]
     public void OffAndMonitorModesContinueMeteringButNeverReduceGain()
     {
         foreach (var mode in new[] { ClipGuardMode.Off, ClipGuardMode.Monitor })
@@ -194,6 +207,62 @@ public sealed class OutputHealthTests
             Assert.Equal(0, observed.ProtectionReductionDb, 3);
             Assert.Equal(1, observed.ProtectionGain, 3);
         }
+    }
+
+    [Fact]
+    public void MicrophoneOnlyClipProducesWarningNotMusicOvercorrection()
+    {
+        var controller = new ClipGuardController();
+        var settings = new ClipGuardSettings { Mode = ClipGuardMode.Protect, AttackMilliseconds = 50 };
+        OutputHealthSnapshot? health = null;
+        for (var index = 0; index < 15; index++)
+            health = controller.Sample(settings, Level(.05), Level(1), Level(1), true,
+                Start.AddMilliseconds(index * 40));
+
+        Assert.NotNull(health);
+        Assert.Equal(0, health.ProtectionReductionDb);
+        Assert.Equal(1, health.ProtectionGain);
+        Assert.Contains("Microphone is too hot", health.Diagnosis);
+    }
+
+    [Fact]
+    public void ProtectAttenuatesCombinedGameFeedAtFortyMillisecondSamples()
+    {
+        var controller = new ClipGuardController();
+        var settings = new ClipGuardSettings { Mode = ClipGuardMode.Protect, AttackMilliseconds = 50 };
+        OutputHealthSnapshot? health = null;
+        for (var index = 0; index < 15; index++)
+            health = controller.Sample(settings, Level(.6), Level(.6), Level(1), true,
+                Start.AddMilliseconds(index * 40));
+
+        Assert.NotNull(health);
+        Assert.True(health.AutoProtectionAvailable);
+        Assert.True(health.ProtectionReductionDb > 0);
+        Assert.True(ClipGuardMath.EffectiveGameGain(1, 1, health.ProtectionGain) < 1);
+    }
+
+    [Fact]
+    public void SustainedNearClipAndClipProduceOneEventPerEntryEvenWhileProtected()
+    {
+        var controller = new ClipGuardController();
+        var settings = new ClipGuardSettings { Mode = ClipGuardMode.Protect, SafetyCeilingDbfs = -18,
+            NearClipThresholdDbfs = -17, AttackMilliseconds = 50, MaximumReductionDb = 2 };
+        OutputHealthSnapshot? health = null;
+        for (var index = 0; index < 15; index++)
+            health = controller.Sample(settings, Level(.2), Level(.1), Level(.3), true,
+                Start.AddMilliseconds(index * 40));
+
+        Assert.NotNull(health);
+        Assert.True(health.ProtectionReductionDb > 0);
+        Assert.Equal(1, health.NearClipEvents);
+        Assert.Single(health.RecentEvents, e => e.Kind == OutputHealthEventKind.NearClipEntered);
+
+        for (var index = 15; index < 30; index++)
+            health = controller.Sample(settings, Level(.2), Level(.1), Level(1), true,
+                Start.AddMilliseconds(index * 40));
+
+        Assert.Equal(1, health!.ClipEvents);
+        Assert.Single(health.RecentEvents, e => e.Kind == OutputHealthEventKind.ClipDetected);
     }
 
     static AudioLevelSnapshot Level(double linear) => AudioLevelSnapshot.FromLinear(true, linear);

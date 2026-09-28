@@ -67,9 +67,7 @@ function IsVoicemeeterBananaInstalled: Boolean;
 begin
   Result :=
     FileExists(ExpandConstant('{pf32}\VB\Voicemeeter\voicemeeterpro_x64.exe')) or
-    FileExists(ExpandConstant('{pf}\VB\Voicemeeter\voicemeeterpro_x64.exe')) or
-    FileExists(ExpandConstant('{pf32}\VB\Voicemeeter\voicemeeter8x64.exe')) or
-    FileExists(ExpandConstant('{pf}\VB\Voicemeeter\voicemeeter8x64.exe'));
+    FileExists(ExpandConstant('{pf}\VB\Voicemeeter\voicemeeterpro_x64.exe'));
 end;
 
 procedure InitializeWizard;
@@ -89,7 +87,7 @@ begin
   if VoicemeeterBananaMissing then
     PrerequisitePage.Add('Install Voicemeeter Banana (needed for supported game/music routing)')
   else
-    PrerequisitePage.Add('Voicemeeter Banana or Potato is already installed (no action required)');
+    PrerequisitePage.Add('Voicemeeter Banana is already installed (no action required)');
   PrerequisitePage.Values[0] := WebView2Missing;
   PrerequisitePage.Values[1] := VoicemeeterBananaMissing;
 end;

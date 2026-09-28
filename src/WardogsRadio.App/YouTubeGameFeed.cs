@@ -1,6 +1,7 @@
 using NAudio.CoreAudioApi;
 using NAudio.Wave;
 using System.Runtime.InteropServices;
+using WardogsRadio.Playback;
 
 namespace WardogsRadio.App;
 
@@ -27,9 +28,19 @@ internal sealed class YouTubeGameFeed : IAsyncDisposable
     public string? OutputEndpointId => _renderDevice?.ID;
     public string? OutputEndpointName => _renderDevice?.FriendlyName;
     public double RequestedGain { get; private set; }
-    // WasapiOut writes the requested shared-mode stream gain directly; retain this
-    // separately so diagnostics never imply that the Windows endpoint itself was metered.
-    public double EffectiveGain => RequestedGain;
+
+    // Read the shared-mode stream gain back from WASAPI. This confirms the player
+    // accepted our write; the independent B1 meter observes downstream signal.
+    public double? ReadStreamGain()
+    {
+        if (_output is null) return null;
+        try
+        {
+            var levels = _output.AudioStreamVolume.GetAllVolumes();
+            return levels.Length > 0 && levels.All(float.IsFinite) ? levels.Average() : null;
+        }
+        catch { return null; }
+    }
 
     public static async Task<YouTubeGameFeed> StartAsync(uint browserProcessId, string outputName, double gain)
     {
@@ -49,11 +60,10 @@ internal sealed class YouTubeGameFeed : IAsyncDisposable
     async Task StartCoreAsync(uint browserProcessId, string outputName, double gain)
     {
         if (browserProcessId == 0) throw new InvalidOperationException("WebView2 browser process is not ready.");
-        var endpointGuid = outputName.Split('{').LastOrDefault()?.TrimEnd('}');
-        if (string.IsNullOrWhiteSpace(endpointGuid))
+        if (string.IsNullOrWhiteSpace(outputName))
             throw new InvalidOperationException("Choose a specific Voicemeeter game output first.");
         _renderDevice = _endpoints.EnumerateAudioEndPoints(DataFlow.Render, DeviceState.Active)
-            .FirstOrDefault(device => device.ID.Contains(endpointGuid, StringComparison.OrdinalIgnoreCase));
+            .SingleOrDefault(device => AudioDeviceIdentity.SameEndpoint(device.ID, outputName));
         if (_renderDevice is null)
             throw new InvalidOperationException("The selected Voicemeeter game output is not available in Windows.");
 
@@ -104,10 +114,23 @@ internal sealed class YouTubeGameFeed : IAsyncDisposable
 
     public void SetVolume(double gain)
     {
-        RequestedGain = Math.Clamp(gain, 0, 1);
-        if (_output is null) return;
+        var target = Math.Clamp(gain, 0, 1);
+        if (_output is null) { RequestedGain = target; return; }
         var volume = _output.AudioStreamVolume;
-        volume.SetAllVolumes(Enumerable.Repeat((float)RequestedGain, volume.ChannelCount).ToArray());
+        var prior = volume.GetAllVolumes();
+        try
+        {
+            volume.SetAllVolumes(Enumerable.Repeat((float)target, volume.ChannelCount).ToArray());
+            var applied = volume.GetAllVolumes();
+            if (applied.Length != volume.ChannelCount || applied.Any(level => !float.IsFinite(level) || Math.Abs(level - target) > .02))
+                throw new InvalidOperationException("The YouTube game stream did not read back the requested level.");
+            RequestedGain = target;
+        }
+        catch
+        {
+            try { volume.SetAllVolumes(prior); } catch { /* Report the failed readback to the caller. */ }
+            throw;
+        }
     }
 
     public async ValueTask DisposeAsync()

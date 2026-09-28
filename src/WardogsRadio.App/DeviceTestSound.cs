@@ -5,7 +5,7 @@ namespace WardogsRadio.App;
 
 internal static class DeviceTestSound
 {
-    public static async Task PlayAsync(string endpointId)
+    public static async Task PlayAsync(string endpointId, CancellationToken cancellationToken = default)
     {
         using var endpoints = new MMDeviceEnumerator();
         using var device = endpoints.GetDevice(endpointId.Split('\\').Last());
@@ -31,7 +31,7 @@ internal static class DeviceTestSound
         using var player = new WasapiOut(device, AudioClientShareMode.Shared, true, 100);
         player.Init(buffer);
         player.Play();
-        await Task.Delay(650);
+        await Task.Delay(650, cancellationToken);
         player.Stop();
     }
 }

@@ -20,9 +20,11 @@ public sealed class VoicemeeterRouteController(IVoicemeeterRemote remote)
         if (!remote.TryGetParameterFloat(name, out var previous))
             throw new InvalidOperationException($"Voicemeeter {name} is unavailable; no route changed.");
         var next = enabled ?? previous < .5f;
-        if (!remote.TrySetParameterFloat(name, next ? 1 : 0))
-            throw new InvalidOperationException($"Voicemeeter refused the {route} route change.");
+        var applied = next ? 1f : 0f;
+        if (!TryWriteVerified(name, applied))
+            throw new InvalidOperationException($"Voicemeeter did not confirm the {route} route change.");
         context.Remember($"route:{name}", previous);
+        context.Remember($"route-applied:{name}", applied);
         return $"{route} {(next ? "enabled" : "disabled")} on music strip {strip}";
     }
 
@@ -31,10 +33,27 @@ public sealed class VoicemeeterRouteController(IVoicemeeterRemote remote)
         var name = Parameter(strip, route);
         if (!context.TryPeek<float>($"route:{name}", out var previous))
             throw new InvalidOperationException($"No previous {route} route state is available for this macro run.");
-        if (!remote.TrySetParameterFloat(name, previous))
-            throw new InvalidOperationException($"Voicemeeter refused to restore the {route} route.");
+        if (!context.TryPeek<float>($"route-applied:{name}", out var applied) ||
+            !remote.TryGetParameterFloat(name, out var current))
+            throw new InvalidOperationException($"The {route} route cannot be checked before restoration.");
+        if (Math.Abs(current - applied) >= .1f)
+            throw new InvalidOperationException($"The {route} route changed outside WARDOGS; it was left untouched.");
+        if (!TryWriteVerified(name, previous))
+            throw new InvalidOperationException($"Voicemeeter did not confirm restoration of the {route} route.");
         context.TryRestore<float>($"route:{name}", out _);
+        context.TryRestore<float>($"route-applied:{name}", out _);
         return $"{route} route restored to {(previous >= .5f ? "on" : "off")}";
+    }
+
+    bool TryWriteVerified(string name, float value)
+    {
+        if (!remote.TrySetParameterFloat(name, value)) return false;
+        for (var attempt = 0; attempt < 10; attempt++)
+        {
+            if (remote.TryGetParameterFloat(name, out var observed) && Math.Abs(observed - value) < .1f) return true;
+            Thread.Sleep(20);
+        }
+        return false;
     }
 
     static string Parameter(int strip, string route) => TryParameter(strip, route, out var name) ? name :

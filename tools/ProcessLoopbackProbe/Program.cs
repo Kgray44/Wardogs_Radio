@@ -5,6 +5,109 @@ using WardogsRadio.App;
 using WardogsRadio.Core;
 using WardogsRadio.Voicemeeter;
 
+if (args.Length > 0 && args[0] is "--webview-mute" or "--webview-fanout" or "--webview-policy" or "--webview-policy-silent" or "--webview-session-gain" or "--webview-policy-vaio" or "--webview-route" or "--webview-youtube-bootstrap")
+{
+    string? gameOutput = null, listeningOutput = null;
+    if (args[0] is "--webview-fanout" or "--webview-policy" or "--webview-policy-silent" or "--webview-session-gain" or "--webview-policy-vaio")
+    {
+        var fanoutConfig = await new ConfigurationStore(Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "WARDOGS Radio")).LoadAsync();
+        if (args[0] is "--webview-fanout" or "--webview-policy" or "--webview-policy-silent" or "--webview-session-gain" or "--webview-policy-vaio")
+            gameOutput = fanoutConfig.GameMpvAudioDeviceName ?? throw new InvalidOperationException("Game output not configured.");
+        listeningOutput = fanoutConfig.MonitorDeviceId ?? throw new InvalidOperationException("Listening output not configured.");
+        if (args[0] is "--webview-policy" or "--webview-policy-silent" or "--webview-session-gain")
+        {
+            using var physicalEndpoints = new MMDeviceEnumerator();
+            listeningOutput = physicalEndpoints.EnumerateAudioEndPoints(DataFlow.Render, DeviceState.Active)
+                .Single(endpoint => endpoint.FriendlyName == "Speakers (Realtek(R) Audio)").ID;
+        }
+        if (args[0] == "--webview-policy-vaio")
+        {
+            using var virtualEndpoints = new MMDeviceEnumerator();
+            listeningOutput = virtualEndpoints.EnumerateAudioEndPoints(DataFlow.Render, DeviceState.Active)
+                .Single(endpoint => endpoint.FriendlyName.StartsWith("Voicemeeter Input (", StringComparison.OrdinalIgnoreCase)).ID;
+        }
+    }
+    var priorDefault = WindowsDefaultRender.Current(Role.Multimedia);
+    VoicemeeterRemote? vaioReader = null;
+    float priorVaioA1 = 0;
+    if (args[0] == "--webview-policy-vaio")
+    {
+        if (priorDefault.Equals(listeningOutput, StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException("VAIO is the Windows default; cannot isolate it for this probe.");
+        vaioReader = new VoicemeeterRemote();
+        if (!vaioReader.TryLogin(out var connection)) throw new InvalidOperationException(connection);
+        if (!vaioReader.TryGetParameterFloat("Strip[3].A1", out priorVaioA1) ||
+            !vaioReader.TryGetParameterFloat("Strip[3].B1", out var vaioB1) || vaioB1 > .1f)
+            throw new InvalidOperationException("VAIO route cannot be safely isolated.");
+        var vaioMeter = new VoicemeeterSignalMonitor(vaioReader);
+        for (var sample = 0; sample < 10; sample++)
+        {
+            var signal = vaioMeter.ReadStrip("Banana", 3);
+            if (!signal.Available || signal.Peak > .005f)
+                throw new InvalidOperationException("VAIO has another live signal; no routing changed.");
+            await Task.Delay(100);
+        }
+        if (!vaioReader.TrySetParameterFloat("Strip[3].A1", 0))
+            throw new InvalidOperationException("VAIO A1 could not be isolated.");
+        var isolated = false;
+        for (var attempt = 0; attempt < 12; attempt++)
+        {
+            await Task.Delay(100);
+            if (vaioReader.TryGetParameterFloat("Strip[3].A1", out var a1) && a1 < .1f)
+            { isolated = true; break; }
+        }
+        if (!isolated) throw new InvalidOperationException("VAIO A1 isolation did not read back.");
+    }
+    WebViewMuteProbe.Result result;
+    try
+    {
+        result = await WebViewMuteProbe.RunAsync(
+            args[0] is "--webview-fanout" or "--webview-policy" or "--webview-policy-silent" or "--webview-session-gain" or "--webview-policy-vaio" ? gameOutput : null,
+            args[0] == "--webview-fanout" ? listeningOutput : null,
+            args[0] is "--webview-policy" or "--webview-policy-silent" or "--webview-session-gain" or "--webview-policy-vaio" ? listeningOutput : null,
+            args[0] is "--webview-policy-silent" or "--webview-route", args[0] == "--webview-session-gain",
+            args[0] is "--webview-route" or "--webview-youtube-bootstrap",
+            args[0] == "--webview-youtube-bootstrap");
+    }
+    finally
+    {
+        if (vaioReader is not null)
+        {
+            var restored = vaioReader.TrySetParameterFloat("Strip[3].A1", priorVaioA1);
+            for (var attempt = 0; restored && attempt < 12; attempt++)
+            {
+                await Task.Delay(100);
+                if (vaioReader.TryGetParameterFloat("Strip[3].A1", out var restoredVaioA1) &&
+                    Math.Abs(restoredVaioA1 - priorVaioA1) <= .1f) break;
+                if (attempt == 11) restored = false;
+            }
+            if (!restored)
+                throw new InvalidOperationException("VAIO A1 restoration failed; inspect Voicemeeter immediately.");
+            vaioReader.Dispose();
+        }
+    }
+    if (args[0] is "--webview-route" or "--webview-youtube-bootstrap") return;
+    if (args[0] is "--webview-policy" or "--webview-policy-silent" or "--webview-session-gain" or "--webview-policy-vaio")
+    {
+        Console.WriteLine($"Per-app policy readback={result.PolicyReadback}");
+        Console.WriteLine($"523 Hz at selected output={result.PolicyTargetTone:F4}; at Windows default={result.PolicyDefaultTone:F4}; global default unchanged={WindowsDefaultRender.Current(Role.Multimedia).Equals(priorDefault, StringComparison.OrdinalIgnoreCase)}");
+        Console.WriteLine($"Process-loopback game copy: captured peak={result.FanoutCapturedPeak:F4}; game output 523 Hz={result.GameWithGame:F4}; prior per-app policy restored by readback");
+        return;
+    }
+    Console.WriteLine($"WebView2 process loopback: before IsMuted={result.Before:F4}; during IsMuted={result.Muted:F4}; after unmute={result.Restored:F4}");
+    Console.WriteLine($"Windows default endpoint loopback: before={result.RenderedBefore:F4}; muted={result.RenderedMuted:F4}; restored={result.RenderedRestored:F4}");
+    Console.WriteLine($"Windows default endpoint 523 Hz component: before={result.ToneBefore:F4}; muted={result.ToneMuted:F4}; restored={result.ToneRestored:F4}");
+    if (gameOutput is not null)
+    {
+        Console.WriteLine($"Muted WebView fanout, listening: game on={result.ListeningWithGame:F4}; game off={result.ListeningWithoutGame:F4}");
+        Console.WriteLine($"Muted WebView fanout, game output: game on={result.GameWithGame:F4}; game off={result.GameWithoutGame:F4}");
+        Console.WriteLine($"Windows default 523 Hz during fanout={result.DefaultDuringFanout:F4}; default unchanged={WindowsDefaultRender.Current(Role.Multimedia).Equals(priorDefault, StringComparison.OrdinalIgnoreCase)}");
+        Console.WriteLine($"Fanout source captured peak={result.FanoutCapturedPeak:F4}; fault={result.FanoutFault ?? "none"}");
+    }
+    return;
+}
+
 var store = new ConfigurationStore(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "WARDOGS Radio"));
 var config = await store.LoadAsync();
 if (args.Length > 1 && args[0] == "--restore-configured-headphones")
@@ -59,7 +162,7 @@ if (args.Length > 0 && args[0] == "--temp-route")
 {
     using var reader = new VoicemeeterRemote();
     if (!reader.TryLogin(out var connection)) throw new InvalidOperationException(connection);
-    using var route = new TemporaryYouTubeRoute(reader);
+    using var route = new TemporaryYouTubeRoute(new AudioBridgeService(reader));
     if (!route.TryRecover(out var recovery)) throw new InvalidOperationException(recovery);
     var priorDefault = WindowsDefaultRender.Current(Role.Multimedia);
     try
@@ -93,6 +196,9 @@ if (args.Length > 0 && args[0] == "--inspect-youtube-route")
     using var endpoints = new MMDeviceEnumerator();
     using var defaultDevice = endpoints.GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia);
     Console.WriteLine($"Windows default render: {defaultDevice.FriendlyName} ({defaultDevice.ID})");
+    foreach (var endpoint in endpoints.EnumerateAudioEndPoints(DataFlow.Render, DeviceState.Active))
+        if (!endpoint.FriendlyName.Contains("Voicemeeter", StringComparison.OrdinalIgnoreCase))
+            Console.WriteLine($"Physical render endpoint: {endpoint.FriendlyName} ({endpoint.ID})");
     foreach (var endpoint in endpoints.EnumerateAudioEndPoints(DataFlow.Render, DeviceState.Active))
         if (endpoint.FriendlyName.Contains("Voicemeeter", StringComparison.OrdinalIgnoreCase))
             Console.WriteLine($"VM render endpoint: {endpoint.FriendlyName} ({endpoint.ID})");
