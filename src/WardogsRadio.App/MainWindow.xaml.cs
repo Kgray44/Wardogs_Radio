@@ -141,6 +141,7 @@ public partial class MainWindow : Window, IMacroActionHandler
     bool _saveFailureVisible;
     OutputHealthSnapshot? _outputHealth;
     OutputTelemetryAssessment _outputTelemetry = new(OutputTelemetryConfidence.Unavailable, "B1 telemetry has not been sampled yet.");
+    readonly OutputTelemetryReadinessTracker _outputTelemetryReadiness = new();
     VoicemeeterMeterForensics? _meterForensics;
     BroadcastLevelTestResult? _broadcastLevelTestResult;
     Station? _active;
@@ -211,6 +212,8 @@ public partial class MainWindow : Window, IMacroActionHandler
     bool _gameGainUpdateInFlight;
     double? _lastAppliedGameGain;
     object? _lastAppliedGameGainFeed;
+    double? _lastAppliedListeningGain;
+    object? _lastAppliedListeningGainFeed;
     DateTime _nextSetupSignalRefresh;
     DateTime _nextSignalPresentation;
     DateTime _nextMeterForensicsCapture;
@@ -817,7 +820,7 @@ public partial class MainWindow : Window, IMacroActionHandler
     async Task ApplyYouTubeListeningGainAsync(Station station)
     {
         if (!_youtubeListeningRoute.IsActive) return;
-        _youtubeListeningRoute.SetVolume(_config.MasterVolume * station.Volume);
+        _youtubeListeningRoute.SetVolume(ListeningPlayerGain(station));
         await YouTubeCommandAsync("volume(100)");
     }
 
@@ -833,7 +836,7 @@ public partial class MainWindow : Window, IMacroActionHandler
                 throw new InvalidOperationException("Choose your headphones or speakers in Audio & Routing.");
             await YouTubeCommandAsync("prepareAudio()");
             await _youtubeListeningRoute.StartAsync(YouTubeView.CoreWebView2, endpoint,
-                _config.MasterVolume * station.Volume);
+                ListeningPlayerGain(station));
             _youtubeHeadsetRouteError = null;
             _youtubeRouteRecoveryBlocked = false;
             return true;
@@ -1507,7 +1510,7 @@ public partial class MainWindow : Window, IMacroActionHandler
                 var gains = TransitionMath.Gains((double)step / steps, curve);
                 await outgoing.SetVolumeAsync(outgoingGain * gains.Outgoing, token);
                 if (outgoingGame is not null) await outgoingGame.SetVolumeAsync(outgoingGameGain * gains.Outgoing, token);
-                await incoming.SetVolumeAsync(_config.MasterVolume * station.Volume * gains.Incoming, token);
+                await incoming.SetVolumeAsync(ListeningPlayerGain(station) * gains.Incoming, token);
                 if (incomingGame is not null) await incomingGame.SetVolumeAsync(GamePlayerGain(station) * gains.Incoming, token);
                 TransitionText.Text = $"CROSSFADING · {Math.Round(100d * step / steps):0}%";
                 if (step < steps) await Task.Delay(TimeSpan.FromSeconds(seconds / steps), token);
@@ -1754,10 +1757,10 @@ public partial class MainWindow : Window, IMacroActionHandler
                 station.Source = station.PlaylistFiles[0];
             }
             _mpvProvider = new MpvProvider(new MpvLocator(), _config.MpvPath, _config.MpvAudioDeviceName, LocalHeadsetLoudnessCalibrationDb);
-            _localStartupForensics?.RecordHeadsetSetup(_config.MpvAudioDeviceName, _config.MasterVolume * station.Volume);
+            _localStartupForensics?.RecordHeadsetSetup(_config.MpvAudioDeviceName, ListeningPlayerGain(station));
             await _mpvProvider.LoadAsync(station);
             _localStartupForensics?.Mark("MPV process started / media loaded");
-            await _mpvProvider.SetVolumeAsync(_config.MasterVolume * station.Volume);
+            await _mpvProvider.SetVolumeAsync(ListeningPlayerGain(station));
             _localStartupForensics?.Mark("audio device selected / requested volume set");
             _localStartupForensics?.RecordReportedState(
                 await _mpvProvider.ReadVolumeAsync(), await _mpvProvider.ReadMuteAsync(), _mpvProvider.Snapshot.IsPlaying);
@@ -2060,7 +2063,7 @@ public partial class MainWindow : Window, IMacroActionHandler
             }
             if (ReferenceEquals(station, _active) && _mpvProvider is { } provider && priorVolume != station.Volume)
             {
-                try { await provider.SetVolumeAsync(_config.MasterVolume * station.Volume); }
+                try { await provider.SetVolumeAsync(ListeningPlayerGain(station)); }
                 catch (Exception error) { Footer.Text = "STATION SAVED · LIVE LEVEL UPDATE FAILED · " + error.Message; return; }
             }
             if (ReferenceEquals(station, _active) && _gameMpvProvider is { } game && priorGameVolume != station.GameVolume)
@@ -2288,7 +2291,7 @@ public partial class MainWindow : Window, IMacroActionHandler
                     {
                         if (_youtubePlayerReady) await ApplyYouTubeListeningGainAsync(_active);
                     }
-                    else await _mpvProvider!.SetVolumeAsync(_config.MasterVolume * station.Volume, cancellationToken);
+                    else await _mpvProvider!.SetVolumeAsync(ListeningPlayerGain(station), cancellationToken);
                     await ApplyActiveGameMusicGainAsync(cancellationToken);
                 }
                 await _store.SaveAsync(_config, cancellationToken);
@@ -2313,7 +2316,7 @@ public partial class MainWindow : Window, IMacroActionHandler
                     {
                         if (_youtubePlayerReady) await ApplyYouTubeListeningGainAsync(_active);
                     }
-                    else await _mpvProvider!.SetVolumeAsync(_config.MasterVolume * station.Volume, cancellationToken);
+                    else await _mpvProvider!.SetVolumeAsync(ListeningPlayerGain(station), cancellationToken);
                     await ApplyActiveGameMusicGainAsync(cancellationToken);
                 }
                 await _store.SaveAsync(_config, cancellationToken);
@@ -2334,7 +2337,7 @@ public partial class MainWindow : Window, IMacroActionHandler
                 if (_mpvProvider is null) throw new InvalidOperationException("No native music output is connected for restoration.");
                 if (!context.TryPeek<double>("mute-gain", out var priorMuteGain))
                     throw new InvalidOperationException("No previous music level is available for this macro run.");
-                await _mpvProvider.SetVolumeAsync(priorMuteGain * (_active?.Volume ?? 1), cancellationToken);
+                await _mpvProvider.SetVolumeAsync(ListeningPlayerGain(_active, priorMuteGain), cancellationToken);
                 if (context.TryPeek<double>("mute-game-gain", out var priorGameMuteGain))
                 {
                     if (_gameMpvProvider is not null)
@@ -2355,7 +2358,7 @@ public partial class MainWindow : Window, IMacroActionHandler
                 var gain = MacroActionCatalog.DecibelsToGain(decibels);
                 context.Remember("master-gain", _config.MasterVolume);
                 context.Remember("game-master-gain", _config.GameMasterVolume);
-                await _mpvProvider.SetVolumeAsync(gain * (_active?.Volume ?? 1), cancellationToken);
+                await _mpvProvider.SetVolumeAsync(ListeningPlayerGain(_active, gain), cancellationToken);
                 if (_gameMpvProvider is not null) await _gameMpvProvider.SetVolumeAsync(GamePlayerGain(_active, gain), cancellationToken);
                 _config.MasterVolume = gain;
                 _config.GameMasterVolume = gain;
@@ -2366,7 +2369,7 @@ public partial class MainWindow : Window, IMacroActionHandler
             case ActionKind.RestorePreviousMasterGain:
                 if (_mpvProvider is null) throw new InvalidOperationException("No native music output is connected for gain restoration.");
                 if (!context.TryPeek<double>("master-gain", out var prior)) throw new InvalidOperationException("No previous music gain is available for this macro run.");
-                await _mpvProvider.SetVolumeAsync(prior * (_active?.Volume ?? 1), cancellationToken);
+                await _mpvProvider.SetVolumeAsync(ListeningPlayerGain(_active, prior), cancellationToken);
                 if (context.TryPeek<double>("game-master-gain", out var priorGame))
                 {
                     if (_gameMpvProvider is not null)
@@ -2385,7 +2388,7 @@ public partial class MainWindow : Window, IMacroActionHandler
                     throw new InvalidOperationException("Choose a headset gain from -60 to +12 dB.");
                 var headsetGain = MacroActionCatalog.DecibelsToGain(headsetDb);
                 context.Remember("headset-only-master-gain", _config.MasterVolume);
-                if (_mpvProvider is not null) await _mpvProvider.SetVolumeAsync(headsetGain * (_active?.Volume ?? 1), cancellationToken);
+                if (_mpvProvider is not null) await _mpvProvider.SetVolumeAsync(ListeningPlayerGain(_active, headsetGain), cancellationToken);
                 _config.MasterVolume = headsetGain;
                 ShowHeadsetMasterLevel(headsetGain);
                 await _store.SaveAsync(_config, cancellationToken);
@@ -2403,7 +2406,7 @@ public partial class MainWindow : Window, IMacroActionHandler
             case ActionKind.RestorePreviousHeadsetMasterGain:
                 if (!context.TryPeek<double>("headset-only-master-gain", out var priorHeadset))
                     throw new InvalidOperationException("No previous headset level is available for this macro run.");
-                if (_mpvProvider is not null) await _mpvProvider.SetVolumeAsync(priorHeadset * (_active?.Volume ?? 1), cancellationToken);
+                if (_mpvProvider is not null) await _mpvProvider.SetVolumeAsync(ListeningPlayerGain(_active, priorHeadset), cancellationToken);
                 _config.MasterVolume = priorHeadset;
                 ShowHeadsetMasterLevel(priorHeadset);
                 context.TryRestore<double>("headset-only-master-gain", out _);
@@ -2951,7 +2954,7 @@ public partial class MainWindow : Window, IMacroActionHandler
     {
         var settings = _config.ClipGuard;
         ClipGuardCeilingText.Text = $"Safety ceiling {settings.SafetyCeilingDbfs:0.0} dBFS · near clip {settings.NearClipThresholdDbfs:0.0} dBFS";
-        ClipGuardReductionText.Text = $"Maximum runtime reduction {settings.MaximumReductionDb:0.0} dB · user game level is unchanged";
+        ClipGuardReductionText.Text = $"Maximum runtime reduction {settings.MaximumReductionDb:0.0} dB · saved listening and game levels stay unchanged";
         ClipGuardLimitStatus.Text = _voicemeeterStripLimiter.Probe(_config.MusicStripIndex).Detail;
     }
 
@@ -3043,15 +3046,18 @@ public partial class MainWindow : Window, IMacroActionHandler
             LimiterEnabled = false
         };
         var testedFeed = station.ProviderId == "youtube" ? (object?)_youtubeGameFeed : _gameMpvProvider;
-        var baselineGain = GamePlayerGain(station);
-        if (baselineGain <= .005)
+        var testedListening = station.ProviderId == "youtube" ? (object?)_youtubeListeningRoute : _mpvProvider;
+        var baselineGain = EffectiveGamePathGain(station);
+        var baselineListeningGain = ListeningPlayerGain(station);
+        if (baselineGain <= .005 || baselineListeningGain <= .005 || _b1Audition is not null)
         {
-            ClipGuardLiveTestState.Text = "The game-music level is zero. Raise it before checking protection.";
+            ClipGuardLiveTestState.Text = "Play at a nonzero level and release the game-output check before testing protection.";
             return;
         }
         var baselineB1 = _outputHealth?.GameBus.PeakDbfs;
         var maxReduction = 0d;
-        var lowestCommandedGain = baselineGain;
+        var lowestGamePathGain = baselineGain;
+        var lowestListeningGain = baselineListeningGain;
         var trustedSamples = 0;
         var untrustedSamples = 0;
         var confirmedReduction = false;
@@ -3061,14 +3067,15 @@ public partial class MainWindow : Window, IMacroActionHandler
         ClipGuardLiveTestButton.IsEnabled = false;
         _clipGuardTestController.ResetRuntimeState();
         _clipGuardTestSettings = test;
-        ClipGuardLiveTestState.Text = "Testing Protect for four seconds with a temporary lower trigger. Saved levels and mixer routes stay unchanged.";
+        ClipGuardLiveTestState.Text = "Testing Protect for four seconds with a temporary lower trigger. Headphones and game music reduce together; saved levels and mixer routes stay unchanged.";
         try
         {
             for (var sample = 0; sample < 40 && !_closingInProgress; sample++)
             {
                 await Task.Delay(100);
                 if (!ReferenceEquals(_active, station) ||
-                    !ReferenceEquals(testedFeed, station.ProviderId == "youtube" ? _youtubeGameFeed : _gameMpvProvider))
+                    !ReferenceEquals(testedFeed, station.ProviderId == "youtube" ? _youtubeGameFeed : _gameMpvProvider) ||
+                    !ReferenceEquals(testedListening, station.ProviderId == "youtube" ? _youtubeListeningRoute : _mpvProvider))
                 {
                     feedChanged = true;
                     break;
@@ -3077,14 +3084,20 @@ public partial class MainWindow : Window, IMacroActionHandler
                 trustedSamples++;
                 if (_clipGuardTestHealth is not { } health) continue;
                 maxReduction = Math.Max(maxReduction, health.ProtectionReductionDb);
-                if (_lastAppliedGameGain is { } commanded &&
-                    ReferenceEquals(_lastAppliedGameGainFeed, testedFeed))
+                if (_lastAppliedGameGain is { } gameCommand &&
+                    ReferenceEquals(_lastAppliedGameGainFeed, testedFeed) &&
+                    _lastAppliedListeningGain is { } listeningCommand &&
+                    ReferenceEquals(_lastAppliedListeningGainFeed, testedListening))
                 {
-                    lowestCommandedGain = Math.Min(lowestCommandedGain, commanded);
+                    var effectiveGame = station.ProviderId == "youtube"
+                        ? gameCommand * listeningCommand : gameCommand;
+                    lowestGamePathGain = Math.Min(lowestGamePathGain, effectiveGame);
+                    lowestListeningGain = Math.Min(lowestListeningGain, listeningCommand);
                     confirmedReduction |= health.AutoProtectionAvailable &&
-                        health.ProtectionReductionDb >= .5 && commanded < baselineGain - .005;
+                        health.ProtectionReductionDb >= .5 &&
+                        effectiveGame < baselineGain - .005 && listeningCommand < baselineListeningGain - .005;
                 }
-                ClipGuardLiveTestState.Text = $"Testing · reduction {health.ProtectionReductionDb:0.0} dB · game feed commanded {lowestCommandedGain:P0} · B1 {DisplayLevel(health.GameBus.PeakDbfs)}";
+                ClipGuardLiveTestState.Text = $"Testing · reduction {health.ProtectionReductionDb:0.0} dB · headphones {lowestListeningGain:P0} · game path {lowestGamePathGain:P0} · B1 {DisplayLevel(health.GameBus.PeakDbfs)}";
             }
         }
         catch (Exception error) { testIssue = error.Message; }
@@ -3099,11 +3112,14 @@ public partial class MainWindow : Window, IMacroActionHandler
                     await Task.Delay(50);
                 if (_gameGainUpdateInFlight)
                     throw new TimeoutException("The previous game level update is still running.");
+                await ApplyActiveListeningGainAsync();
                 await ApplyActiveGameMusicGainAsync();
+                _lastAppliedListeningGainFeed = _active?.ProviderId == "youtube" ? _youtubeListeningRoute : _mpvProvider;
+                _lastAppliedListeningGain = _active is { } currentListening ? ListeningPlayerGain(currentListening) : null;
                 _lastAppliedGameGainFeed = _active?.ProviderId == "youtube" ? _youtubeGameFeed : _gameMpvProvider;
                 _lastAppliedGameGain = _active is { } current ? GamePlayerGain(current) : null;
             }
-            catch (Exception error) { restoreIssue = error.Message; _lastAppliedGameGain = null; }
+            catch (Exception error) { restoreIssue = error.Message; _lastAppliedGameGain = _lastAppliedListeningGain = null; }
             _clipGuardTestRestoring = false;
             ClipGuardLiveTestButton.IsEnabled = true;
             try { RefreshSignalMeters(); }
@@ -3111,19 +3127,19 @@ public partial class MainWindow : Window, IMacroActionHandler
         }
 
         ClipGuardLiveTestState.Text = restoreIssue is not null
-            ? "GAME LEVEL NEEDS ATTENTION · Could not verify restoration: " + restoreIssue
+            ? "PROTECTION LEVEL NEEDS ATTENTION · Could not verify restoration: " + restoreIssue
             : testIssue is not null
-                ? "Test stopped: " + testIssue + ". Normal game level was restored."
+                ? "Test stopped: " + testIssue + ". Normal levels were restored."
             : feedChanged
-                ? "Test stopped because the station or game feed changed. The current game level was restored."
+                ? "Test stopped because the station or game feed changed. Current levels were restored."
             : confirmedReduction
-                ? $"Protect {(station.ProviderId == "youtube" ? "set and read back the YouTube game stream" : "commanded the local game feed")} from {baselineGain:P0} down to {lowestCommandedGain:P0} (up to {maxReduction:0.0} dB). Normal level restored." +
+                ? $"Protect reduced headphones from {baselineListeningGain:P0} to {lowestListeningGain:P0} and the effective game path from {baselineGain:P0} to {lowestGamePathGain:P0} (up to {maxReduction:0.0} dB). Normal levels restored." +
                   $" This check used a temporary -18 dBFS trigger; your usual trigger is {normalCeiling:0.0} dBFS. B1 started at {DisplayLevel(baselineB1)}." +
                   (untrustedSamples > 0 ? $" B1 readings disagreed for {untrustedSamples} of {trustedSamples + untrustedSamples} checks; protection paused during those readings." : "") +
                   " Confirm the level change in your game separately."
             : trustedSamples == 0 || untrustedSamples > 0
-                ? $"Test inconclusive: B1 readings disagreed for {untrustedSamples} of {trustedSamples + untrustedSamples} checks, and no gain reduction was confirmed. Normal game level restored."
-                : $"No confirmed intervention. B1 started at {DisplayLevel(baselineB1)}; try a stronger part of the song. Normal level restored.";
+                ? $"Test inconclusive: B1 readings disagreed for {untrustedSamples} of {trustedSamples + untrustedSamples} checks, and no paired headphone/game reduction was confirmed. Normal levels restored."
+                : $"No confirmed intervention. B1 started at {DisplayLevel(baselineB1)}; try a stronger part of the song. Normal levels restored.";
     }
 
     void BroadcastLevelTest_Click(object sender, RoutedEventArgs e)
@@ -3169,13 +3185,26 @@ public partial class MainWindow : Window, IMacroActionHandler
         }
     }
 
-    double GamePlayerGain(Station? station, double? gameMasterOverride = null)
+    double ActiveProtectionGain()
     {
         var protection = _clipGuardTestHealth ?? _outputHealth;
-        return Math.Clamp(ClipGuardMath.EffectiveGameGain(
-            gameMasterOverride ?? _config.GameMasterVolume, station?.GameVolume ?? 1,
-            protection?.AutoProtectionAvailable == true ? protection.ProtectionGain : 1), 0, 1);
+        return protection?.AutoProtectionAvailable == true ? protection.ProtectionGain : 1;
     }
+
+    double ListeningPlayerGain(Station? station, double? listeningMasterOverride = null) => Math.Clamp(
+        ClipGuardMath.EffectiveListeningGain(listeningMasterOverride ?? _config.MasterVolume,
+            station?.Volume ?? 1, ActiveProtectionGain()), 0, 1);
+
+    double GamePlayerGain(Station? station, double? gameMasterOverride = null) => Math.Clamp(
+        ClipGuardMath.EffectiveGameGain(gameMasterOverride ?? _config.GameMasterVolume,
+            station?.GameVolume ?? 1,
+            // YouTube process loopback captures the already-adjusted listening
+            // session. Attenuating its copied stream again would double Protect.
+            station?.ProviderId == "youtube" && _youtubeListeningRoute.IsActive ? 1 : ActiveProtectionGain()), 0, 1);
+
+    double EffectiveGamePathGain(Station? station) => station?.ProviderId == "youtube" && _youtubeListeningRoute.IsActive
+        ? GamePlayerGain(station) * ListeningPlayerGain(station)
+        : GamePlayerGain(station);
 
     bool HasActiveGameMusicFeed() => _active?.ProviderId == "youtube"
         ? _youtubeGameFeed is not null
@@ -3193,42 +3222,85 @@ public partial class MainWindow : Window, IMacroActionHandler
             await _gameMpvProvider.SetVolumeAsync(GamePlayerGain(station), cancellationToken);
     }
 
+    async Task ApplyActiveListeningGainAsync(CancellationToken cancellationToken = default)
+    {
+        if (_active is not { } station) return;
+        if (station.ProviderId == "youtube")
+        {
+            if (_youtubeListeningRoute.IsActive) _youtubeListeningRoute.SetVolume(ListeningPlayerGain(station));
+            return;
+        }
+        if (_mpvProvider is not null && !ReferenceEquals(_b1AuditionMutedPlayer, _mpvProvider))
+            await _mpvProvider.SetVolumeAsync(ListeningPlayerGain(station), cancellationToken);
+    }
+
     void QueueClipGuardGainUpdate()
     {
         if (_clipGuardTestRestoring) return;
         if (_active is not { } station) return;
         object? feed = station.ProviderId == "youtube" ? _youtubeGameFeed : _gameMpvProvider;
-        if (feed is null)
-        {
-            _lastAppliedGameGainFeed = null;
-            _lastAppliedGameGain = null;
-            return;
-        }
-        var target = GamePlayerGain(station);
-        if (_gameGainUpdateInFlight || ReferenceEquals(feed, _lastAppliedGameGainFeed) &&
-            _lastAppliedGameGain is { } applied && Math.Abs(applied - target) < .005) return;
-        _ = ApplyClipGuardGainAsync(feed);
+        object? listeningFeed = station.ProviderId == "youtube"
+            ? _youtubeListeningRoute.IsActive ? _youtubeListeningRoute : null
+            : ReferenceEquals(_b1AuditionMutedPlayer, _mpvProvider) ? null : _mpvProvider;
+        if (feed is null) { _lastAppliedGameGainFeed = null; _lastAppliedGameGain = null; }
+        if (listeningFeed is null) { _lastAppliedListeningGainFeed = null; _lastAppliedListeningGain = null; }
+        var gameTarget = GamePlayerGain(station);
+        var listeningTarget = ListeningPlayerGain(station);
+        var gameCurrent = feed is null || ReferenceEquals(feed, _lastAppliedGameGainFeed) &&
+            _lastAppliedGameGain is { } gameApplied && Math.Abs(gameApplied - gameTarget) < .005;
+        var listeningCurrent = listeningFeed is null || ReferenceEquals(listeningFeed, _lastAppliedListeningGainFeed) &&
+            _lastAppliedListeningGain is { } listeningApplied && Math.Abs(listeningApplied - listeningTarget) < .005;
+        if (_gameGainUpdateInFlight || gameCurrent && listeningCurrent) return;
+        _ = ApplyClipGuardGainAsync(feed, listeningFeed);
     }
 
-    async Task ApplyClipGuardGainAsync(object feed)
+    async Task ApplyClipGuardGainAsync(object? feed, object? listeningFeed)
     {
         _gameGainUpdateInFlight = true;
         try
         {
             if (_active is not { } station) return;
-            var target = GamePlayerGain(station);
-            if (station.ProviderId == "youtube" && ReferenceEquals(feed, _youtubeGameFeed) &&
-                feed is YouTubeGameFeed youtube) youtube.SetVolume(target);
-            else if (ReferenceEquals(feed, _gameMpvProvider) && feed is MpvProvider local)
-                await local.SetVolumeAsync(target);
-            else return;
-            _lastAppliedGameGainFeed = feed;
-            _lastAppliedGameGain = target;
+            var listeningTarget = ListeningPlayerGain(station);
+            var changeListening = listeningFeed is not null &&
+                (!ReferenceEquals(listeningFeed, _lastAppliedListeningGainFeed) ||
+                 _lastAppliedListeningGain is not { } appliedListening || Math.Abs(appliedListening - listeningTarget) >= .005);
+            if (changeListening)
+            {
+                if (station.ProviderId == "youtube" && ReferenceEquals(listeningFeed, _youtubeListeningRoute))
+                    _youtubeListeningRoute.SetVolume(listeningTarget);
+                else if (ReferenceEquals(listeningFeed, _mpvProvider) && listeningFeed is MpvProvider headset)
+                    await headset.SetVolumeAsync(listeningTarget);
+                else return;
+            }
+            if (!ReferenceEquals(_active, station)) return;
+            if (listeningFeed is not null)
+            {
+                _lastAppliedListeningGainFeed = listeningFeed;
+                _lastAppliedListeningGain = listeningTarget;
+            }
+            var gameTarget = GamePlayerGain(station);
+            var changeGame = feed is not null &&
+                (!ReferenceEquals(feed, _lastAppliedGameGainFeed) ||
+                 _lastAppliedGameGain is not { } appliedGame || Math.Abs(appliedGame - gameTarget) >= .005);
+            if (changeGame)
+            {
+                if (station.ProviderId == "youtube" && ReferenceEquals(feed, _youtubeGameFeed) &&
+                    feed is YouTubeGameFeed youtube) youtube.SetVolume(gameTarget);
+                else if (ReferenceEquals(feed, _gameMpvProvider) && feed is MpvProvider local)
+                    await local.SetVolumeAsync(gameTarget);
+                else return;
+            }
+            if (feed is not null)
+            {
+                _lastAppliedGameGainFeed = feed;
+                _lastAppliedGameGain = gameTarget;
+            }
         }
         catch (Exception error)
         {
             _lastAppliedGameGain = null;
-            ClipGuardRuntimeText.Text = "GAME FEED LEVEL NEEDS ATTENTION · " + error.Message;
+            _lastAppliedListeningGain = null;
+            ClipGuardRuntimeText.Text = "PROTECTION LEVEL NEEDS ATTENTION · " + error.Message;
         }
         finally { _gameGainUpdateInFlight = false; }
     }
@@ -3244,18 +3316,18 @@ public partial class MainWindow : Window, IMacroActionHandler
             $"CLIP GUARD · {_config.ClipGuard.Mode.ToString().ToUpperInvariant()}" :
             _outputTelemetry.Confidence == OutputTelemetryConfidence.Conflicting ? "OUTPUT TELEMETRY MISMATCH" : "PROTECTION MONITORING NEEDS VERIFICATION";
         ClipGuardDashboardDetail.Text = !telemetryVerified ? _outputTelemetry.Detail :
-            $"B1 {gamePeak}{headroom} · {(protecting ? $"reducing game music by {health.ProtectionReductionDb:0.0} dB" : health.AutoProtectionAvailable ? "no reduction needed" : health.Diagnosis)}";
+            $"B1 {gamePeak}{headroom} · {(protecting ? $"reducing listening and game music by {health.ProtectionReductionDb:0.0} dB" : health.AutoProtectionAvailable ? "no reduction needed" : health.Diagnosis)}";
         ClipGuardStateText.Text = telemetryVerified ? $"{health.State.ToString().ToUpperInvariant()} · B1 {gamePeak} · peak hold {(health.GamePeakHoldDbfs is { } hold && !double.IsNegativeInfinity(hold) ? hold.ToString("0.0") + " dBFS" : "—")}" :
             $"{_outputTelemetry.Confidence.ToString().ToUpperInvariant()} · automatic protection paused";
         ClipGuardRuntimeText.Text = health.AutoProtectionAvailable
-            ? protecting ? $"PROTECTION ACTIVE · Reducing only game music by {health.ProtectionReductionDb:0.0} dB. Listening and microphone levels stay unchanged."
+            ? protecting ? $"PROTECTION ACTIVE · Reducing headphone and game music by {health.ProtectionReductionDb:0.0} dB. Microphone level stays unchanged."
                 : "ARMED · Trusted game voice telemetry is available. No reduction needed."
             : _config.ClipGuard.Mode == ClipGuardMode.Off ? "OFF · Automatic game-music reduction is disabled."
             : _config.ClipGuard.Mode == ClipGuardMode.Monitor ? "MONITOR · Showing peaks and events without changing game-music gain."
             : "PROTECTION PAUSED · " + _outputTelemetry.Detail;
         if (_clipGuardTestHealth is { } testHealth)
             ClipGuardRuntimeText.Text = testHealth.AutoProtectionAvailable
-                ? $"LIVE CHECK · Temporarily reducing game music by {testHealth.ProtectionReductionDb:0.0} dB. WARDOGS does not change headphone gain."
+                ? $"LIVE CHECK · Temporarily reducing headphone and game music by {testHealth.ProtectionReductionDb:0.0} dB."
                 : "LIVE CHECK · Protection paused while B1 readings disagree.";
         OutputMusicMeter.Value = Math.Clamp(VoicemeeterSignalMonitor.BarValue(new SignalLevel(health.Music.Available, (float)health.Music.LinearPeak)), 0, 100);
         OutputMicrophoneMeter.Value = Math.Clamp(VoicemeeterSignalMonitor.BarValue(new SignalLevel(health.Microphone.Available, (float)health.Microphone.LinearPeak)), 0, 100);
@@ -3274,7 +3346,7 @@ public partial class MainWindow : Window, IMacroActionHandler
             ? DescribeLevel("Game mix / B1", health.GameBus, health.GamePeakHoldDbfs) + protectionHeadroom + $" · {health.State.ToString().ToUpperInvariant()}"
             : "Game mix / B1: protection telemetry needs verification · " + _outputTelemetry.Detail;
         OutputHealthDiagnosis.Text = telemetryVerified ? health.Diagnosis : _outputTelemetry.Detail;
-        OutputProtectionDetails.Text = $"Requested game music: {_config.GameMasterVolume:P0} × {(_active?.GameVolume ?? 1):P0} · reduction {(_clipGuardTestHealth?.ProtectionReductionDb ?? health.ProtectionReductionDb):0.0} dB · effective {GamePlayerGain(_active ?? new Station { GameVolume = 1 }):P0}\nSession peak: {DisplayLevel(health.SessionPeakDbfs)} · near clips {health.NearClipEvents} · clips {health.ClipEvents}";
+        OutputProtectionDetails.Text = $"Requested game music: {_config.GameMasterVolume:P0} × {(_active?.GameVolume ?? 1):P0} · reduction {(_clipGuardTestHealth?.ProtectionReductionDb ?? health.ProtectionReductionDb):0.0} dB · effective game path {EffectiveGamePathGain(_active ?? new Station { GameVolume = 1 }):P0} · listening {ListeningPlayerGain(_active):P0}\nSession peak: {DisplayLevel(health.SessionPeakDbfs)} · near clips {health.NearClipEvents} · clips {health.ClipEvents}";
         var latest = health.RecentEvents.LastOrDefault();
         if (latest is not null && latest.Timestamp != _lastOutputEventAt)
         {
@@ -3375,6 +3447,7 @@ public partial class MainWindow : Window, IMacroActionHandler
         var gameEndpointAvailable = _gameBusEndpointPeakMeter.TryRead(_gameOutputEndpointId, out var gameEndpointPeak);
         var gameEndpoint = new SignalLevel(gameEndpointAvailable, gameEndpointPeak);
         _outputTelemetry = OutputTelemetryAssessor.Assess(game.Available, game.Peak, gameEndpoint.Available, gameEndpoint.Peak);
+        _outputTelemetryReadiness.Observe(_outputTelemetry.Confidence, DateTimeOffset.UtcNow);
         // Full raw scans query 160 Remote API levels. They are repair evidence
         // for the Diagnostics page, not a permanent normal-playback workload.
         if (status.Connected && DiagnosticsView.Visibility == Visibility.Visible && DateTime.UtcNow >= _nextMeterForensicsCapture)
@@ -4739,7 +4812,7 @@ public partial class MainWindow : Window, IMacroActionHandler
         }
         try
         {
-            await provider.SetVolumeAsync(e.NewValue * station.Volume);
+            await provider.SetVolumeAsync(ListeningPlayerGain(station, e.NewValue));
             var reported = await provider.ReadVolumeAsync();
             var muted = await provider.ReadMuteAsync();
             Footer.Text = $"HEADSET MASTER · {Math.Round(e.NewValue * 100):0}% · Engine {Math.Round(reported * 100):0}%{(muted ? " · MUTED" : "")}";
@@ -5149,8 +5222,10 @@ public partial class MainWindow : Window, IMacroActionHandler
                 SetB1AuditionUi(false, "Opening the game output check… keep holding the button.");
                 if (_active?.ProviderId == "mpv" && _mpvProvider is { } player)
                 {
-                    await player.SetVolumeAsync(0);
                     _b1AuditionMutedPlayer = player;
+                    for (var attempt = 0; _gameGainUpdateInFlight && attempt < 100; attempt++)
+                        await Task.Delay(20);
+                    await player.SetVolumeAsync(0);
                 }
                 if (!B1HoldRequested) { await StopB1AuditionCoreAsync("Game output check stopped."); return; }
                 var audition = new B1Audition();
@@ -5247,7 +5322,7 @@ public partial class MainWindow : Window, IMacroActionHandler
         _b1AuditionMutedPlayer = null;
         if (mutedPlayer is not null && mutedPlayer == _mpvProvider && _active is { ProviderId: "mpv" } station)
         {
-            try { await mutedPlayer.SetVolumeAsync(_config.MasterVolume * station.Volume); }
+            try { await mutedPlayer.SetVolumeAsync(ListeningPlayerGain(station)); }
             catch (Exception error) { message += " Headset music level could not be restored: " + error.Message; }
         }
         SetB1AuditionUi(false, message);

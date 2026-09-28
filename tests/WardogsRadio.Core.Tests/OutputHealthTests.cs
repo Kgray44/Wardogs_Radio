@@ -181,6 +181,19 @@ public sealed class OutputHealthTests
     }
 
     [Fact]
+    public void SharedYoutubeSessionReductionReachesHeadphonesAndGameOnce()
+    {
+        var protection = Math.Pow(10, -6d / 20d);
+        var listeningSession = ClipGuardMath.EffectiveListeningGain(1, 1, protection);
+        var youtubeGameStream = ClipGuardMath.EffectiveGameGain(.5, 1, 1);
+        var localGameStream = ClipGuardMath.EffectiveGameGain(.5, 1, protection);
+
+        Assert.InRange(listeningSession, .50, .502);
+        Assert.InRange(youtubeGameStream * listeningSession, .25, .252);
+        Assert.Equal(localGameStream, youtubeGameStream * listeningSession, 6);
+    }
+
+    [Fact]
     public void OffAndMonitorModesContinueMeteringButNeverReduceGain()
     {
         foreach (var mode in new[] { ClipGuardMode.Off, ClipGuardMode.Monitor })

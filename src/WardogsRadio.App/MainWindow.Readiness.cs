@@ -213,7 +213,7 @@ public partial class MainWindow
             MixerBusObserved = _sawGameSignal,
             WindowsBusObserved = _sawGameEndpointSignal,
             GameReceiveConfirmed = SetupGameHeard.IsChecked == true,
-            TelemetryConflict = _outputTelemetry.Confidence == OutputTelemetryConfidence.Conflicting,
+            TelemetryConflict = _outputTelemetryReadiness.HasSustainedConflict,
             ControllerCount = _controllers.Enumerate().Count(),
             YoutubeAvailable = _youtubeReady,
             BrokenLibraryReferences = broken,

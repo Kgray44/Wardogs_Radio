@@ -35,3 +35,28 @@ public static class OutputTelemetryAssessor
                 "Remote API B1 and Windows Voicemeeter Out B1 both show quiet output.");
     }
 }
+
+/// <summary>
+/// The protection controller uses each raw assessment immediately. Overall readiness
+/// waits for a continuing disagreement so one unsynchronized meter frame does not
+/// turn the entire setup amber for the next two-second UI refresh.
+/// </summary>
+public sealed class OutputTelemetryReadinessTracker
+{
+    static readonly TimeSpan ConflictDelay = TimeSpan.FromMilliseconds(300);
+    DateTimeOffset? _conflictSince;
+
+    public bool HasSustainedConflict { get; private set; }
+
+    public void Observe(OutputTelemetryConfidence confidence, DateTimeOffset now)
+    {
+        if (confidence != OutputTelemetryConfidence.Conflicting)
+        {
+            _conflictSince = null;
+            HasSustainedConflict = false;
+            return;
+        }
+        _conflictSince ??= now;
+        HasSustainedConflict = now - _conflictSince.Value >= ConflictDelay;
+    }
+}

@@ -79,6 +79,9 @@ public readonly record struct AudioLevelSnapshot(bool Available, double LinearPe
 /// <summary>Composition boundary between saved user gain and transient guard gain.</summary>
 public static class ClipGuardMath
 {
+    public static double EffectiveListeningGain(double listeningMaster, double stationListening, double protectionGain) =>
+        EffectiveGameGain(listeningMaster, stationListening, protectionGain);
+
     public static double EffectiveGameGain(double gameMaster, double stationGame, double protectionGain)
     {
         var requested = double.IsFinite(gameMaster) && double.IsFinite(stationGame) ? Math.Max(0, gameMaster) * Math.Max(0, stationGame) : 0;
@@ -283,10 +286,10 @@ public sealed class ClipGuardController
             if (prior <= .05 && _reductionDb > .05)
             {
                 _protectionInterventions++;
-                AddEvent(now, OutputHealthEventKind.ProtectionEngaged, $"Attenuating game music by {_reductionDb:0.0} dB.");
+                AddEvent(now, OutputHealthEventKind.ProtectionEngaged, $"Attenuating listening and game music by {_reductionDb:0.0} dB.");
             }
             else if (_reductionDb - prior >= .25)
-                AddEvent(now, OutputHealthEventKind.ProtectionAdjusted, $"Game music protection is {_reductionDb:0.0} dB.");
+                AddEvent(now, OutputHealthEventKind.ProtectionAdjusted, $"Music protection is {_reductionDb:0.0} dB.");
             return;
         }
 
@@ -296,7 +299,7 @@ public sealed class ClipGuardController
         var priorReduction = _reductionDb;
         _reductionDb = Math.Max(0, _reductionDb - settings.RecoveryDbPerSecond * elapsedSeconds);
         if (priorReduction > .05 && _reductionDb <= .05)
-            AddEvent(now, OutputHealthEventKind.ProtectionReleased, "Game music protection returned to neutral.");
+            AddEvent(now, OutputHealthEventKind.ProtectionReleased, "Music protection returned to neutral.");
     }
 
     void TrackPeak(ref double? held, ref DateTimeOffset? heldAt, double? incoming, DateTimeOffset now,
@@ -326,7 +329,7 @@ public sealed class ClipGuardController
     {
         if (!game.Available) return "Game-bus metering is unavailable; automatic protection is paused.";
         if (state is OutputHealthState.Safe or OutputHealthState.Healthy) return "Game mix has usable headroom.";
-        if (state == OutputHealthState.Protected) return "Clip Guard is reducing game music before the final broadcast mix.";
+        if (state == OutputHealthState.Protected) return "Clip Guard is reducing listening and game music.";
         var musicDb = music.PeakDbfs;
         var microphoneDb = microphone.PeakDbfs;
         if (musicDb is { } musicPeak && microphoneDb is { } micPeak && game.PeakDbfs is { } gamePeak &&
