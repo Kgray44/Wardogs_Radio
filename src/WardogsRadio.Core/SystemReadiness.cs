@@ -12,6 +12,8 @@ public sealed record ReadinessCheck(string Id, ReadinessCategory Category, Readi
 public sealed record SystemReadinessSnapshot(OverallReadiness Overall, IReadOnlyList<ReadinessCheck> Checks,
     DateTimeOffset CheckedAt)
 {
+    public bool MicrophonePresent { get; init; }
+    public bool ListeningOutputPresent { get; init; }
     public ReadinessCheck? FirstAction => Checks.FirstOrDefault(check => check.BlocksCoreReadiness &&
         check.Severity is ReadinessSeverity.Error or ReadinessSeverity.Unavailable or ReadinessSeverity.NeedsAction or ReadinessSeverity.Warning or ReadinessSeverity.NotTested);
     public int CorePassed => Checks.Count(check => check.BlocksCoreReadiness && check.Severity == ReadinessSeverity.Ready);
@@ -164,6 +166,10 @@ public static class SystemReadinessService
         var overall = !evidence.VoicemeeterInstalled ? OverallReadiness.Unavailable :
             core.Any(check => check.Severity is ReadinessSeverity.Error or ReadinessSeverity.NeedsAction or ReadinessSeverity.Warning or ReadinessSeverity.Unavailable) ? OverallReadiness.NeedsAttention :
             core.Any(check => check.Severity == ReadinessSeverity.NotTested) ? OverallReadiness.NeedsVerification : OverallReadiness.Ready;
-        return new(overall, checks, checkedAt ?? DateTimeOffset.Now);
+        return new(overall, checks, checkedAt ?? DateTimeOffset.Now)
+        {
+            MicrophonePresent = evidence.MicrophonePresent,
+            ListeningOutputPresent = evidence.HeadphonesPresent
+        };
     }
 }

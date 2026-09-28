@@ -129,4 +129,28 @@ public sealed class SystemReadinessTests
         Assert.Equal(quiet.LiveVerificationPassed + 1, observed.LiveVerificationPassed);
         Assert.Equal(ReadinessSeverity.Ready, observed.Checks.Single(check => check.Id == "microphone-observation").Severity);
     }
+
+    [Fact]
+    public void UnpluggedSelectedDevicesHaveIndependentWarningsAndBlockReady()
+    {
+        var bothMissing = SystemReadinessService.Evaluate(Config(), Evidence() with
+        {
+            MicrophonePresent = false, HeadphonesPresent = false
+        });
+        Assert.Equal(OverallReadiness.NeedsAttention, bothMissing.Overall);
+        Assert.False(bothMissing.MicrophonePresent);
+        Assert.False(bothMissing.ListeningOutputPresent);
+        Assert.Equal(ReadinessSeverity.NeedsAction, bothMissing.Checks.Single(check => check.Id == "microphone").Severity);
+        Assert.Equal(ReadinessSeverity.NeedsAction, bothMissing.Checks.Single(check => check.Id == "listening").Severity);
+
+        var microphoneReturned = SystemReadinessService.Evaluate(Config(), Evidence() with { HeadphonesPresent = false });
+        Assert.True(microphoneReturned.MicrophonePresent);
+        Assert.False(microphoneReturned.ListeningOutputPresent);
+        Assert.Equal(OverallReadiness.NeedsAttention, microphoneReturned.Overall);
+
+        var bothReturned = SystemReadinessService.Evaluate(Config(), Evidence());
+        Assert.True(bothReturned.MicrophonePresent);
+        Assert.True(bothReturned.ListeningOutputPresent);
+        Assert.Equal(OverallReadiness.Ready, bothReturned.Overall);
+    }
 }
