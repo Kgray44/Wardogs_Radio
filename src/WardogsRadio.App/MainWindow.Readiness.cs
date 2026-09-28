@@ -1,5 +1,7 @@
 using System.IO;
 using System.Windows;
+using System.Windows.Controls;
+using System.Windows.Media.Animation;
 using WardogsRadio.Core;
 using WardogsRadio.Playback;
 using WardogsRadio.Voicemeeter;
@@ -236,10 +238,39 @@ public partial class MainWindow
         var quietMicrophone = snapshot.Checks.FirstOrDefault(check => check.Id == "microphone-observation" &&
             check.Severity == ReadinessSeverity.Info)?.Summary;
         HealthText.ToolTip = snapshot.FirstAction?.Summary ?? quietMicrophone ?? "Core audio path is ready.";
-        RouteStatus.Text = snapshot.Checks.First(check => check.Id == "game-output").Severity == ReadinessSeverity.Ready
+        RouteStatus.Text = snapshot.Overall == OverallReadiness.Ready
             ? "GAME VOICE: READY" : "GAME VOICE: " + label;
+        RouteStatus.ToolTip = snapshot.FirstAction?.Summary ?? "Core audio path is ready.";
         VmStatus.Text = snapshot.Checks.First(check => check.Id == "voicemeeter").Severity == ReadinessSeverity.Ready
             ? "AUDIO BRIDGE: READY" : "AUDIO BRIDGE: " + label;
+        SetMissingDeviceAlert(MissingMicrophoneAlert, !snapshot.MicrophonePresent,
+            string.IsNullOrWhiteSpace(_config.MicrophoneDeviceId)
+                ? "⚠ MICROPHONE NOT SELECTED · FIX" : "⚠ MICROPHONE DISCONNECTED · FIX");
+        SetMissingDeviceAlert(MissingListeningAlert, !snapshot.ListeningOutputPresent,
+            string.IsNullOrWhiteSpace(_config.MonitorDeviceId)
+                ? "⚠ LISTENING OUTPUT NOT SELECTED · FIX" : "⚠ LISTENING OUTPUT DISCONNECTED · FIX");
         OperationalStatus.Text = snapshot.FirstAction?.Summary ?? quietMicrophone ?? "Core audio path is ready.";
     }
+
+    static void SetMissingDeviceAlert(Button alert, bool missing, string label)
+    {
+        if (!missing)
+        {
+            alert.BeginAnimation(UIElement.OpacityProperty, null);
+            alert.Opacity = 1;
+            alert.Visibility = Visibility.Collapsed;
+            return;
+        }
+        alert.Content = label;
+        if (alert.Visibility == Visibility.Visible) return;
+        alert.Visibility = Visibility.Visible;
+        if (SystemParameters.ClientAreaAnimation)
+            alert.BeginAnimation(UIElement.OpacityProperty, new DoubleAnimation(.68, 1, TimeSpan.FromSeconds(1.2))
+            {
+                AutoReverse = true,
+                RepeatBehavior = RepeatBehavior.Forever
+            });
+    }
+
+    void MissingDeviceAlert_Click(object sender, RoutedEventArgs e) => Setup_Click(sender, e);
 }
