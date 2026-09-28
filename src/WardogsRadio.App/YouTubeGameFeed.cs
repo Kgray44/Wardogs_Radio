@@ -28,9 +28,19 @@ internal sealed class YouTubeGameFeed : IAsyncDisposable
     public string? OutputEndpointId => _renderDevice?.ID;
     public string? OutputEndpointName => _renderDevice?.FriendlyName;
     public double RequestedGain { get; private set; }
-    // WasapiOut writes the requested shared-mode stream gain directly; retain this
-    // separately so diagnostics never imply that the Windows endpoint itself was metered.
-    public double EffectiveGain => RequestedGain;
+
+    // Read the shared-mode stream gain back from WASAPI. This confirms the player
+    // accepted our write; the independent B1 meter observes downstream signal.
+    public double? ReadStreamGain()
+    {
+        if (_output is null) return null;
+        try
+        {
+            var levels = _output.AudioStreamVolume.GetAllVolumes();
+            return levels.Length > 0 && levels.All(float.IsFinite) ? levels.Average() : null;
+        }
+        catch { return null; }
+    }
 
     public static async Task<YouTubeGameFeed> StartAsync(uint browserProcessId, string outputName, double gain)
     {
@@ -104,10 +114,23 @@ internal sealed class YouTubeGameFeed : IAsyncDisposable
 
     public void SetVolume(double gain)
     {
-        RequestedGain = Math.Clamp(gain, 0, 1);
-        if (_output is null) return;
+        var target = Math.Clamp(gain, 0, 1);
+        if (_output is null) { RequestedGain = target; return; }
         var volume = _output.AudioStreamVolume;
-        volume.SetAllVolumes(Enumerable.Repeat((float)RequestedGain, volume.ChannelCount).ToArray());
+        var prior = volume.GetAllVolumes();
+        try
+        {
+            volume.SetAllVolumes(Enumerable.Repeat((float)target, volume.ChannelCount).ToArray());
+            var applied = volume.GetAllVolumes();
+            if (applied.Length != volume.ChannelCount || applied.Any(level => !float.IsFinite(level) || Math.Abs(level - target) > .02))
+                throw new InvalidOperationException("The YouTube game stream did not read back the requested level.");
+            RequestedGain = target;
+        }
+        catch
+        {
+            try { volume.SetAllVolumes(prior); } catch { /* Report the failed readback to the caller. */ }
+            throw;
+        }
     }
 
     public async ValueTask DisposeAsync()

@@ -3026,6 +3026,7 @@ public partial class MainWindow : Window, IMacroActionHandler
         }
 
         var normal = _config.ClipGuard;
+        var normalCeiling = normal.SafetyCeilingDbfs;
         var test = new ClipGuardSettings
         {
             Mode = ClipGuardMode.Protect,
@@ -3116,7 +3117,8 @@ public partial class MainWindow : Window, IMacroActionHandler
             : feedChanged
                 ? "Test stopped because the station or game feed changed. The current game level was restored."
             : confirmedReduction
-                ? $"Protect commanded the game feed from {baselineGain:P0} down to {lowestCommandedGain:P0} (up to {maxReduction:0.0} dB). Normal level restored." +
+                ? $"Protect {(station.ProviderId == "youtube" ? "set and read back the YouTube game stream" : "commanded the local game feed")} from {baselineGain:P0} down to {lowestCommandedGain:P0} (up to {maxReduction:0.0} dB). Normal level restored." +
+                  $" This check used a temporary -18 dBFS trigger; your usual trigger is {normalCeiling:0.0} dBFS. B1 started at {DisplayLevel(baselineB1)}." +
                   (untrustedSamples > 0 ? $" B1 readings disagreed for {untrustedSamples} of {trustedSamples + untrustedSamples} checks; protection paused during those readings." : "") +
                   " Confirm the level change in your game separately."
             : trustedSamples == 0 || untrustedSamples > 0
@@ -4879,11 +4881,12 @@ public partial class MainWindow : Window, IMacroActionHandler
         var selected = _config.MusicStripIndex is { } selectedIndex ? report.Strip(selectedIndex) : null;
         var b1 = report.Bus("B1");
         var feed = _youtubeGameFeed;
+        var streamGain = feed?.ReadStreamGain();
         var metadata = $"edition={vm.Edition ?? "unknown"}; MusicStripIndex={_config.MusicStripIndex?.ToString() ?? "none"}; " +
             $"MicrophoneStripIndex={_config.MicrophoneStripIndex?.ToString() ?? "none"}; GameBus={_config.GameBus}; " +
             $"GameMpvAudioDeviceName={_config.GameMpvAudioDeviceName ?? "off"}; MpvAudioDeviceName={_config.MpvAudioDeviceName ?? "default"}\n" +
             $"YouTube feed endpoint={feed?.OutputEndpointName ?? "none"} ({feed?.OutputEndpointId ?? "—"}); capturedPeak={feed?.CapturedPeak.ToString("0.000000") ?? "—"}; " +
-            $"recent={feed?.HasRecentSignal.ToString() ?? "false"}; requested/effective gain={feed?.RequestedGain.ToString("0.000") ?? "—"}/{feed?.EffectiveGain.ToString("0.000") ?? "—"}\n" +
+            $"recent={feed?.HasRecentSignal.ToString() ?? "false"}; requested/stream-readback gain={feed?.RequestedGain.ToString("0.000") ?? "—"}/{(streamGain is { } gain ? gain.ToString("0.000") : "—")}\n" +
             $"selected strip A1={RouteState(_config.MusicStripIndex, "A1")}; B1={RouteState(_config.MusicStripIndex, "B1")}; selected raw: {RawPeak(selected)}\n" +
             $"Remote API B1: {RawPeak(b1)}; Windows Voicemeeter Out {_config.GameBus}: linear={windowsB1Peak:0.000000}; " +
             $"available={windowsB1Available}; headset Windows peak={(_headsetPeakMeter.TryRead(_config.MonitorDeviceId, out var headsetPeak) ? headsetPeak.ToString("0.000000") : "unavailable")}\n" +
