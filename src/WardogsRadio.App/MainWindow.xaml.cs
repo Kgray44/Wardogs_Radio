@@ -836,7 +836,11 @@ public partial class MainWindow : Window, IMacroActionHandler
         await _youtubeListeningGate.WaitAsync();
         try
         {
-            if (_youtubeListeningRoute.IsActive) return true;
+            if (_youtubeListeningRoute.IsActive)
+            {
+                if (AudioDeviceIdentity.SameEndpoint(_youtubeListeningRoute.CurrentEndpointId, _config.MonitorDeviceId)) return true;
+                throw new InvalidOperationException("The YouTube player is still attached to a different listening output.");
+            }
             var endpoint = _config.MonitorDeviceId;
             if (string.IsNullOrWhiteSpace(endpoint))
                 throw new InvalidOperationException("Choose your headphones or speakers in Audio & Routing.");
@@ -1499,7 +1503,7 @@ public partial class MainWindow : Window, IMacroActionHandler
             outgoingGain = await outgoing.ReadVolumeAsync(token);
             if (outgoingGame is not null) outgoingGameGain = await outgoingGame.ReadVolumeAsync(token);
             if (station.Shuffle && station.ShuffleSeed is null) station.ShuffleSeed = Random.Shared.Next();
-            incoming = new MpvProvider(new MpvLocator(), _config.MpvPath, _config.MpvAudioDeviceName, LocalHeadsetLoudnessCalibrationDb);
+            incoming = new MpvProvider(new MpvLocator(), _config.MpvPath, RequireListeningPlayerDevice(), LocalHeadsetLoudnessCalibrationDb);
             await incoming.LoadAsync(station, token);
             await incoming.SetVolumeAsync(0, token);
             if (!await RestoreMpvPositionAsync(station, incoming))
@@ -1782,7 +1786,7 @@ public partial class MainWindow : Window, IMacroActionHandler
                 station.PlaylistFiles = station.PlaylistSongs.Select(song => song.Source).ToList();
                 station.Source = station.PlaylistFiles[0];
             }
-            _mpvProvider = new MpvProvider(new MpvLocator(), _config.MpvPath, _config.MpvAudioDeviceName, LocalHeadsetLoudnessCalibrationDb);
+            _mpvProvider = new MpvProvider(new MpvLocator(), _config.MpvPath, RequireListeningPlayerDevice(), LocalHeadsetLoudnessCalibrationDb);
             _localStartupForensics?.RecordHeadsetSetup(_config.MpvAudioDeviceName, ListeningPlayerGain(station));
             await _mpvProvider.LoadAsync(station);
             _localStartupForensics?.Mark("MPV process started / media loaded");
@@ -2957,7 +2961,10 @@ public partial class MainWindow : Window, IMacroActionHandler
 
     bool HeadsetPlayerTargetsSelectedOutput()
     {
-        return AudioDeviceIdentity.SameEndpoint(_config.MonitorDeviceId, _config.MpvAudioDeviceName);
+        return ConfiguredListeningEndpoint() is { IsPresent: true } && _listeningResolution?.Resolved == true &&
+            _listeningConnectionError is null &&
+            _listeningResolution.Device?.Name == _config.MpvAudioDeviceName &&
+            _config.MpvAudioDeviceEndpointId == _config.MonitorDeviceId;
     }
 
     void LoadClipGuardControls()
@@ -3570,7 +3577,8 @@ public partial class MainWindow : Window, IMacroActionHandler
             AudioGraphRadioState.Text = _active is { Runtime.WasPlaying: true } playing ? playing.Name : "No station playing";
             AudioGraphGameState.Text = _gameOutputEndpointName is null ? "Game voice output missing" :
                 gameEndpoint.Available && gameEndpoint.Peak > .005f ? "● Live signal" : "Connected · no sound observed yet";
-            if (!_listeningOutputChangeInProgress && DateTime.UtcNow >= _listeningOutputFeedbackUntil)
+            if (!_listeningOutputChangeInProgress && DateTime.UtcNow >= _listeningOutputFeedbackUntil &&
+                _listeningResolution?.Resolved == true && _listeningConnectionError is null)
                 AudioGraphListeningState.Text = _config.MonitorDeviceId is null ? "Choose headphones or speakers" :
                     monitor.Available && monitor.Peak > .005f ? "● Playing here" : "Selected · no sound observed yet";
             AudioListeningNodeText.Text = _active?.ProviderId == "youtube"
@@ -3941,6 +3949,11 @@ public partial class MainWindow : Window, IMacroActionHandler
             Footer.Text = "CHOOSE YOUR HEADPHONES ON STEP 4 FIRST.";
             return false;
         }
+        if (headset.Id != _config.MonitorDeviceId || !headset.IsPresent)
+        {
+            Footer.Text = "SELECT A CONNECTED LISTENING OUTPUT BEFORE CONNECTING GAME MUSIC.";
+            return false;
+        }
         const int auxStrip = 4;
         if (_config.AutoMusicRouteStrip is { } savedStrip && savedStrip != auxStrip)
         {
@@ -3948,7 +3961,9 @@ public partial class MainWindow : Window, IMacroActionHandler
             return false;
         }
         var devices = (GameMpvOutputBox.ItemsSource as IEnumerable<MpvAudioDevice>)?.ToList() ?? [];
-        var headsetDevice = devices.FirstOrDefault(x => AudioDeviceIdentity.SameEndpoint(headset.Id, x.Name));
+        var headsetDevice = ListeningOutputResolver.Resolve(headset,
+            (MonitorBox.ItemsSource as IEnumerable<WindowsAudioEndpoint>)?.ToArray() ?? [], devices,
+            _config.MpvAudioDeviceName, headset.Id == _config.MpvAudioDeviceEndpointId).Device;
         var gameDevice = devices.FirstOrDefault(x => x.Description.Contains("Voicemeeter AUX Input", StringComparison.OrdinalIgnoreCase));
         if (headsetDevice is null || gameDevice is null || headsetDevice.Name == gameDevice.Name)
         {
@@ -3978,6 +3993,7 @@ public partial class MainWindow : Window, IMacroActionHandler
             return false;
         }
         var formerHeadset = _config.MpvAudioDeviceName;
+        var formerHeadsetEndpoint = _config.MpvAudioDeviceEndpointId;
         var formerGame = _config.GameMpvAudioDeviceName;
         var formerStrip = _config.MusicStripIndex;
         var formerAutoStrip = _config.AutoMusicRouteStrip;
@@ -4009,6 +4025,7 @@ public partial class MainWindow : Window, IMacroActionHandler
                 _config.AutoMusicPreviousStripIndex = formerStrip;
             }
             _config.MpvAudioDeviceName = headsetDevice.Name;
+            _config.MpvAudioDeviceEndpointId = headset.Id;
             _config.GameMpvAudioDeviceName = gameDevice.Name;
             _config.MusicStripIndex = auxStrip;
             InvalidateSignalVerification();
@@ -4053,6 +4070,7 @@ public partial class MainWindow : Window, IMacroActionHandler
                 if (restored != AudioLeaseReleaseState.Restored) restoreErrors.Add($"{lease.Resource}: {restored}");
             }
             _config.MpvAudioDeviceName = formerHeadset;
+            _config.MpvAudioDeviceEndpointId = formerHeadsetEndpoint;
             _config.GameMpvAudioDeviceName = formerGame;
             _config.MusicStripIndex = formerStrip;
             _config.AutoMusicRouteStrip = formerAutoStrip;
@@ -4170,6 +4188,7 @@ public partial class MainWindow : Window, IMacroActionHandler
                 return false;
             }
             _config.MpvAudioDeviceName = _config.AutoMusicPreviousHeadsetDeviceName;
+            _config.MpvAudioDeviceEndpointId = null;
             _config.GameMpvAudioDeviceName = _config.AutoMusicPreviousGameDeviceName;
             _config.MusicStripIndex = _config.AutoMusicPreviousStripIndex;
             if (_mpvProvider is not null) try { await _mpvProvider.SetAudioDeviceAsync(_config.MpvAudioDeviceName ?? "auto"); }
@@ -4201,7 +4220,7 @@ public partial class MainWindow : Window, IMacroActionHandler
         return true;
     }
 
-    async void RefreshAudioEndpoints_Click(object s, RoutedEventArgs e) => await LoadAudioEndpointsAsync();
+    async void RefreshAudioEndpoints_Click(object s, RoutedEventArgs e) => await RefreshListeningOutputDevicesAsync();
 
     async void RefreshMpvOutputs_Click(object sender, RoutedEventArgs e) => await LoadMpvOutputsAsync();
 
@@ -4216,6 +4235,7 @@ public partial class MainWindow : Window, IMacroActionHandler
                 await using var probe = new MpvProvider(new MpvLocator(), _config.MpvPath);
                 devices = await probe.ListAudioDevicesAsync();
             }
+            _listeningPlayerDevices = devices;
             _loadingAudioRouteControls = true;
             MpvOutputBox.ItemsSource = devices;
             SetupMpvOutputBox.ItemsSource = devices;
@@ -4223,13 +4243,8 @@ public partial class MainWindow : Window, IMacroActionHandler
             gameChoices.AddRange(devices.Where(x => x.Name != "auto"));
             GameMpvOutputBox.ItemsSource = gameChoices;
             SetupGameMpvOutputBox.ItemsSource = gameChoices;
-            var selectedName = _config.MpvAudioDeviceName ?? "auto";
-            MpvOutputBox.SelectedItem = devices.FirstOrDefault(x => x.Name == selectedName);
-            SetupMpvOutputBox.SelectedItem = devices.FirstOrDefault(x => x.Name == selectedName);
-            MpvOutputState.Text = MpvOutputBox.SelectedItem is MpvAudioDevice selected
-                ? $"APPLIED OUTPUT · {selected.Description} · {selected.Name}"
-                : $"Previously chosen MPV device '{selectedName}' is unavailable. Reapply an available device.";
-            SetupMpvOutputState.Text = MpvOutputState.Text;
+            MpvOutputBox.SelectedItem = devices.FirstOrDefault(x => x.Name == _config.MpvAudioDeviceName);
+            SetupMpvOutputBox.SelectedItem = MpvOutputBox.SelectedItem;
             GameMpvOutputBox.SelectedItem = gameChoices.FirstOrDefault(x => x.Name == (_config.GameMpvAudioDeviceName ?? "off"));
             SetupGameMpvOutputBox.SelectedItem = GameMpvOutputBox.SelectedItem;
             GameMpvOutputState.Text = _config.GameMpvAudioDeviceName is null
@@ -4246,11 +4261,13 @@ public partial class MainWindow : Window, IMacroActionHandler
         }
         catch (Exception error)
         {
+            _listeningPlayerDevices = [];
             MpvOutputState.Text = "MPV OUTPUT LIST UNAVAILABLE · " + error.Message;
             SetupMpvOutputState.Text = MpvOutputState.Text;
             GameMpvOutputState.Text = "GAME OUTPUT LIST UNAVAILABLE · " + error.Message;
         }
         finally { _loadingAudioRouteControls = false; }
+        await ReconcileListeningOutputAsync();
     }
 
     async void ApplyMpvOutput_Click(object sender, RoutedEventArgs e) => await ApplyMpvOutputAsync(MpvOutputBox.SelectedItem as MpvAudioDevice);
@@ -4306,56 +4323,14 @@ public partial class MainWindow : Window, IMacroActionHandler
 
     async Task ApplyMpvOutputAsync(MpvAudioDevice? device)
     {
-        if (device is null) { Footer.Text = "SELECT AN MPV AUDIO OUTPUT FIRST."; RestoreHeadsetOutputSelection(); return; }
-        if (device.Name == _config.GameMpvAudioDeviceName)
-        {
-            Footer.Text = "HEADSET AND GAME MUSIC MUST USE DIFFERENT OUTPUT DEVICES.";
-            RestoreHeadsetOutputSelection();
-            return;
-        }
-        if (device.Name == "auto" && _config.GameMpvAudioDeviceName is not null)
-        {
-            Footer.Text = "KEEP A SPECIFIC HEADSET OUTPUT WHILE GAME MUSIC IS CONFIGURED. DEFAULT COULD OVERLAP THE GAME DEVICE.";
-            RestoreHeadsetOutputSelection();
-            return;
-        }
-        try
-        {
-            if (_mpvProvider is not null && (_config.MpvAudioDeviceName ?? "auto") != device.Name)
-                await _mpvProvider.SetAudioDeviceAsync(device.Name);
-            var next = device.Name == "auto" ? null : device.Name;
-            if (_config.MpvAudioDeviceName != next) InvalidateSignalVerification();
-            _config.MpvAudioDeviceName = next;
-            _loadingAudioRouteControls = true;
-            try
-            {
-                MpvOutputBox.SelectedItem = device;
-                SetupMpvOutputBox.SelectedItem = device;
-                if (next is not null)
-                {
-                    var output = (MonitorBox.ItemsSource as IEnumerable<WindowsAudioEndpoint>)?.FirstOrDefault(x =>
-                        !x.IsInput && x.Id.Split('{').LastOrDefault() is { } guid &&
-                        device.Name.Contains(guid.TrimEnd('}'), StringComparison.OrdinalIgnoreCase));
-                    if (output is not null)
-                    {
-                        _config.MonitorDeviceId = output.Id;
-                        MonitorBox.SelectedItem = output;
-                        MonitorRouteText.Text = output.Name + " · active MPV output";
-                    }
-                }
-            }
-            finally { _loadingAudioRouteControls = false; }
-            await _store.SaveAsync(_config);
-            MpvOutputState.Text = $"APPLIED OUTPUT · {device.Description} · {device.Name}";
-            SetupMpvOutputState.Text = MpvOutputState.Text;
-            Footer.Text = $"MPV OUTPUT APPLIED · {device.Description}. Confirm headphone and Voicemeeter routing by listening and watching live meters.";
-            RefreshSetupWizard();
-        }
-        catch (Exception error)
-        {
-            Footer.Text = $"MPV OUTPUT NOT CHANGED · {error.Message}";
-            RestoreHeadsetOutputSelection();
-        }
+        if (device is null || device.Name == "auto")
+        { Footer.Text = "CHOOSE A SPECIFIC WINDOWS LISTENING OUTPUT."; SyncListeningSelectors(); return; }
+        var outputs = (MonitorBox.ItemsSource as IEnumerable<WindowsAudioEndpoint>)?.Where(x => x.IsPresent).ToArray() ?? [];
+        var matches = outputs.Where(endpoint =>
+            ListeningOutputResolver.Resolve(endpoint, outputs, _listeningPlayerDevices).Device?.Name == device.Name).ToArray();
+        if (matches.Length != 1)
+        { Footer.Text = "PLAYER OUTPUT NEEDS A UNIQUE WINDOWS DEVICE MATCH. CHOOSE THE WINDOWS OUTPUT OR REFRESH DEVICES."; SyncListeningSelectors(); return; }
+        await SetListeningOutputAsync(matches[0]);
     }
 
     async void ApplyGameMpvOutput_Click(object sender, RoutedEventArgs e) => await ApplyGameMpvOutputAsync(GameMpvOutputBox.SelectedItem as MpvAudioDevice);
@@ -4425,7 +4400,7 @@ public partial class MainWindow : Window, IMacroActionHandler
         RefreshSetupWizard();
     }
 
-    async Task<bool> LoadAudioEndpointsAsync(bool quiet = false)
+    async Task<bool> LoadAudioEndpointsAsync(bool quiet = false, bool reconcile = true)
     {
         await _endpointDiscoveryGate.WaitAsync();
         try
@@ -4433,23 +4408,32 @@ public partial class MainWindow : Window, IMacroActionHandler
             using var discoveryDeadline = new CancellationTokenSource(TimeSpan.FromSeconds(8));
             var endpoints = await _audioEndpoints.DiscoverAsync(discoveryDeadline.Token);
             var inputs = endpoints.Where(x => x.IsInput).ToList();
-            var outputs = endpoints.Where(x => !x.IsInput).ToList();
+            var outputs = ListeningOutputInventory.IncludeSavedSelection(endpoints,
+                _config.MonitorDeviceId, _config.MonitorDeviceName).ToList();
+            if (!string.IsNullOrWhiteSpace(_config.MonitorDeviceId))
+            {
+                var connected = outputs.FirstOrDefault(x => string.Equals(x.Id, _config.MonitorDeviceId, StringComparison.OrdinalIgnoreCase));
+                if (connected is { IsPresent: true } && _config.MonitorDeviceName != connected.Name)
+                {
+                    _config.MonitorDeviceName = connected.Name;
+                    await _store.SaveAsync(_config);
+                }
+            }
             var stagedMicrophone = (SetupMicrophoneBox.SelectedItem as WindowsAudioEndpoint)?.Id;
-            var stagedHeadphones = (SetupMonitorBox.SelectedItem as WindowsAudioEndpoint)?.Id;
             _loadingAudioRouteControls = true;
             MicrophoneBox.ItemsSource = inputs;
             MonitorBox.ItemsSource = outputs;
             MicrophoneBox.SelectedItem = inputs.FirstOrDefault(x => x.Id == _config.MicrophoneDeviceId);
-            MonitorBox.SelectedItem = outputs.FirstOrDefault(x => x.Id == _config.MonitorDeviceId);
+            MonitorBox.SelectedItem = ListeningOutputInventory.Selected(outputs, _config.MonitorDeviceId);
             _loadingSetupControls = true;
             SetupMicrophoneBox.ItemsSource = inputs;
             SetupMonitorBox.ItemsSource = outputs;
             SetupMicrophoneBox.SelectedItem = inputs.FirstOrDefault(x => x.Id == (stagedMicrophone ?? _config.MicrophoneDeviceId));
-            SetupMonitorBox.SelectedItem = outputs.FirstOrDefault(x => x.Id == (stagedHeadphones ?? _config.MonitorDeviceId));
+            SetupMonitorBox.SelectedItem = ListeningOutputInventory.Selected(outputs, _config.MonitorDeviceId);
             _loadingSetupControls = false;
             _loadingAudioRouteControls = false;
             MicrophoneRouteText.Text = MicrophoneBox.SelectedItem is WindowsAudioEndpoint mic ? mic.Name : "Not selected";
-            MonitorRouteText.Text = MonitorBox.SelectedItem is WindowsAudioEndpoint monitor ? monitor.Name : "Not selected";
+            ShowListeningOutputState();
             var gameOutput = endpoints.FirstOrDefault(x => x.IsInput && x.Name.Contains($"Out {_config.GameBus}", StringComparison.OrdinalIgnoreCase));
             _gameOutputEndpointName = gameOutput?.Name;
             _gameOutputEndpointId = gameOutput?.Id;
@@ -4458,6 +4442,7 @@ public partial class MainWindow : Window, IMacroActionHandler
                 : $"{_config.GameBus} · {gameOutput.Name} · needs verification";
             if (!quiet) Footer.Text = $"{inputs.Count} INPUT AND {outputs.Count} OUTPUT AUDIO ENDPOINT(S) DISCOVERED.";
             RefreshSetupWizard();
+            if (reconcile) await ReconcileListeningOutputAsync();
             return true;
         }
         catch (Exception ex)
@@ -4475,7 +4460,7 @@ public partial class MainWindow : Window, IMacroActionHandler
 
     void PickAudioEndpoint(ComboBox selector, bool microphone)
     {
-        var devices = (selector.ItemsSource as IEnumerable<WindowsAudioEndpoint>)?.ToList() ?? [];
+        var devices = (selector.ItemsSource as IEnumerable<WindowsAudioEndpoint>)?.Where(device => device.IsPresent).ToList() ?? [];
         if (devices.Count == 0)
         {
             RadioDialogWindow.Inform(this, "No audio devices found", "Refresh the Windows device list, then try again.");
@@ -4526,89 +4511,63 @@ public partial class MainWindow : Window, IMacroActionHandler
     async Task<bool> SetListeningOutputAsync(WindowsAudioEndpoint monitor)
     {
         if (_listeningOutputChangeInProgress) return false;
+        if (monitor.IsInput || !monitor.IsPresent) return false;
         _listeningOutputChangeInProgress = true;
         MonitorBox.IsEnabled = false;
-        AudioGraphListeningState.Text = "Switching output…";
-        var previousMonitor = _config.MonitorDeviceId;
-        var previousMpv = _config.MpvAudioDeviceName;
-        string? previousActiveMpv = null;
-        var youtubeSwitched = false;
+        SetupMonitorBox.IsEnabled = false;
+        var previousSelection = (_config.MonitorDeviceId, _config.MonitorDeviceName,
+            _config.MpvAudioDeviceName, _config.MpvAudioDeviceEndpointId);
+        var previousVerification = _config.SetupVerification;
+        var selectionSaved = false;
         try
         {
-            if (_b1Audition is not null)
-                throw new InvalidOperationException("Release the game voice preview before switching listening output.");
-            var mpvDevice = (MpvOutputBox.ItemsSource as IEnumerable<MpvAudioDevice>)?.SingleOrDefault(x =>
-                AudioDeviceIdentity.SameEndpoint(monitor.Id, x.Name));
-            if (mpvDevice is null)
-                throw new InvalidOperationException("The listening output has no exact player device match. Refresh devices and try again.");
-            if (mpvDevice.Name == _config.GameMpvAudioDeviceName)
-                throw new InvalidOperationException("Listening and game feed must use different output devices.");
-            if (_active?.ProviderId == "youtube")
-            {
-                await _youtubeListeningGate.WaitAsync();
-                try
-                {
-                    if (_youtubeListeningRoute.IsActive)
-                    {
-                        await _youtubeListeningRoute.SwitchAsync(monitor.Id);
-                        youtubeSwitched = true;
-                    }
-                }
-                finally { _youtubeListeningGate.Release(); }
-            }
-            if (_mpvProvider is { } player)
-            {
-                previousActiveMpv = await player.ReadAudioDeviceAsync();
-                if (!string.Equals(previousActiveMpv, mpvDevice.Name, StringComparison.Ordinal))
-                {
-                    await player.SetAudioDeviceAsync(mpvDevice.Name);
-                    var actual = await player.ReadAudioDeviceAsync();
-                    if (!actual.Equals(mpvDevice.Name, StringComparison.Ordinal))
-                        throw new InvalidOperationException("The local player did not confirm the requested output.");
-                }
-            }
+            var changed = !string.Equals(_config.MonitorDeviceId, monitor.Id, StringComparison.OrdinalIgnoreCase);
             _config.MonitorDeviceId = monitor.Id;
-            _config.MpvAudioDeviceName = mpvDevice.Name;
+            _config.MonitorDeviceName = monitor.Name;
+            if (changed)
+            {
+                // The player ID is a cache for the previous endpoint, never another selection.
+                _config.MpvAudioDeviceName = null;
+                _config.MpvAudioDeviceEndpointId = null;
+                _listeningResolution = null;
+                InvalidateSignalVerification();
+            }
             await _store.SaveAsync(_config);
-            if (previousMonitor != monitor.Id) InvalidateSignalVerification();
-            _loadingAudioRouteControls = true;
-            MpvOutputBox.SelectedItem = mpvDevice;
-            SetupMpvOutputBox.SelectedItem = mpvDevice;
-            _loadingAudioRouteControls = false;
-            _loadingSetupControls = true;
-            SetupMonitorBox.SelectedItem = (SetupMonitorBox.ItemsSource as IEnumerable<WindowsAudioEndpoint>)?
-                .FirstOrDefault(x => AudioDeviceIdentity.SameEndpoint(x.Id, mpvDevice.Name));
-            _loadingSetupControls = false;
-            AudioGraphListeningState.Text = "✓ Playing through " + monitor.Name;
-            _listeningOutputFeedbackUntil = DateTime.UtcNow.AddSeconds(5);
-            MonitorRouteText.Text = monitor.Name + " · active output verified";
+            selectionSaved = true;
+            if (changed && SetupView.Visibility == Visibility.Visible) _setupHasUncommittedChanges = true;
+            SyncListeningSelectors();
+            var success = await ReconcileListeningOutputAsync();
+            if (_listeningPlayerDevices.Count == 0)
+            {
+                await LoadMpvOutputsAsync();
+                success = _listeningResolution?.Resolved == true && _listeningConnectionError is null;
+            }
+            _listeningOutputFeedbackUntil = DateTime.UtcNow.AddSeconds(success ? 5 : 8);
+            Footer.Text = success ? "LISTENING OUTPUT SELECTED · Run the playback test to verify sound." :
+                "LISTENING OUTPUT NEEDS REPAIR · Your choice is saved. Refresh device lists or inspect Advanced Diagnostics.";
             RefreshSetupWizard();
-            return true;
+            return success;
         }
         catch (Exception error)
         {
-            if (youtubeSwitched && !string.IsNullOrWhiteSpace(previousMonitor))
-                try { await _youtubeListeningRoute.SwitchAsync(previousMonitor); }
-                catch (Exception restoreError) { error = new AggregateException(error, restoreError); }
-            if (previousActiveMpv is not null && _mpvProvider is { } player)
-                try { await player.SetAudioDeviceAsync(previousActiveMpv); } catch { }
-            _config.MonitorDeviceId = previousMonitor;
-            _config.MpvAudioDeviceName = previousMpv;
-            _loadingAudioRouteControls = true;
-            MonitorBox.SelectedItem = (MonitorBox.ItemsSource as IEnumerable<WindowsAudioEndpoint>)?
-                .FirstOrDefault(x => x.Id == previousMonitor);
-            _loadingAudioRouteControls = false;
-            AudioGraphListeningState.Text = "⚠ Output did not switch: " + error.Message;
-            _listeningOutputFeedbackUntil = DateTime.UtcNow.AddSeconds(8);
-            MonitorRouteText.Text = AudioGraphListeningState.Text;
-            Footer.Text = "LISTENING OUTPUT NOT CHANGED · " + error.Message;
+            if (!selectionSaved)
+            {
+                _config.MonitorDeviceId = previousSelection.MonitorDeviceId;
+                _config.MonitorDeviceName = previousSelection.MonitorDeviceName;
+                _config.MpvAudioDeviceName = previousSelection.MpvAudioDeviceName;
+                _config.MpvAudioDeviceEndpointId = previousSelection.MpvAudioDeviceEndpointId;
+                _config.SetupVerification = previousVerification;
+                SyncListeningSelectors();
+            }
+            _listeningConnectionError = error.Message;
+            ShowListeningOutputState();
+            Footer.Text = "LISTENING OUTPUT NEEDS REPAIR · Your selection could not be saved or switched: " + error.Message;
             return false;
         }
         finally
         {
-            _loadingAudioRouteControls = false;
-            _loadingSetupControls = false;
             MonitorBox.IsEnabled = true;
+            SetupMonitorBox.IsEnabled = true;
             _listeningOutputChangeInProgress = false;
         }
     }
@@ -4618,9 +4577,10 @@ public partial class MainWindow : Window, IMacroActionHandler
         if (!_loadingSetupControls && IsLoaded) RefreshSetupWizard();
     }
 
-    void SetupMonitorBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    async void SetupMonitorBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
-        if (!_loadingSetupControls && IsLoaded) RefreshSetupWizard();
+        if (_loadingSetupControls || !IsLoaded || SetupMonitorBox.SelectedItem is not WindowsAudioEndpoint monitor) return;
+        await SetListeningOutputAsync(monitor);
     }
 
     void RestoreSetupMonitorSelection()
@@ -4926,6 +4886,14 @@ public partial class MainWindow : Window, IMacroActionHandler
         var bridgeSnapshot = _bridge.Snapshot;
         var bridgeStatus = bridgeSnapshot.Telemetry?.Status;
         var checks = _diagnostics.Collect(_config, _mpvProvider?.Snapshot, _youtubeReady, _outputHealth, bridgeStatus).ToList();
+        var selectedEndpoint = ConfiguredListeningEndpoint();
+        checks.Add(new DiagnosticItem("Listening output resolution",
+            _listeningConnectionError is not null || _listeningResolution?.Resolved != true ? "NEEDS REPAIR" : "RESOLVED",
+            selectedEndpoint is null ? "No listening output selected" : selectedEndpoint.Name,
+            $"Windows endpoint: {_config.MonitorDeviceId ?? "none"} ({_config.MonitorDeviceName ?? "unknown"}); present={selectedEndpoint?.IsPresent == true}\n" +
+            $"Saved player ID: {_config.MpvAudioDeviceName ?? "none"}; bound endpoint={_config.MpvAudioDeviceEndpointId ?? "none"}; strategy={_listeningResolution?.Strategy ?? "none"}; reason={_listeningConnectionError ?? _listeningResolution?.Detail ?? "not evaluated"}\n" +
+            $"Player switched/read back={_listeningPlayerSwitched}; playback path verified={_listeningPlaybackVerified}; observed endpoint signal={_sawMonitorSignal}\n" +
+            "Player devices:\n" + string.Join("\n", _listeningPlayerDevices.Select(device => $"{device.Name} | {device.Description}"))));
         checks.Add(new DiagnosticItem("Audio Bridge", bridgeSnapshot.Connection.ToString().ToUpperInvariant(),
             bridgeSnapshot.Detail,
             $"Edition: {bridgeSnapshot.Edition ?? "unknown"}; route leases: {bridgeSnapshot.OwnedRoutes.Count}; device leases: {bridgeSnapshot.OwnedDevices.Count}; recent faults: {bridgeSnapshot.Faults.Count}."));
@@ -4979,9 +4947,7 @@ public partial class MainWindow : Window, IMacroActionHandler
         ShowDiagnosticSnapshot(new DiagnosticSnapshot(readiness, checks) { AudioBridge = bridgeSnapshot });
         GameRouteText.Text = _gameOutputEndpointName is null ? $"{_config.GameBus} output device not found" : $"{_config.GameBus} · {_gameOutputEndpointName} · check its live endpoint meter";
         MicrophoneRouteText.Text = MicrophoneBox.SelectedItem is WindowsAudioEndpoint mic ? mic.Name + " · Voicemeeter input → B1" : "Not selected";
-        MonitorRouteText.Text = MonitorBox.SelectedItem is WindowsAudioEndpoint monitor
-            ? monitor.Name + (_active?.ProviderId == "youtube" ? " · direct YouTube output" : " · direct local player output")
-            : "Not selected";
+        ShowListeningOutputState();
         RoutingDetail.Text = vm.Detail;
     }
 
@@ -5064,9 +5030,7 @@ public partial class MainWindow : Window, IMacroActionHandler
         var monitor = SetupMonitorBox.SelectedItem as WindowsAudioEndpoint;
         SetupMicChoiceState.Text = microphone is null ? "Choose your mic." :
             _config.MicrophoneStripIndex is null ? "Ready to connect." : "✓ Connected to game voice.";
-        SetupDeviceState.Text = microphone is null || monitor is null
-            ? "Choose where you want to hear the radio."
-            : "✓ " + monitor.Name;
+        ShowListeningOutputState();
         SetupProviderState.Text = $"Local music: {(mpvAvailable ? "Ready" : "Needs setup")} · YouTube: {(_youtubeReady ? "Ready" : "Needs setup")} · External music apps: {_externalSessions.Count} found · SoundCloud: needs account access · Apple Music: needs account access";
         SetupStationsState.Text = $"{_config.Profile.Stations.Count} station(s) saved · {_config.Profile.Stations.Count(x => x.Enabled && ((x.PlaylistFiles?.Count ?? 0) > 0 || !string.IsNullOrWhiteSpace(x.Source)))} with a source";
         SetupControlsState.Text = $"{_config.Profile.Macros.Count} macro(s) saved. Test a binding in the Macro editor; physical controller input requires a live test.";
@@ -5094,7 +5058,8 @@ public partial class MainWindow : Window, IMacroActionHandler
         SetupChainTestState.Text = $"Microphone: {(_sawMicSignal ? "signal observed" : "no sound observed yet")} · Radio game feed: {(_sawMusicSignal ? "signal observed" : "run built-in test")} · Game voice: {(_sawGameEndpointSignal ? "signal observed" : "run built-in test")} · Listening output: {(_sawMonitorSignal ? "signal observed" : "play test sound")}";
         var readiness = CaptureReadiness(vm);
         SetupReadiness.Text = readiness.Overall == OverallReadiness.Ready
-            ? SetupHeardMusic.IsChecked == true && SetupGameHeard.IsChecked == true
+            ? !_listeningPlaybackVerified ? "Run PLAY TEST SOUND to verify the player can use your selected output." :
+                SetupHeardMusic.IsChecked == true && SetupGameHeard.IsChecked == true
                 ? "✓ System ready. Your listening and game input are confirmed."
                 : "✓ System ready. Confirm what you hear and what your game receives to finish setup."
             : "Needs attention: " + (readiness.Checks.FirstOrDefault(check =>
@@ -5114,6 +5079,7 @@ public partial class MainWindow : Window, IMacroActionHandler
     void InvalidateSignalVerification()
     {
         _sawMicSignal = _sawMusicSignal = _sawGameSignal = _sawGameEndpointSignal = _sawMonitorSignal = false;
+        _listeningPlaybackVerified = false;
         _config.SetupComplete = false;
         SetupHeardMusic.IsChecked = false;
         SetupGameHeard.IsChecked = false;
@@ -5129,22 +5095,31 @@ public partial class MainWindow : Window, IMacroActionHandler
 
     async void SetupPlayTestSound_Click(object sender, RoutedEventArgs e)
     {
-        if (SetupMonitorBox.SelectedItem is not WindowsAudioEndpoint output)
+        if (ConfiguredListeningEndpoint() is not { IsPresent: true } output)
         {
             Footer.Text = "CHOOSE YOUR HEADPHONES BEFORE PLAYING THE TEST SOUND.";
             return;
         }
         try
         {
-            SetupSoundTestState.Text = $"Playing a short test tone through {output.Name}…";
-            await DeviceTestSound.PlayAsync(output.Id);
-            SetupSoundTestState.Text = $"Test tone played through {output.Name}. Did you hear it? If not, choose another output.";
+            var playerDevice = RequireListeningPlayerDevice();
+            SetupSoundTestState.Text = $"Playing a short test tone through the normal player to {output.Name}…";
+            await DeviceTestSound.PlayThroughMpvAsync(output.Id, playerDevice, _config.MpvPath);
+            _listeningPlaybackVerified = true;
+            _listeningConnectionError = null;
+            SetupSoundTestState.Text = $"Player signal reached {output.Name}. Did you hear it?";
             Footer.Text = "LISTENING TEST FINISHED · Confirm the sound reached the selected headphones.";
+            ShowListeningOutputState();
+            PublishReadiness(CaptureReadiness());
         }
         catch (Exception error)
         {
+            _listeningPlaybackVerified = false;
+            _listeningConnectionError = error.Message;
             SetupSoundTestState.Text = "Test sound failed · " + error.Message;
             Footer.Text = "LISTENING TEST FAILED · Check the selected output device.";
+            ShowListeningOutputState();
+            PublishReadiness(CaptureReadiness());
         }
     }
 
@@ -5395,6 +5370,13 @@ public partial class MainWindow : Window, IMacroActionHandler
         if (readiness.Overall != OverallReadiness.Ready)
         {
             Footer.Text = "SETUP NEEDS ATTENTION · Check the issue shown here before finishing.";
+            return;
+        }
+        if (!_listeningPlaybackVerified)
+        {
+            _setupStep = 3;
+            ShowSetupStep();
+            SetupSoundTestState.Text = "Run PLAY TEST SOUND first. Setup verification requires the normal player to reach the selected output.";
             return;
         }
         if (SetupHeardMusic.IsChecked != true || SetupGameHeard.IsChecked != true)

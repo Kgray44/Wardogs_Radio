@@ -23,6 +23,7 @@ public sealed class SystemReadinessTests
     {
         MpvAvailable = true, VoicemeeterInstalled = true, VoicemeeterConnected = true,
         VoicemeeterEdition = "Banana", MicrophonePresent = true, HeadphonesPresent = true,
+        PlayerOutputResolved = true,
         MicrophoneAssigned = true, MicrophoneRoutedToGame = true, MusicRoutedToGame = true,
         MusicPlayerTargetsGame = true, GameEndpointPresent = true, GameEndpointId = "b1-a"
     };
@@ -152,5 +153,37 @@ public sealed class SystemReadinessTests
         Assert.True(bothReturned.MicrophonePresent);
         Assert.True(bothReturned.ListeningOutputPresent);
         Assert.Equal(OverallReadiness.Ready, bothReturned.Overall);
+    }
+
+    [Fact]
+    public void PresentHeadsetWithUnresolvedPlayerNeedsRepairRatherThanDisconnection()
+    {
+        var readiness = SystemReadinessService.Evaluate(Config(), Evidence() with { PlayerOutputResolved = false });
+        Assert.True(readiness.ListeningOutputPresent);
+        Assert.False(readiness.ListeningPlayerResolved);
+        Assert.Equal(ReadinessSeverity.Ready, readiness.Checks.Single(check => check.Id == "listening").Severity);
+        Assert.Equal(ReadinessSeverity.NeedsAction, readiness.Checks.Single(check => check.Id == "listening-player").Severity);
+        Assert.Equal(OverallReadiness.NeedsAttention, readiness.Overall);
+    }
+
+    [Fact]
+    public void PlaybackTestIsSeparateFromConfiguredAndMappedState()
+    {
+        var quiet = SystemReadinessService.Evaluate(Config(), Evidence());
+        var tested = SystemReadinessService.Evaluate(Config(), Evidence() with { PlaybackPathVerified = true });
+        Assert.Equal(ReadinessSeverity.Info, quiet.Checks.Single(check => check.Id == "listening-playback-path").Severity);
+        Assert.True(tested.ListeningPlaybackVerified);
+        Assert.Equal(ReadinessSeverity.Ready, tested.Checks.Single(check => check.Id == "listening-playback-path").Severity);
+    }
+
+    [Fact]
+    public void FailedActivePlayerSwitchDoesNotCallPresentHeadsetDisconnected()
+    {
+        var readiness = SystemReadinessService.Evaluate(Config(), Evidence() with { PlayerOutputSwitchFailed = true });
+        Assert.True(readiness.ListeningOutputPresent);
+        Assert.True(readiness.ListeningPlayerResolved);
+        Assert.True(readiness.ListeningPlayerConnectionFailed);
+        Assert.Equal(ReadinessSeverity.Ready, readiness.Checks.Single(check => check.Id == "listening").Severity);
+        Assert.Equal(ReadinessSeverity.NeedsAction, readiness.Checks.Single(check => check.Id == "listening-player").Severity);
     }
 }
