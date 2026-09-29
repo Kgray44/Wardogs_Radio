@@ -32,6 +32,7 @@
         <CheckBox x:Name="Playback" Content="Playback Settings" IsChecked="True" Margin="0,4"/>
         <CheckBox x:Name="Audio" Content="Audio &amp; Routing Settings" IsChecked="True" Margin="0,4"/>
         <CheckBox x:Name="General" Content="General settings and provider paths" IsChecked="True" Margin="0,4"/>
+        <CheckBox x:Name="ListeningHistory" Content="Private Listening History and metrics" IsChecked="True" Margin="0,4"/>
         <Expander Header="SELECT SPECIFIC ITEMS" IsExpanded="False" Margin="0,14,0,0">
           <Grid Margin="0,8,0,0"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition/><ColumnDefinition/></Grid.ColumnDefinitions>
             <StackPanel><TextBlock Text="STATIONS" Foreground="{StaticResource OliveBrush}" FontSize="10"/><ListBox x:Name="StationItems" SelectionMode="Multiple" Height="110"/></StackPanel>

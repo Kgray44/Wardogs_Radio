@@ -22,7 +22,7 @@ public partial class BackupTransferWindow : Window
         if (export)
         {
             Heading.Text = "EXPORT CONFIGURATION";
-            Description.Text = "Choose portable configuration to save or share. Station dependencies are included automatically so a package cannot contain broken song or source references.";
+            Description.Text = "Choose portable configuration to save or share. Station dependencies are included automatically. Listening History is private and is included only when selected.";
             PackageName.Text = "WARDOGS Radio Export";
             ContinueButton.Content = "CONTINUE";
         }
@@ -33,6 +33,8 @@ public partial class BackupTransferWindow : Window
             ExportDetails.Visibility = Visibility.Collapsed;
             PackageSummary.Visibility = Visibility.Visible;
             SummaryText.Text = summary is null ? "Package summary unavailable." : Describe(summary);
+            ListeningHistory.IsChecked = summary?.Contents.HasFlag(WrRadioContent.ListeningHistory) == true;
+            ListeningHistory.IsEnabled = ListeningHistory.IsChecked == true;
             LocalMedia.Visibility = Visibility.Collapsed;
             LocalMediaHint.Visibility = Visibility.Collapsed;
             ConflictOptions.Visibility = Visibility.Visible;
@@ -101,6 +103,7 @@ public partial class BackupTransferWindow : Window
         if (Playback.IsChecked == true) contents |= WrRadioContent.PlaybackSettings;
         if (Audio.IsChecked == true) contents |= WrRadioContent.AudioRoutingSettings;
         if (General.IsChecked == true) contents |= WrRadioContent.GeneralSettings;
+        if (ListeningHistory.IsChecked == true) contents |= WrRadioContent.ListeningHistory;
         return contents;
     }
 

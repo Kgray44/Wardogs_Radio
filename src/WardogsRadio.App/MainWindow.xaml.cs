@@ -282,6 +282,8 @@ public partial class MainWindow : Window, IMacroActionHandler
             SaveStateText.Foreground = (System.Windows.Media.Brush)FindResource(_saveFailureVisible ? "AmberBrush" : "OliveBrush");
         });
         _backupTransfer = new WrRadioPackageService(configurationRoot);
+        InitializeListening(configurationRoot);
+        YouTubeSearchRuntime.Initialize(configurationRoot);
         _diagnostics = new DiagnosticService(_bridge, _controllers);
         _macroEngine = new MacroExecutionEngine(this);
         _macroEngine.ExecutionStarted += (_, id) => Dispatcher.BeginInvoke(() => { _runningMacros.Add(id); RefreshCollections(); });
@@ -372,6 +374,8 @@ public partial class MainWindow : Window, IMacroActionHandler
         RefreshSetupWizard();
         _playbackTimer.Start();
         _signalTimer.Start();
+        await StartListeningAsync();
+        await RefreshDashboardListeningAsync();
         if (interruptedSetup) await ResolveInterruptedSetupAsync();
         var startupPackagePath = _startupPackagePath;
         if (!string.IsNullOrWhiteSpace(startupPackagePath) && File.Exists(startupPackagePath))
@@ -753,6 +757,8 @@ public partial class MainWindow : Window, IMacroActionHandler
                     PlayButton.Content = playing ? "Ⅱ  PAUSE" : "▶  PLAY";
                     RefreshCollections();
                     RefreshSharedPlaybackPresentation();
+                    if (_youtubeEnded) await EndListeningTrackAsync(TrackEndReason.Completed);
+                    else await RefreshListeningNowAsync();
                 }
             }
             else if (type == "progress" && detail is not null)
@@ -1005,7 +1011,7 @@ public partial class MainWindow : Window, IMacroActionHandler
         else if (SetupView.Visibility == Visibility.Visible && element != SetupView && _setupVisit is not null)
             ClearSetupVisit();
         if (element != SetupView) _gameFeedTestCancellation?.Cancel();
-        foreach (var view in new UIElement[] { DashboardView, StationsView, LibraryView, MacrosView, AudioView, SettingsView, DiagnosticsView, SetupView })
+        foreach (var view in new UIElement[] { DashboardView, StationsView, LibraryView, ListeningView, MacrosView, AudioView, SettingsView, DiagnosticsView, SetupView })
             view.Visibility = Visibility.Collapsed;
         element.Visibility = Visibility.Visible;
         PageTitle.Text = title;
@@ -1015,20 +1021,29 @@ public partial class MainWindow : Window, IMacroActionHandler
 
     void SetActiveNavigation(Button current)
     {
-        foreach (var button in new[] { DashboardNav, StationsNav, LibraryNav, MacrosNav, AudioNav, SettingsNav, DiagnosticsNav, SetupNav })
+        foreach (var button in new[] { DashboardNav, StationsNav, LibraryNav, ListeningNav, MacrosNav, AudioNav, SettingsNav, DiagnosticsNav, SetupNav })
             button.Tag = button == current ? "active" : null;
     }
 
-    void Dashboard_Click(object s, RoutedEventArgs e) => Show(DashboardView, "DASHBOARD", "Your stations and sound", DashboardNav);
-    void Stations_Click(object s, RoutedEventArgs e) => Show(StationsView, "STATIONS", "Choose or create a station", StationsNav);
-    void Library_Click(object s, RoutedEventArgs e)
+    async void Dashboard_Click(object s, RoutedEventArgs e)
+    {
+        Show(DashboardView, "DASHBOARD", "Your stations and sound", DashboardNav);
+        await RefreshDashboardListeningAsync();
+    }
+    async void Stations_Click(object s, RoutedEventArgs e)
+    {
+        Show(StationsView, "STATIONS", "Choose or create a station", StationsNav);
+        await RefreshStationListeningAsync();
+    }
+    async void Library_Click(object s, RoutedEventArgs e)
     {
         RefreshLibrary();
         Show(LibraryView, "MUSIC LIBRARY", "Sources and song cues shared by your stations", LibraryNav);
+        await RefreshLibraryListeningAsync();
     }
     void Macros_Click(object s, RoutedEventArgs e) => Show(MacrosView, "MACROS", "Your radio shortcuts", MacrosNav);
     void Audio_Click(object s, RoutedEventArgs e) => Show(AudioView, "AUDIO & ROUTING", "Where your sound goes", AudioNav);
-    void Settings_Click(object s, RoutedEventArgs e) { RefreshRecentBackups(); RefreshMpvAdvancedStatus(); Show(SettingsView, "SETTINGS", "Playback preferences and application", SettingsNav); }
+    void Settings_Click(object s, RoutedEventArgs e) { RefreshRecentBackups(); RefreshMpvAdvancedStatus(); RefreshYouTubeSearchSettings(); Show(SettingsView, "SETTINGS", "Playback preferences and application", SettingsNav); }
 
     void RefreshRecentBackups()
     {
@@ -1128,6 +1143,7 @@ public partial class MainWindow : Window, IMacroActionHandler
         if (picker.ShowDialog(this) != true) return;
         try
         {
+            await PersistListeningAsync(DateTimeOffset.UtcNow, checkpoint: true);
             var summary = await _backupTransfer.ExportAsync(_config, selection, picker.FileName);
             Footer.Text = $"EXPORTED · {summary.Stations} station(s), {summary.Songs} song(s), {summary.Sources} source(s), {summary.Macros} macro(s).";
         }
@@ -1181,6 +1197,7 @@ public partial class MainWindow : Window, IMacroActionHandler
 
     async Task ImportPackageAsync(string packagePath)
     {
+        var listeningSuspended = false;
         try
         {
             var package = await _backupTransfer.OpenAsync(packagePath);
@@ -1198,6 +1215,8 @@ public partial class MainWindow : Window, IMacroActionHandler
                 string.Join("\n• ", preview.Conflicts.Take(3).Select(conflict => $"{conflict.Category}: {conflict.Name} — {conflict.Message}"));
             var warningText = preview.Warnings.Count == 0 ? "" : "\n\nNeeds attention:\n• " + string.Join("\n• ", preview.Warnings.Take(3));
             if (!RadioDialogWindow.Confirm(this, "Import package?", $"{preview.Summary.Stations} station(s), {preview.Summary.Songs} song(s), and {preview.Summary.Macros} macro(s) are ready to import. {conflictText}{warningText}\n\nA full automatic safety backup is created first.", "IMPORT")) return;
+            listeningSuspended = true;
+            await StopListeningAsync();
             if (!await PrepareConfigurationMutationAsync("Import")) return;
             var plan = await _backupTransfer.ImportAsync(_store, _config, packagePath, options);
             _config = plan.ProposedConfiguration;
@@ -1205,12 +1224,14 @@ public partial class MainWindow : Window, IMacroActionHandler
             Footer.Text = $"IMPORT COMPLETE · {plan.Summary.Stations} station(s), {plan.Summary.Songs} song(s), {plan.Summary.Macros} macro(s).";
         }
         catch (Exception error) { RadioDialogWindow.Inform(this, "Import could not be completed", error.Message); }
+        finally { if (listeningSuspended) ResumeListeningAfterPackage(); }
     }
 
     async void RestoreBackup_Click(object sender, RoutedEventArgs e)
     {
         var picker = new Microsoft.Win32.OpenFileDialog { Filter = "WARDOGS Radio backup (*.wradio)|*.wradio", DefaultExt = ".wradio", InitialDirectory = Directory.Exists(_backupTransfer.BackupsDirectory) ? _backupTransfer.BackupsDirectory : null };
         if (picker.ShowDialog(this) != true) return;
+        var listeningSuspended = false;
         try
         {
             var package = await _backupTransfer.OpenAsync(picker.FileName);
@@ -1222,6 +1243,8 @@ public partial class MainWindow : Window, IMacroActionHandler
             var summary = _backupTransfer.BuildImportPlan(new AppConfiguration { Profile = new RadioProfile(), MusicLibrary = new MusicLibrary() }, package,
                 new WrRadioImportOptions { Contents = WrRadioContent.All, LibraryConflictResolution = LibraryConflictResolution.ReplaceExisting, StationConflictResolution = StationConflictResolution.ReplaceExisting }).Summary;
             if (!RadioDialogWindow.Confirm(this, "Restore backup?", $"This replaces the active configuration with {summary.Stations} station(s), {summary.Songs} song(s), and {summary.Macros} macro(s). A safety backup of the current configuration is created first.", "RESTORE")) return;
+            listeningSuspended = true;
+            await StopListeningAsync();
             if (!await PrepareConfigurationMutationAsync("Restore")) return;
             var plan = await _backupTransfer.RestoreAsync(_store, _config, picker.FileName);
             _config = plan.ProposedConfiguration;
@@ -1229,6 +1252,7 @@ public partial class MainWindow : Window, IMacroActionHandler
             Footer.Text = "RESTORE COMPLETE · The previous configuration was saved as a safety backup.";
         }
         catch (Exception error) { RadioDialogWindow.Inform(this, "Restore could not be completed", error.Message); }
+        finally { if (listeningSuspended) ResumeListeningAfterPackage(); }
     }
     async void CheckForUpdates_Click(object sender, RoutedEventArgs e)
     {
@@ -1350,6 +1374,7 @@ public partial class MainWindow : Window, IMacroActionHandler
             _youtubeStartupForensics.Mark("T0 station selected");
         }
         if (await TryCrossfadeAsync(station, forceCrossfade, fadeDuration, fadeCurve)) return;
+        await EndListeningTrackAsync(TrackEndReason.Neutral);
         var old = _active;
         if (old is not null)
         {
@@ -1525,6 +1550,7 @@ public partial class MainWindow : Window, IMacroActionHandler
             outgoingStation.Runtime.VirtualStartUtc = (outgoingStation.ModeOverride ?? _config.DefaultPlaybackMode) == PlaybackMode.Radio ? DateTimeOffset.UtcNow : null;
             outgoingStation.Runtime.IsOnAir = false;
             outgoingStation.Runtime.WasPlaying = false;
+            await EndListeningTrackAsync(TrackEndReason.Neutral);
             switched = true;
             _active = station;
             _localPlaylistEnded = false;
@@ -1973,10 +1999,11 @@ public partial class MainWindow : Window, IMacroActionHandler
 
     async void AddStation_Click(object s, RoutedEventArgs e)
     {
-        var editor = new StationEditorWindow(library: _config.MusicLibrary) { Owner = this };
+        var editor = new StationEditorWindow(library: _config.MusicLibrary, allowPreview: _active?.Runtime.WasPlaying != true) { Owner = this };
         if (editor.ShowDialog() != true || editor.Result is not Station station) return;
         station.Order = _config.Profile.Stations.Count;
         _config.Profile.Stations.Add(station);
+        ApplyDiscoveredStationSource(station, editor.SearchResult, sourceChanged: true);
         MusicLibraryService.ReconcileStationLibrary(_config, station);
         MusicLibraryService.MaterializeStationPlaylist(_config, station);
         await _store.SaveAsync(_config);
@@ -2006,8 +2033,11 @@ public partial class MainWindow : Window, IMacroActionHandler
         var priorVolume = station.Volume;
         var priorGameVolume = station.GameVolume;
         var priorRepeatMode = station.EffectiveRepeatMode;
-        var editor = new StationEditorWindow(station, _config.MusicLibrary) { Owner = this };
+        var editor = new StationEditorWindow(station, _config.MusicLibrary, _active?.Runtime.WasPlaying != true) { Owner = this };
         if (editor.ShowDialog() != true) return;
+        ApplyDiscoveredStationSource(station, editor.SearchResult,
+            !string.Equals(MusicLibraryService.NormalizeSource(station.ProviderId, priorSource),
+                MusicLibraryService.NormalizeSource(station.ProviderId, station.Source), StringComparison.OrdinalIgnoreCase));
         MusicLibraryService.ReconcileStationLibrary(_config, station);
         MusicLibraryService.MaterializeStationPlaylist(_config, station);
         await _store.SaveAsync(_config);
@@ -2175,6 +2205,7 @@ public partial class MainWindow : Window, IMacroActionHandler
         if (StationList.SelectedItem is not Station station) return;
         try { await ActivateAsync(station); }
         catch (Exception error) { Footer.Text = $"COULD NOT TUNE {station.Name.ToUpperInvariant()} · {error.Message}"; }
+        await RefreshStationListeningAsync(station.Id);
     }
 
     async void Macro_Click(object s, RoutedEventArgs e)
@@ -2478,14 +2509,14 @@ public partial class MainWindow : Window, IMacroActionHandler
                 return $"{station.Name} player {(station.Runtime.WasPlaying ? "playing" : "selected")}";
             case ActionKind.Next:
                 if (_mpvProvider is not null && _active?.PlaylistSongs.Count > 0) await NextSongAsync();
-                else if (_mpvProvider is not null) { await _mpvProvider.NextAsync(cancellationToken); await SyncGameToHeadsetAsync(_mpvProvider); }
-                else if (_externalProvider is not null) await _externalProvider.NextAsync(cancellationToken);
+                else if (_mpvProvider is not null) await ChangeProviderTrackAsync(async () => { await _mpvProvider.NextAsync(cancellationToken); await SyncGameToHeadsetAsync(_mpvProvider); }, TrackEndReason.Skipped);
+                else if (_externalProvider is not null) await ChangeProviderTrackAsync(() => _externalProvider.NextAsync(cancellationToken), TrackEndReason.Skipped);
                 else throw new InvalidOperationException("No controllable player is active.");
                 return "Next track requested";
             case ActionKind.Previous:
                 if (_mpvProvider is not null && _active?.PlaylistSongs.Count > 0) await PreviousSongAsync();
-                else if (_mpvProvider is not null) { await _mpvProvider.PreviousAsync(cancellationToken); await SyncGameToHeadsetAsync(_mpvProvider); }
-                else if (_externalProvider is not null) await _externalProvider.PreviousAsync(cancellationToken);
+                else if (_mpvProvider is not null) await ChangeProviderTrackAsync(async () => { await _mpvProvider.PreviousAsync(cancellationToken); await SyncGameToHeadsetAsync(_mpvProvider); }, TrackEndReason.Skipped);
+                else if (_externalProvider is not null) await ChangeProviderTrackAsync(() => _externalProvider.PreviousAsync(cancellationToken), TrackEndReason.Skipped);
                 else throw new InvalidOperationException("No controllable player is active.");
                 return "Previous track requested";
             case ActionKind.Seek:
@@ -2499,6 +2530,8 @@ public partial class MainWindow : Window, IMacroActionHandler
                 {
                     case "dashboard": Dashboard_Click(this, new RoutedEventArgs()); break;
                     case "stations": Stations_Click(this, new RoutedEventArgs()); break;
+                    case "library": Library_Click(this, new RoutedEventArgs()); break;
+                    case "listening": Listening_Click(this, new RoutedEventArgs()); break;
                     case "macros": Macros_Click(this, new RoutedEventArgs()); break;
                     case "audio": Audio_Click(this, new RoutedEventArgs()); break;
                     case "settings": Settings_Click(this, new RoutedEventArgs()); break;
@@ -2547,6 +2580,7 @@ public partial class MainWindow : Window, IMacroActionHandler
         _active.Runtime.IsOnAir = false;
         PlayButton.Content = "▶  PLAY";
         RefreshCollections();
+        await RefreshListeningNowAsync();
     }
 
     async Task ToggleActiveAsync()
@@ -2592,6 +2626,7 @@ public partial class MainWindow : Window, IMacroActionHandler
         _active.Runtime.IsOnAir = true;
         PlayButton.Content = "Ⅱ  PAUSE";
         RefreshCollections();
+        await RefreshListeningNowAsync();
     }
 
     void ManageMacros_Click(object s, RoutedEventArgs e)
@@ -2688,9 +2723,9 @@ public partial class MainWindow : Window, IMacroActionHandler
         try
         {
             if (_mpvProvider is not null && _active.PlaylistSongs.Count > 0) await PreviousSongAsync();
-            else if (_mpvProvider is not null) { await _mpvProvider.PreviousAsync(); await SyncGameToHeadsetAsync(_mpvProvider); }
-            else if (_externalProvider is not null) await _externalProvider.PreviousAsync();
-            else if (_active.ProviderId == "youtube") await YouTubeCommandAsync("previous()");
+            else if (_mpvProvider is not null) await ChangeProviderTrackAsync(async () => { await _mpvProvider.PreviousAsync(); await SyncGameToHeadsetAsync(_mpvProvider); }, TrackEndReason.Skipped);
+            else if (_externalProvider is not null) await ChangeProviderTrackAsync(() => _externalProvider.PreviousAsync(), TrackEndReason.Skipped);
+            else if (_active.ProviderId == "youtube") await ChangeYouTubeTrackAsync("previous()", TrackEndReason.Skipped);
             else throw new InvalidOperationException("No connected player can skip tracks for this station.");
             Footer.Text = "Previous track requested.";
         }
@@ -2703,9 +2738,9 @@ public partial class MainWindow : Window, IMacroActionHandler
         try
         {
             if (_mpvProvider is not null && _active.PlaylistSongs.Count > 0) await NextSongAsync();
-            else if (_mpvProvider is not null) { await _mpvProvider.NextAsync(); await SyncGameToHeadsetAsync(_mpvProvider); }
-            else if (_externalProvider is not null) await _externalProvider.NextAsync();
-            else if (_active.ProviderId == "youtube") await YouTubeCommandAsync("next()");
+            else if (_mpvProvider is not null) await ChangeProviderTrackAsync(async () => { await _mpvProvider.NextAsync(); await SyncGameToHeadsetAsync(_mpvProvider); }, TrackEndReason.Skipped);
+            else if (_externalProvider is not null) await ChangeProviderTrackAsync(() => _externalProvider.NextAsync(), TrackEndReason.Skipped);
+            else if (_active.ProviderId == "youtube") await ChangeYouTubeTrackAsync("next()", TrackEndReason.Skipped);
             else throw new InvalidOperationException("No connected player can skip tracks for this station.");
             Footer.Text = "Next track requested.";
         }
@@ -4869,6 +4904,28 @@ public partial class MainWindow : Window, IMacroActionHandler
         if (_youtubePlayerErrorDetail is not null)
             checks.Add(new DiagnosticItem("YouTube playback", "WARNING",
                 "The selected YouTube video could not play", _youtubePlayerErrorDetail));
+        checks.Add(new DiagnosticItem("YouTube discovery", YouTubeSearchRuntime.Status switch
+            {
+                YouTubeSearchStatus.Ready => "READY",
+                YouTubeSearchStatus.Quota => "QUOTA",
+                _ => "ERROR"
+            },
+            "Search uses the built-in WARDOGS key or your Music Services override",
+            $"Key source: {YouTubeSearchRuntime.KeySource}; last search: {YouTubeSearchRuntime.LastSearchUtc?.ToString("u") ?? "none"}; last error: {YouTubeSearchRuntime.LastError ?? "none"}. No API key is included."));
+        if (_listeningStore is { } historyStore)
+        {
+            long? journalBytes = null;
+            try
+            {
+                var journal = new FileInfo(historyStore.JournalPath);
+                if (journal.Exists) journalBytes = journal.Length;
+            }
+            catch (Exception error) when (error is IOException or UnauthorizedAccessException)
+            { _listeningStoreError = error.GetType().Name; }
+            checks.Add(new DiagnosticItem("Listening History", _listeningStoreError is null ? "READY" : "WARNING",
+                _config.ListeningHistoryEnabled ? "Local recording enabled" : "Local recording paused",
+                $"Store: {(journalBytes is null ? "empty or unavailable" : "available")}; journal bytes: {journalBytes?.ToString() ?? "unknown"}; last storage error: {_listeningStoreError ?? "none"}. Detailed listening records are excluded from diagnostics."));
+        }
         if (_youtubeStartupForensics is { } startup)
             checks.Add(new DiagnosticItem("YouTube startup timing", "INFO",
                 startup.StationName, startup.Describe()));
@@ -5106,10 +5163,11 @@ public partial class MainWindow : Window, IMacroActionHandler
 
     async void SetupCreateStation_Click(object sender, RoutedEventArgs e)
     {
-        var editor = new StationEditorWindow(library: _config.MusicLibrary) { Owner = this };
+        var editor = new StationEditorWindow(library: _config.MusicLibrary, allowPreview: _active?.Runtime.WasPlaying != true) { Owner = this };
         if (editor.ShowDialog() != true || editor.Result is not Station station) return;
         station.Order = _config.Profile.Stations.Count;
         _config.Profile.Stations.Add(station);
+        ApplyDiscoveredStationSource(station, editor.SearchResult, sourceChanged: true);
         MusicLibraryService.ReconcileStationLibrary(_config, station);
         MusicLibraryService.MaterializeStationPlaylist(_config, station);
         await _store.SaveAsync(_config);
@@ -5439,6 +5497,12 @@ public partial class MainWindow : Window, IMacroActionHandler
         IsEnabled = false;
         _playbackTimer.Stop();
         _signalTimer.Stop();
+        try { await StopListeningAsync(); }
+        catch (Exception error)
+        {
+            _listeningStoreError = error.GetType().Name;
+            Footer.Text = "LISTENING HISTORY COULD NOT SAVE ON EXIT.";
+        }
         StopNowPlayingSurface();
         _b1PointerHeld = false;
         _b1KeyboardHeld = false;
@@ -5503,6 +5567,7 @@ public partial class MainWindow : Window, IMacroActionHandler
             QueueRestoreFromTray();
             _playbackTimer.Start();
             _signalTimer.Start();
+            _listeningTimer.Start();
             _bridge.StartTelemetry(_config.MicrophoneStripIndex, _config.MusicStripIndex);
         }
     }

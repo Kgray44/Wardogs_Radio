@@ -25,15 +25,18 @@ public partial class StationEditorWindow : Window
     int? _shuffleSeed;
     bool _usingSavedSongs;
     readonly MusicLibrary? _library;
+    readonly bool _allowPreview;
     bool _initializing = true;
     bool _synchronizingSourceControls;
     public Station? Result { get; private set; }
+    public MediaSearchResult? SearchResult { get; private set; }
 
-    public StationEditorWindow(Station? station = null, MusicLibrary? library = null)
+    public StationEditorWindow(Station? station = null, MusicLibrary? library = null, bool allowPreview = true)
     {
         InitializeComponent();
         _station = station ?? new Station();
         _library = library;
+        _allowPreview = allowPreview;
         _iconId = _station.IconId;
         _accentColor = AccentColorPickerWindow.NormalizeColor(_station.AccentColor);
         Heading.Text = station is null ? "CREATE RADIO STATION" : "EDIT RADIO STATION";
@@ -145,6 +148,7 @@ public partial class StationEditorWindow : Window
 
     void UpdateProviderUi()
     {
+        if (Provider() != "youtube") SearchResult = null;
         UpdateProviderTiles();
         ProviderHint.Text = Provider() switch
         {
@@ -158,7 +162,26 @@ public partial class StationEditorWindow : Window
         LocalSourceChoice.IsEnabled = true;
         RepeatModeBox.IsEnabled = Provider() is "mpv" or "youtube";
         LinkSourceLabel.Text = Provider() == "external-audio" ? "External media session" : "Music link (https://...)";
+        SearchYouTubeButton.Visibility = Provider() == "youtube" ? Visibility.Visible : Visibility.Collapsed;
         UpdateSourcePanels();
+    }
+
+    void SearchYouTube_Click(object sender, RoutedEventArgs e)
+    {
+        var search = new YouTubeSearchWindow(_allowPreview, _library) { Owner = this };
+        if (search.ShowDialog() != true || search.SelectedResult is not { } result) return;
+        SearchResult = result;
+        if (!string.Equals(SourceBox.Text, result.CanonicalUrl, StringComparison.OrdinalIgnoreCase))
+        {
+            _playlist.Clear();
+            _usingSavedSongs = false;
+            RefreshPlaylist();
+        }
+        SourceBox.Text = result.CanonicalUrl;
+        if (string.IsNullOrWhiteSpace(NameBox.Text)) NameBox.Text = result.Title;
+        ValidationText.Text = result.Type == MediaSearchResultType.Playlist
+            ? "PLAYLIST SELECTED · A playlist plays as a collection and does not expose one cue timeline."
+            : "VIDEO SELECTED · Save to add it through the normal Library source path.";
     }
 
     void SourceChoice_Changed(object sender, RoutedEventArgs e)
@@ -182,6 +205,9 @@ public partial class StationEditorWindow : Window
 
     void SourceBox_TextChanged(object sender, TextChangedEventArgs e)
     {
+        if (SearchResult is { } selected && !string.Equals(
+            MusicLibraryService.NormalizeSource("youtube", SourceBox.Text), selected.CanonicalUrl,
+            StringComparison.OrdinalIgnoreCase)) SearchResult = null;
         if (ValidationText is not null) ValidationText.Text = "";
     }
 

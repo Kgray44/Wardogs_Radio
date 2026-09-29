@@ -19,7 +19,27 @@ public interface IPlaybackProvider : IAsyncDisposable
 }
 public static class YouTubeUrl
 {
- public static SourceValidationResult Normalize(string input){if(!Uri.TryCreate(input,UriKind.Absolute,out var uri))return new(false,"Enter a full YouTube URL."); var host=uri.Host.ToLowerInvariant(); if(host is not ("youtube.com" or "www.youtube.com" or "music.youtube.com" or "youtu.be"))return new(false,"Not a recognized YouTube URL."); var query=uri.Query.TrimStart('?').Split('&',StringSplitOptions.RemoveEmptyEntries).Select(x=>x.Split('=',2)).ToDictionary(x=>Uri.UnescapeDataString(x[0]),x=>x.Length>1?Uri.UnescapeDataString(x[1]):"",StringComparer.OrdinalIgnoreCase); query.TryGetValue("list",out var list);query.TryGetValue("v",out var video); if(host=="youtu.be") video=uri.AbsolutePath.Trim('/'); if(string.IsNullOrWhiteSpace(list)&&string.IsNullOrWhiteSpace(video))return new(false,"The URL does not contain a video or playlist identity."); var canonical=!string.IsNullOrWhiteSpace(list) ? $"https://www.youtube.com/playlist?list={Uri.EscapeDataString(list)}" : $"https://www.youtube.com/watch?v={Uri.EscapeDataString(video!)}"; return new(true,"Official visible YouTube player required.",canonical);}
+ public static SourceValidationResult Normalize(string input)
+ {
+  if(!Uri.TryCreate(input,UriKind.Absolute,out var uri))return new(false,"Enter a full YouTube URL.");
+  var host=uri.Host.ToLowerInvariant();
+  if(host is not ("youtube.com" or "www.youtube.com" or "music.youtube.com" or "m.youtube.com" or "youtu.be"))
+   return new(false,"Not a recognized YouTube URL.");
+  var query=uri.Query.TrimStart('?').Split('&',StringSplitOptions.RemoveEmptyEntries)
+   .Select(part=>part.Split('=',2))
+   .GroupBy(part=>Uri.UnescapeDataString(part[0]),StringComparer.OrdinalIgnoreCase)
+   .ToDictionary(group=>group.Key,group=>group.First().Length>1?Uri.UnescapeDataString(group.First()[1]):"",StringComparer.OrdinalIgnoreCase);
+  query.TryGetValue("list",out var list);
+  query.TryGetValue("v",out var video);
+  if(host=="youtu.be")video=uri.AbsolutePath.Trim('/');
+  if(string.IsNullOrWhiteSpace(list)&&string.IsNullOrWhiteSpace(video))
+   return new(false,"The URL does not contain a video or playlist identity.");
+  // A watch URL with a playlist context still identifies the video for canonical Library use.
+  var canonical=!string.IsNullOrWhiteSpace(video)
+   ? $"https://www.youtube.com/watch?v={Uri.EscapeDataString(video)}"
+   : $"https://www.youtube.com/playlist?list={Uri.EscapeDataString(list!)}";
+  return new(true,"Official visible YouTube player required.",canonical);
+ }
 }
 public sealed class YouTubeProvider : IPlaybackProvider
 {

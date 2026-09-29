@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  Windows 10/11 • Current release: <strong>v0.3.3</strong>
+  Windows 10/11 • Current release: <strong>v0.4.0</strong>
 </p>
 
 WARDOGS Radio is a Windows desktop app for playing music through your headset **and** your in-game voice output without having to rebuild an audio-routing science experiment every time you launch a game.
@@ -131,6 +131,16 @@ Edit the song once and every station using it sees the corrected version.
 Stations also have **Add from Library**, including multi-select, so building a new station from music you have already identified is fast.
 
 The Library also includes a **Source Archive**, letting you inspect compatible original sources and work directly from their timelines.
+
+### 🔎 Find music in YouTube Search
+
+When you add a YouTube source, choose **Paste Link** or **Search YouTube**. Search can find individual videos and playlists without leaving WARDOGS. A selected video becomes the same Library source and reusable whole-song cue that its pasted link would create. If it is already in your Library, WARDOGS reuses it. From a YouTube station's playlist, **Search YouTube** can add a selected video to both the Library and that station.
+
+YouTube Search uses the official YouTube Data API and a built-in WARDOGS key, so Search is ready without account setup or packaging configuration. **Settings → Music Services** shows search status, offers **Test Connection**, and lets you optionally use your own key or restore the default. Search runs only when you press Enter or **Search**; paste-link playback works even if Search encounters a quota or connection error. Video preview is available while normal station playback is stopped and never adds to listening history. Playlists remain collections, so their individual videos do not become one long split-ready timeline. Developers can change the shared default in `YouTubeSearchKeys.BuiltInDefaultKey` in `src/WardogsRadio.Core/YouTubeSearchKeys.cs`.
+
+### 🎧 See what you actually listened to
+
+Open **Listening** for audible radio time, favorite stations, most-played songs, most-listened songs, and recent plays. Choose 7 days, 30 days, this year, or all time. A play qualifies after 15 audible seconds. Silent Radio Mode progression, paused music, and previews do not add listening time. Your history is stored locally; you can pause recording or clear it without changing your Library or stations. Complete backups include history, and selective transfers let you choose whether to include it.
 
 ---
 
@@ -375,7 +385,7 @@ WARDOGS Radio is designed so the complicated audio setup happens **once**, not e
 
 ### 1. Run the WARDOGS Radio installer
 
-Download **WARDOGS Radio v0.3.3** from [GitHub Releases](https://github.com/Kgray44/Wardogs_Radio/releases/latest) and run the installer.
+Download **WARDOGS Radio v0.4.0** from [GitHub Releases](https://github.com/Kgray44/Wardogs_Radio/releases/latest) and run the installer.
 
 You do **not** need to prepare MPV, WebView2, or Voicemeeter beforehand.
 
@@ -553,7 +563,7 @@ The Launcher:
 - health-checks the updated application
 - still launches the installed copy if update checking fails
 
-v0.3.3 keeps Setup and Audio & Routing on one saved listening output, resolves its MPV output from the selected Windows endpoint, and tests playback through MPV on that output. v0.3.2 added clear disconnected-device warnings and prevented GAME VOICE from claiming READY when a selected device is missing. v0.3.1 fixed the launcher timeout for large installer downloads. v0.3.0 simplified Setup & Repair, added the Banana Audio Bridge, and improved local and YouTube listening and game-output routing. Portable MPV is included, while missing WebView2 and Voicemeeter Banana are supplied through bundled official installers and only invoked when needed. Existing compatible installations are detected and left alone. Install v0.3.3 manually once if upgrading from v0.3.0 or earlier; those launchers can time out before finishing the installer download.
+v0.4.0 adds native YouTube video and playlist search with a built-in shared key, local Listening History, and slower pixel-based scrolling for lists and menus. v0.3.3 kept Setup and Audio & Routing on one saved listening output, resolved its MPV output from the selected Windows endpoint, and tested playback through MPV on that output. v0.3.2 added clear disconnected-device warnings and prevented GAME VOICE from claiming READY when a selected device is missing. v0.3.1 fixed the launcher timeout for large installer downloads. v0.3.0 simplified Setup & Repair, added the Banana Audio Bridge, and improved local and YouTube listening and game-output routing. Portable MPV is included, while missing WebView2 and Voicemeeter Banana are supplied through bundled official installers and only invoked when needed. Existing compatible installations are detected and left alone. Install v0.4.0 manually once if upgrading from v0.3.0 or earlier; those launchers can time out before finishing the installer download.
 
 An installed copy does **not** require internet access merely to launch and use local functionality.
 
@@ -605,6 +615,6 @@ No owner music, credentials, personal settings, or local build artifacts are int
 
 ## Current release
 
-**v0.3.3**
+**v0.4.0**
 
 [Download the latest WARDOGS Radio release](https://github.com/Kgray44/Wardogs_Radio/releases/latest)

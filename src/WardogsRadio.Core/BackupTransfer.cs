@@ -18,8 +18,9 @@ public enum WrRadioContent
     PlaybackSettings = 1 << 6,
     AudioRoutingSettings = 1 << 7,
     GeneralSettings = 1 << 8,
+    ListeningHistory = 1 << 9,
     All = Stations | LibrarySongs | MediaSources | Macros | KeyboardBindings | ControllerBindings |
-          PlaybackSettings | AudioRoutingSettings | GeneralSettings
+          PlaybackSettings | AudioRoutingSettings | GeneralSettings | ListeningHistory
 }
 
 public enum WrRadioPackageType { Selection, FullBackup }
@@ -86,6 +87,7 @@ public sealed class WrRadioSettings
     public Guid ProfileId { get; set; }
     public string ProfileName { get; set; } = "WARDOGS";
     public bool SetupComplete { get; set; }
+    public bool ListeningHistoryEnabled { get; set; } = true;
     public ClipGuardSettings ClipGuard { get; set; } = new();
     public PlaybackMode DefaultPlaybackMode { get; set; }
     public bool CrossfadeEnabled { get; set; }
@@ -123,7 +125,8 @@ public sealed class WrRadioSettings
     public static WrRadioSettings From(AppConfiguration source) => new()
     {
         ProfileId = source.Profile.Id, ProfileName = source.Profile.Name,
-        SetupComplete = source.SetupComplete, ClipGuard = Clone(source.ClipGuard), DefaultPlaybackMode = source.DefaultPlaybackMode,
+        SetupComplete = source.SetupComplete, ListeningHistoryEnabled = source.ListeningHistoryEnabled,
+        ClipGuard = Clone(source.ClipGuard), DefaultPlaybackMode = source.DefaultPlaybackMode,
         CrossfadeEnabled = source.CrossfadeEnabled, CrossfadeSeconds = source.CrossfadeSeconds, Curve = source.Curve,
         MasterVolume = source.MasterVolume, GameMasterVolume = source.GameMasterVolume,
         MicrophoneVolume = source.MicrophoneVolume, MicrophoneVolumeInitialized = source.MicrophoneVolumeInitialized,
@@ -145,6 +148,7 @@ public sealed class WrRadioSettings
             target.Profile.Id = ProfileId == Guid.Empty ? target.Profile.Id : ProfileId;
             target.Profile.Name = string.IsNullOrWhiteSpace(ProfileName) ? target.Profile.Name : ProfileName;
             target.SetupComplete = SetupComplete;
+            target.ListeningHistoryEnabled = ListeningHistoryEnabled;
             target.YouTubeDurationCache = Clone(YouTubeDurationCache);
             target.LocalDurationCache = Clone(LocalDurationCache);
             target.MpvPath = MpvPath;
@@ -181,6 +185,7 @@ public sealed class WrRadioPackage
     public List<MediaSource> Sources { get; set; } = [];
     public List<LibrarySong> Songs { get; set; } = [];
     public List<RadioMacro> Macros { get; set; } = [];
+    public List<ListeningHistoryEntry> ListeningHistory { get; set; } = [];
     public WrRadioSettings? Settings { get; set; }
     public string SourcePath { get; set; } = "";
 }
@@ -199,6 +204,7 @@ public sealed class WrRadioImportPlan
     public Dictionary<Guid, Guid> SongIds { get; } = [];
     public Dictionary<Guid, Guid> StationIds { get; } = [];
     public Dictionary<Guid, Guid> MacroIds { get; } = [];
+    public List<ListeningHistoryEntry> HistoryEntries { get; } = [];
 }
 
 public interface IWrRadioPackageMigration
@@ -295,6 +301,8 @@ public sealed class WrRadioPackageService
     {
         Log("Package.Export", $"Preparing {selection.PackageType} package.");
         var package = BuildPackage(configuration, selection);
+        if (package.Manifest.Contents.HasFlag(WrRadioContent.ListeningHistory))
+            package.ListeningHistory = (await new ListeningHistoryStore(_root).ReadAsync(cancellationToken)).ToList();
         destinationPath = EnsureExtension(destinationPath);
         var temporaryPath = destinationPath + ".tmp";
         Directory.CreateDirectory(Path.GetDirectoryName(destinationPath) ?? ".");
@@ -310,6 +318,8 @@ public sealed class WrRadioPackageService
                 if (package.Settings is not null) await WriteJsonAsync(archive, "configuration/settings.json", package.Settings, cancellationToken);
                 await WriteJsonAsync(archive, "library/sources.json", package.Sources, cancellationToken);
                 await WriteJsonAsync(archive, "library/songs.json", package.Songs, cancellationToken);
+                if (package.Manifest.Contents.HasFlag(WrRadioContent.ListeningHistory))
+                    await WriteJsonAsync(archive, "listening/history.json", package.ListeningHistory, cancellationToken);
                 await WriteJsonAsync(archive, "metadata/export-info.json", new { package.Manifest.PackageId, package.Manifest.CreatedUtc, ExportedSecrets = "None" }, cancellationToken);
                 if (selection.IncludeLocalMedia) await AddLocalMediaAsync(archive, package, cancellationToken);
             }
@@ -345,6 +355,7 @@ public sealed class WrRadioPackageService
             Settings = await ReadJsonAsync<WrRadioSettings>(archive, "configuration/settings.json", false, cancellationToken),
             Sources = await ReadJsonAsync<List<MediaSource>>(archive, "library/sources.json", false, cancellationToken) ?? [],
             Songs = await ReadJsonAsync<List<LibrarySong>>(archive, "library/songs.json", false, cancellationToken) ?? [],
+            ListeningHistory = await ReadJsonAsync<List<ListeningHistoryEntry>>(archive, "listening/history.json", false, cancellationToken) ?? [],
             SourcePath = packagePath
         };
         package = Migrate(package);
@@ -387,6 +398,13 @@ public sealed class WrRadioPackageService
         foreach (var incoming in selectedMacros)
             plan.MacroIds[incoming.Id] = ImportMacro(proposed, incoming, plan.StationIds, options.LibraryConflictResolution, plan,
                 options.Contents.HasFlag(WrRadioContent.KeyboardBindings), options.Contents.HasFlag(WrRadioContent.ControllerBindings));
+        if (options.Contents.HasFlag(WrRadioContent.ListeningHistory))
+            plan.HistoryEntries.AddRange(package.ListeningHistory.Select(entry => entry with
+            {
+                StationId = entry.StationId is { } stationId && plan.StationIds.TryGetValue(stationId, out var mappedStation) ? mappedStation : entry.StationId,
+                SongId = entry.SongId is { } songId && plan.SongIds.TryGetValue(songId, out var mappedSong) ? mappedSong : entry.SongId,
+                SourceId = entry.SourceId is { } sourceId && plan.SourceIds.TryGetValue(sourceId, out var mappedSource) ? mappedSource : entry.SourceId
+            }));
         package.Settings?.Apply(proposed, options.Contents);
         AddHardwareWarnings(package.Settings, options, plan.Warnings);
         AddControllerWarnings(selectedStations, selectedMacros, options, plan.Warnings);
@@ -417,6 +435,8 @@ public sealed class WrRadioPackageService
         var plan = BuildImportPlan(current, package, options);
         await CreateSafetyBackupAsync(current, "Import", cancellationToken);
         await CommitAsync(store, plan, cancellationToken);
+        if (options?.Contents.HasFlag(WrRadioContent.ListeningHistory) != false && package.Manifest.Contents.HasFlag(WrRadioContent.ListeningHistory))
+            await new ListeningHistoryStore(_root).ImportAsync(plan.HistoryEntries, replace: false, cancellationToken);
         return plan;
     }
 
@@ -424,8 +444,9 @@ public sealed class WrRadioPackageService
         CancellationToken cancellationToken = default)
     {
         var package = await OpenAsync(packagePath, cancellationToken);
+        var requiredContents = WrRadioContent.All & ~WrRadioContent.ListeningHistory;
         if (package.Manifest.PackageType != WrRadioPackageType.FullBackup ||
-            (package.Manifest.Contents & WrRadioContent.All) != WrRadioContent.All)
+            (package.Manifest.Contents & requiredContents) != requiredContents)
             throw new InvalidDataException("Only a complete WARDOGS Radio backup can replace the active configuration.");
         var blank = new AppConfiguration { Profile = new RadioProfile(), MusicLibrary = new MusicLibrary() };
         var plan = BuildImportPlan(blank, package, new WrRadioImportOptions
@@ -435,6 +456,8 @@ public sealed class WrRadioPackageService
         });
         await CreateSafetyBackupAsync(current, "Restore", cancellationToken);
         await CommitAsync(store, plan, cancellationToken);
+        if (package.Manifest.Contents.HasFlag(WrRadioContent.ListeningHistory))
+            await new ListeningHistoryStore(_root).ImportAsync(plan.HistoryEntries, replace: true, cancellationToken);
         return plan;
     }
 
@@ -562,12 +585,20 @@ public sealed class WrRadioPackageService
             throw new InvalidDataException("The package contains an invalid collection.");
         if (package.Sources.Count > MaximumObjectsPerCategory || package.Songs.Count > MaximumObjectsPerCategory ||
             package.Stations.Count > MaximumObjectsPerCategory || package.Macros.Count > MaximumObjectsPerCategory ||
-            package.Manifest.MediaAssets.Count > MaximumObjectsPerCategory)
+            package.Manifest.MediaAssets.Count > MaximumObjectsPerCategory || package.ListeningHistory.Count > 1_000_000)
             throw new InvalidDataException("The package contains an unreasonable number of configuration objects.");
         EnsureDistinct(package.Sources.Select(source => source.Id), "media source");
         EnsureDistinct(package.Songs.Select(song => song.Id), "library song");
         EnsureDistinct(package.Stations.Select(station => station.Id), "station");
         EnsureDistinct(package.Macros.Select(macro => macro.Id), "macro");
+        EnsureDistinct(package.ListeningHistory.Select(entry => entry.Id), "listening history entry");
+        if (package.ListeningHistory.Any(entry => entry.Id == Guid.Empty || entry.SessionId == Guid.Empty ||
+            !Enum.IsDefined(entry.Type) || !double.IsFinite(entry.AudibleSeconds) || entry.AudibleSeconds < 0 ||
+            (entry.Type == ListeningEntryType.Interval
+                ? entry.StartedAt is null || entry.Timestamp <= entry.StartedAt ||
+                  entry.AudibleSeconds > (entry.Timestamp - entry.StartedAt.Value).TotalSeconds + 2
+                : entry.StartedAt is not null || entry.AudibleSeconds != 0)))
+            throw new InvalidDataException("The package contains invalid Listening History.");
         var sourceIds = package.Sources.Select(source => source.Id).ToHashSet();
         var songIds = package.Songs.Select(song => song.Id).ToHashSet();
         var stationIds = package.Stations.Select(station => station.Id).ToHashSet();
@@ -608,6 +639,8 @@ public sealed class WrRadioPackageService
         if ((manifest.Contents & (WrRadioContent.GeneralSettings | WrRadioContent.PlaybackSettings | WrRadioContent.AudioRoutingSettings)) != WrRadioContent.None &&
             archive.GetEntry("configuration/settings.json") is null)
             throw new InvalidDataException("The package is missing required file 'configuration/settings.json'.");
+        if (manifest.Contents.HasFlag(WrRadioContent.ListeningHistory) && archive.GetEntry("listening/history.json") is null)
+            throw new InvalidDataException("The package is missing required file 'listening/history.json'.");
     }
 
     WrRadioPackage Migrate(WrRadioPackage package)

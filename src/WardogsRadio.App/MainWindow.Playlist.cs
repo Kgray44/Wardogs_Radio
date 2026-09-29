@@ -65,6 +65,7 @@ public partial class MainWindow
             station.Runtime.SequenceIndex == songs.Count - 1 &&
             playback.DurationSeconds is > 0 && station.Runtime.PositionSeconds > playback.DurationSeconds.Value - 2)
         {
+            await EndListeningTrackAsync(TrackEndReason.Completed);
             if (station.EffectiveRepeatMode == StationRepeatMode.Off)
             {
                 _localPlaylistEnded = true;
@@ -84,6 +85,7 @@ public partial class MainWindow
         }
         if (song.EndSeconds is not { } end || !playback.IsPlaying || playback.PositionSeconds < end - .07)
             return playback;
+        await EndListeningTrackAsync(TrackEndReason.Completed);
         var next = station.EffectiveRepeatMode == StationRepeatMode.Track ? index : index + 1;
         if (next >= songs.Count)
         {
@@ -102,19 +104,26 @@ public partial class MainWindow
         return await provider.RefreshAsync();
     }
 
-    async Task SelectLocalSongAsync(int index, double? absoluteSeconds = null, bool playIfPaused = false)
+    async Task SelectLocalSongAsync(int index, double? absoluteSeconds = null, bool playIfPaused = false,
+        TrackEndReason? priorTrackEnd = null)
     {
         if (_active is not { } station || _mpvProvider is not { } provider || index < 0 || index >= station.PlaylistSongs.Count) return;
+        _listeningSelectionInProgress = true;
+        try
+        {
         var song = station.PlaylistSongs[index];
         var target = Math.Max(song.StartSeconds, absoluteSeconds ?? song.StartSeconds);
         if (song.EndSeconds is { } end) target = Math.Min(target, end - .03);
         await provider.SelectTrackAsync(index, target);
+        if (priorTrackEnd is { } reason) await EndListeningTrackAsync(reason);
         station.Runtime.SequenceIndex = index;
         station.Runtime.PositionSeconds = target;
         _localPlaylistEnded = false;
         await SyncGameToHeadsetAsync(provider);
         RefreshDashboardPlaylist();
         if (playIfPaused && !station.Runtime.WasPlaying) await ToggleActiveAsync();
+        }
+        finally { _listeningSelectionInProgress = false; }
     }
 
     async Task NextSongAsync()
@@ -123,7 +132,7 @@ public partial class MainWindow
         var next = provider.CurrentPlaylistIndex + 1;
         if (next >= station.PlaylistSongs.Count)
             next = station.EffectiveRepeatMode == StationRepeatMode.Off ? station.PlaylistSongs.Count - 1 : 0;
-        await SelectLocalSongAsync(next);
+        await SelectLocalSongAsync(next, priorTrackEnd: TrackEndReason.Skipped);
     }
 
     async Task PreviousSongAsync()
@@ -132,7 +141,7 @@ public partial class MainWindow
         var index = Math.Clamp(provider.CurrentPlaylistIndex, 0, station.PlaylistSongs.Count - 1);
         var current = station.PlaylistSongs[index];
         var target = provider.Snapshot.PositionSeconds > current.StartSeconds + 5 ? index : Math.Max(0, index - 1);
-        await SelectLocalSongAsync(target);
+        await SelectLocalSongAsync(target, priorTrackEnd: TrackEndReason.Skipped);
     }
 
     static T? Ancestor<T>(DependencyObject? element) where T : DependencyObject
@@ -225,6 +234,36 @@ public partial class MainWindow
             Footer.Text = $"{added} {Plural(added, "LIBRARY CUE ADDED", "LIBRARY CUES ADDED")} TO {station.Name.ToUpperInvariant()}.";
         }
         catch (Exception error) { Footer.Text = "COULD NOT ADD LIBRARY CUES · " + error.Message; }
+    }
+
+    async void DashboardPlaylist_SearchYouTube_Click(object sender, RoutedEventArgs e)
+    {
+        if (_active is not { ProviderId: "youtube" } station)
+        {
+            Footer.Text = "TUNE A YOUTUBE STATION TO ADD A YOUTUBE VIDEO HERE.";
+            return;
+        }
+        var search = new YouTubeSearchWindow(!station.Runtime.WasPlaying, _config.MusicLibrary) { Owner = this };
+        if (search.ShowDialog() != true || search.SelectedResult is not { } selected) return;
+        if (selected.Type == MediaSearchResultType.Playlist)
+        {
+            Footer.Text = "A YOUTUBE PLAYLIST IS A STATION SOURCE · Create or edit a YouTube station to use it.";
+            return;
+        }
+        try
+        {
+            var activeSongId = CurrentSongId();
+            var alreadyAssigned = station.PlaylistEntries.Any(entry => _config.MusicLibrary.Songs.Any(song =>
+                song.Id == entry.SongId && MusicLibraryService.NormalizeSource("youtube",
+                    _config.MusicLibrary.Sources.FirstOrDefault(source => source.Id == song.SourceId)?.Source) == selected.CanonicalUrl));
+            var (_, song, existed) = MediaDiscoveryIngestion.Add(_config.MusicLibrary, selected, station);
+            if (alreadyAssigned) { Footer.Text = "THIS VIDEO IS ALREADY IN THE STATION PLAYLIST."; return; }
+            await ApplyPlaylistChangeAsync(activeSongId);
+            RefreshLibrary();
+            Footer.Text = existed ? $"EXISTING LIBRARY VIDEO ADDED TO {station.Name.ToUpperInvariant()}." :
+                $"VIDEO ADDED TO LIBRARY AND {station.Name.ToUpperInvariant()}.";
+        }
+        catch (Exception error) { Footer.Text = "COULD NOT ADD YOUTUBE VIDEO · " + error.Message; }
     }
 
     double? KnownSongDuration(Station station, StationSong song)
@@ -360,8 +399,10 @@ public partial class MainWindow
         var index = station.PlaylistSongs.FindIndex(x => x.Id == card.Song.Id);
         try
         {
-            if (station.ProviderId == "mpv") await SelectLocalSongAsync(index, playIfPaused: true);
-            else if (station.ProviderId == "youtube") await YouTubeCommandAsync($"selectSegment({index})");
+            if (station.ProviderId == "mpv") await SelectLocalSongAsync(index, playIfPaused: true,
+                priorTrackEnd: index == station.Runtime.SequenceIndex ? null : TrackEndReason.Skipped);
+            else if (station.ProviderId == "youtube") await ChangeYouTubeTrackAsync($"selectSegment({index})",
+                index == station.Runtime.SequenceIndex ? TrackEndReason.Neutral : TrackEndReason.Skipped);
         }
         catch (Exception error) { Footer.Text = "COULD NOT PLAY SONG · " + error.Message; }
     }
@@ -509,7 +550,8 @@ public partial class MainWindow
             {
                 var source = station.PlaylistSongs[current].Source;
                 var index = SongPlaylist.FindCurrent(station.PlaylistSongs, source, seconds);
-                await SelectLocalSongAsync(index >= 0 ? index : current, seconds);
+                await SelectLocalSongAsync(index >= 0 ? index : current, seconds,
+                    priorTrackEnd: index >= 0 && index != current ? TrackEndReason.Neutral : null);
             }
             else { await provider.SeekAsync(seconds); await SyncGameToHeadsetAsync(provider); }
         }
