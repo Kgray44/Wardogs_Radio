@@ -8,6 +8,52 @@ namespace WardogsRadio.Core.Tests;
 public sealed class BackupTransferTests
 {
     [Fact]
+    public async Task FullBackupRestoresPrivateListeningHistoryAndOldPackagesRemainReadable()
+    {
+        await using var fixture = new PackageFixture();
+        var configuration = fixture.Configuration();
+        var station = configuration.Profile.Stations.First();
+        var song = configuration.MusicLibrary.Songs.First();
+        var source = configuration.MusicLibrary.Sources.First();
+        var history = new ListeningHistoryStore(fixture.Root);
+        var now = new DateTimeOffset(2026, 9, 28, 12, 0, 30, TimeSpan.Zero);
+        var interval = new ListeningHistoryEntry
+        {
+            Type = ListeningEntryType.Interval, Timestamp = now, StartedAt = now.AddSeconds(-30), AudibleSeconds = 30,
+            SessionId = Guid.NewGuid(), PlayId = Guid.NewGuid(), StationId = station.Id, StationName = station.Name,
+            SongId = song.Id, SongName = song.Name, SourceId = source.Id, SourceName = source.Name
+        };
+        await history.AppendAsync([interval]);
+        var path = fixture.Path("with-history.wradio");
+        await fixture.Service.ExportAsync(configuration, WrRadioExportSelection.FullBackup(), path);
+        var package = await fixture.Service.OpenAsync(path);
+        Assert.Equal(interval.Id, Assert.Single(package.ListeningHistory).Id);
+
+        await history.ClearAsync();
+        var configStore = new ConfigurationStore(fixture.Root);
+        await configStore.SaveAsync(configuration);
+        await fixture.Service.RestoreAsync(configStore, configuration, path);
+        Assert.Equal(30, ListeningStatsService.Aggregate(await history.ReadAsync()).TotalAudibleSeconds, 3);
+
+        // A pre-history full backup lacks the new optional category and still opens.
+        var oldPath = fixture.Path("old-full.wradio");
+        File.Copy(path, oldPath);
+        using (var archive = ZipFile.Open(oldPath, ZipArchiveMode.Update))
+        {
+            archive.GetEntry("listening/history.json")!.Delete();
+            WrRadioPackageManifest? manifest;
+            await using (var input = archive.GetEntry("manifest.json")!.Open())
+                manifest = await JsonSerializer.DeserializeAsync<WrRadioPackageManifest>(input, WrRadioPackageService.JsonOptions);
+            archive.GetEntry("manifest.json")!.Delete();
+            manifest!.Contents &= ~WrRadioContent.ListeningHistory;
+            await using (var output = archive.CreateEntry("manifest.json").Open())
+                await JsonSerializer.SerializeAsync(output, manifest, WrRadioPackageService.JsonOptions);
+        }
+        var oldPackage = await fixture.Service.OpenAsync(oldPath);
+        Assert.False(oldPackage.Manifest.Contents.HasFlag(WrRadioContent.ListeningHistory));
+        Assert.Empty(oldPackage.ListeningHistory);
+    }
+    [Fact]
     public async Task StationExportIncludesCanonicalSongAndSourceDependenciesExactlyOnce()
     {
         await using var fixture = new PackageFixture();

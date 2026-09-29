@@ -25,7 +25,7 @@ public partial class LibrarySourceInspectorWindow : Window
     string _instance = Guid.NewGuid().ToString("N");
 
     public LibrarySourceInspectorWindow(MusicLibrary library, MediaSource source, Func<Task> save,
-        string? mpvPath, string? mpvAudioDevice)
+        string? mpvPath, string? mpvAudioDevice, ListeningEntityStats? listening = null)
     {
         InitializeComponent();
         _library = library;
@@ -35,6 +35,8 @@ public partial class LibrarySourceInspectorWindow : Window
         _mpvAudioDevice = mpvAudioDevice;
         SourceNameText.Text = source.Name;
         SourceIdentityText.Text = source.Source;
+        SourceListeningText.Text = listening is null ? "No listening history yet." :
+            $"LISTENING · {listening.AudibleSeconds / 60:0} minutes · {listening.QualifiedPlays} plays · {listening.UniqueSongs} songs heard";
         _duration = source.DurationSeconds ?? 0;
         _poll.Tick += PollAsync;
         RefreshSongs();

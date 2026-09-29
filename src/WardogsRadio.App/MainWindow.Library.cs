@@ -90,11 +90,16 @@ public partial class MainWindow
         {
             ShowLibrarySongs(card.SourceRecord.Id);
             LibrarySongHintText.Text = $"{card.Name} · select a cue to edit its shared title and boundaries.";
+            ShowLibraryListening(sourceId: card.SourceRecord.Id);
         }
         RefreshLibraryActions();
     }
 
-    void LibrarySongList_SelectionChanged(object sender, SelectionChangedEventArgs e) => RefreshLibraryActions();
+    void LibrarySongList_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        RefreshLibraryActions();
+        if (LibrarySongList.SelectedItem is LibrarySongCard card) ShowLibraryListening(songId: card.SongRecord.Id);
+    }
 
     void LibrarySort_Changed(object sender, SelectionChangedEventArgs e)
     {
@@ -144,7 +149,8 @@ public partial class MainWindow
     void OpenLibrarySource(MediaSource source)
     {
         var inspector = new LibrarySourceInspectorWindow(_config.MusicLibrary, source,
-            () => _store.SaveAsync(_config), _config.MpvPath, _config.MpvAudioDeviceName) { Owner = this };
+            () => _store.SaveAsync(_config), _config.MpvPath, _config.MpvAudioDeviceName,
+            _libraryAllTimeStats?.Sources.FirstOrDefault(item => item.Id == source.Id)) { Owner = this };
         inspector.ShowDialog();
         RefreshLibrary();
         RefreshDashboardPlaylist();
@@ -152,17 +158,30 @@ public partial class MainWindow
 
     async Task AddLibrarySourceAsync(string providerId)
     {
-        var dialog = new LibrarySourceWindow(providerId) { Owner = this };
+        var dialog = new LibrarySourceWindow(providerId, _active?.Runtime.WasPlaying != true, _config.MusicLibrary) { Owner = this };
         if (dialog.ShowDialog() != true || dialog.Result is not { } result) return;
         try
         {
-            var source = MusicLibraryService.EnsureSource(_config.MusicLibrary, result.ProviderId, result.Source, result.Name);
-            MusicLibraryService.EnsureWholeSourceSong(_config.MusicLibrary, source, result.Name);
+            var source = dialog.SearchResult is { } discovered
+                ? MediaDiscoveryIngestion.Add(_config.MusicLibrary, discovered).Source
+                : MusicLibraryService.EnsureSource(_config.MusicLibrary, result.ProviderId, result.Source, result.Name);
+            if (dialog.SearchResult is null && MusicLibraryService.SupportsCueRanges(result.ProviderId, result.Source))
+                MusicLibraryService.EnsureWholeSourceSong(_config.MusicLibrary, source, result.Name);
             await _store.SaveAsync(_config);
             RefreshLibrary();
-            Footer.Text = "SOURCE ADDED TO LIBRARY · No media file was copied.";
+            Footer.Text = "SOURCE READY IN LIBRARY · No media file was copied.";
         }
         catch (Exception error) { Footer.Text = "COULD NOT ADD SOURCE · " + error.Message; }
+    }
+
+    void ApplyDiscoveredStationSource(Station station, MediaSearchResult? result, bool sourceChanged)
+    {
+        if (result is null || !sourceChanged) return;
+        station.PlaylistEntries.Clear();
+        station.PlaylistSongs.Clear();
+        MediaDiscoveryIngestion.Add(_config.MusicLibrary, result,
+            result.Type == MediaSearchResultType.Video ? station : null);
+        MusicLibraryService.MaterializeStationPlaylist(_config, station);
     }
 
 

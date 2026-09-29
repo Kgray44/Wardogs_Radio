@@ -264,7 +264,7 @@ public partial class MacroDesignerWindow : Window
         ValueLabel.Text = _selectedAction.Kind == ActionKind.FadeToStation ? "Duration (ms; 0 uses normal transition)" :
             MacroActionCatalog.HasDuration(_selectedAction.Kind) ? "Duration (ms)" :
             definition.Parameter == MacroActionParameter.Decibels ? "Gain (dB, -60 to +12)" : "Position (seconds)";
-        ArgumentLabel.Text = definition.Parameter == MacroActionParameter.Page ? "Page (dashboard, stations, macros, audio, settings, diagnostics)" : "Application path";
+        ArgumentLabel.Text = definition.Parameter == MacroActionParameter.Page ? "Page (dashboard, stations, library, listening, macros, audio, settings, diagnostics)" : "Application path";
         ActionHelp.Text = definition.Description;
     }
 

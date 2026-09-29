@@ -132,6 +132,16 @@ Stations also have **Add from Library**, including multi-select, so building a n
 
 The Library also includes a **Source Archive**, letting you inspect compatible original sources and work directly from their timelines.
 
+### 🔎 Find music in YouTube Search
+
+When you add a YouTube source, choose **Paste Link** or **Search YouTube**. Search can find individual videos and playlists without leaving WARDOGS. A selected video becomes the same Library source and reusable whole-song cue that its pasted link would create. If it is already in your Library, WARDOGS reuses it. From a YouTube station's playlist, **Search YouTube** can add a selected video to both the Library and that station.
+
+YouTube Search uses the official YouTube Data API. Enter your own API key in the Search window for the current app session. The key stays in memory and is never included in configuration, backups, or diagnostics. Search runs only when you press Enter or **Search**; paste-link playback works without a key. Video preview is available while normal station playback is stopped and never adds to listening history. Playlists remain collections, so their individual videos do not become one long split-ready timeline.
+
+### 🎧 See what you actually listened to
+
+Open **Listening** for audible radio time, favorite stations, most-played songs, most-listened songs, and recent plays. Choose 7 days, 30 days, this year, or all time. A play qualifies after 15 audible seconds. Silent Radio Mode progression, paused music, and previews do not add listening time. Your history is stored locally; you can pause recording or clear it without changing your Library or stations. Complete backups include history, and selective transfers let you choose whether to include it.
+
 ---
 
 ### 🎛️ Macros, keybinds, and HOTAS controls

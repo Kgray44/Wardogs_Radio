@@ -12,25 +12,40 @@ public partial class LibrarySourceWindow : Window
 {
     readonly string _selection;
     readonly string _providerId;
+    readonly bool _allowPreview;
+    readonly MusicLibrary? _library;
     public LibrarySourceDraft? Result { get; private set; }
+    public MediaSearchResult? SearchResult { get; private set; }
 
-    public LibrarySourceWindow(string selection)
+    public LibrarySourceWindow(string selection, bool allowPreview = true, MusicLibrary? library = null)
     {
         InitializeComponent();
         _selection = selection;
+        _allowPreview = allowPreview;
+        _library = library;
         _providerId = StationSourceSelection.ProviderId(selection);
         var local = selection == StationSourceSelection.LocalMpv;
         (Heading.Text, SourceLabel.Text, Explanation.Text) = selection switch
         {
             StationSourceSelection.LocalMpv => ("ADD LOCAL MEDIA SOURCE", "LOCAL MEDIA FILE", "Choose an existing media file. The library keeps its path and does not copy, move, or transcode the file."),
             StationSourceSelection.LinkMpv => ("ADD INTERNET RADIO SOURCE", "STREAM LINK", "Save the direct stream identity used by your station. Streams can be shared, but do not expose reusable timeline cues."),
-            "youtube" => ("ADD YOUTUBE VIDEO", "YOUTUBE VIDEO LINK", "Use one YouTube video. Its song cues can be reused by several stations; playlists are not segmented as one source."),
+            "youtube" => ("ADD YOUTUBE SOURCE", "YOUTUBE VIDEO OR PLAYLIST LINK", "Paste a link or search YouTube. Single videos can create reusable timeline cues; playlists remain collections."),
             "external-audio" => ("ADD MUSIC APP SOURCE", "WINDOWS MEDIA SESSION", "Enter the media-session identity selected on the Stations page. It can be shared as a source record, but does not expose timeline cues."),
             "soundcloud" => ("ADD SOUNDCLOUD SOURCE", "SOUNDCLOUD LINK", "Save a SoundCloud source identity for compatible stations. Playback still needs the account access configured for this app."),
             "applemusic" => ("ADD APPLE MUSIC SOURCE", "APPLE MUSIC LINK", "Save an Apple Music source identity for compatible stations. Playback still needs the account access configured for this app."),
             _ => ("ADD SOURCE", "SOURCE IDENTITY", "Save the source identity used by compatible stations.")
         };
         BrowseButton.Visibility = local ? Visibility.Visible : Visibility.Collapsed;
+        SearchButton.Visibility = selection == "youtube" ? Visibility.Visible : Visibility.Collapsed;
+    }
+
+    void Search_Click(object sender, RoutedEventArgs e)
+    {
+        var search = new YouTubeSearchWindow(_allowPreview, _library) { Owner = this };
+        if (search.ShowDialog() != true || search.SelectedResult is not { } selected) return;
+        SearchResult = selected;
+        Result = new LibrarySourceDraft("youtube", selected.CanonicalUrl, selected.Title);
+        DialogResult = true;
     }
 
     void Browse_Click(object sender, RoutedEventArgs e)
@@ -51,8 +66,9 @@ public partial class LibrarySourceWindow : Window
     {
         var source = SourceBox.Text.Trim();
         if (string.IsNullOrWhiteSpace(source)) { ValidationText.Text = "ENTER A MEDIA IDENTITY FIRST."; return; }
-        if (_selection == "youtube" && !MusicLibraryService.TryGetYouTubeVideoId(source, out _))
-            { ValidationText.Text = "PASTE A SINGLE YOUTUBE VIDEO LINK, NOT A PLAYLIST."; return; }
+        if (_selection == "youtube" && !MusicLibraryService.TryGetYouTubeVideoId(source, out _) &&
+            !MusicLibraryService.TryGetYouTubePlaylistId(source, out _))
+            { ValidationText.Text = "PASTE A YOUTUBE VIDEO OR PLAYLIST LINK."; return; }
         if (_selection == StationSourceSelection.LocalMpv && !File.Exists(source))
             { ValidationText.Text = "CHOOSE AN EXISTING LOCAL MEDIA FILE."; return; }
         if (_selection == StationSourceSelection.LinkMpv && !IsWebLink(source))

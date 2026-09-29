@@ -69,6 +69,8 @@ public sealed class AppConfiguration
     public double MasterVolume { get; set; } = .8; public double GameMasterVolume { get; set; } = .8; public double MicrophoneVolume { get; set; } = 1; public bool MicrophoneVolumeInitialized { get; set; }
     /// <summary>Suppresses decorative Now Playing transitions while retaining all controls and state updates.</summary>
     public bool ReduceMotion { get; set; }
+    /// <summary>Local listening history is opt-out and is never sent to a service.</summary>
+    public bool ListeningHistoryEnabled { get; set; } = true;
     public Dictionary<string, YouTubeTrackMetadata> YouTubeDurationCache { get; set; } = [];
     public Dictionary<string, double> LocalDurationCache { get; set; } = [];
     public string? MpvPath { get; set; } public string? MpvAudioDeviceName { get; set; } public string? GameMpvAudioDeviceName { get; set; } public string? YtDlpPath { get; set; } public string? MonitorDeviceId { get; set; } public string? MicrophoneDeviceId { get; set; } public string GameBus { get; set; } = "B1";

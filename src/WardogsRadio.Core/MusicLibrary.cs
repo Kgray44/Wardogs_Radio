@@ -363,6 +363,12 @@ public static class MusicLibraryService
         }
         if (station.PlaylistEntries.Count > 0 || string.IsNullOrWhiteSpace(station.Source)) return;
 
+        if (station.ProviderId == "youtube" && TryGetYouTubePlaylistId(station.Source, out _))
+        {
+            EnsureSource(library, "youtube", station.Source, station.Name);
+            return; // A multi-video playlist is a source collection, not one seekable song.
+        }
+
         if (!SupportsCueRanges(station.ProviderId, station.Source)) return;
         var stationSource = EnsureSource(library, station.ProviderId, station.Source, station.Name);
         var whole = EnsureWholeSourceSong(library, stationSource, station.Name);
@@ -424,6 +430,8 @@ public static class MusicLibraryService
         var value = source?.Trim() ?? "";
         if (provider == "youtube" && TryGetYouTubeVideoId(value, out var videoId))
             return "https://www.youtube.com/watch?v=" + videoId;
+        if (provider == "youtube" && TryGetYouTubePlaylistId(value, out var playlistId))
+            return "https://www.youtube.com/playlist?list=" + playlistId;
         if (provider == "mpv" && !Uri.TryCreate(value, UriKind.Absolute, out _))
         {
             try { return Path.GetFullPath(value); }
@@ -443,11 +451,25 @@ public static class MusicLibraryService
             return true;
         }
         if (uri.Host.Equals("youtu.be", StringComparison.OrdinalIgnoreCase)) videoId = uri.AbsolutePath.Trim('/');
-        else if (uri.Host.EndsWith("youtube.com", StringComparison.OrdinalIgnoreCase))
+        else if (IsYouTubeHost(uri.Host))
             videoId = uri.Query.TrimStart('?').Split('&', StringSplitOptions.RemoveEmptyEntries)
                 .Select(part => part.Split('=', 2)).FirstOrDefault(part => part[0].Equals("v", StringComparison.OrdinalIgnoreCase))?.ElementAtOrDefault(1) ?? "";
         return videoId.Length is >= 6 and <= 32 && videoId.All(character => char.IsLetterOrDigit(character) || character is '-' or '_');
     }
+
+    public static bool TryGetYouTubePlaylistId(string? source, out string playlistId)
+    {
+        playlistId = "";
+        if (!Uri.TryCreate(source, UriKind.Absolute, out var uri) || !IsYouTubeHost(uri.Host)) return false;
+        playlistId = uri.Query.TrimStart('?').Split('&', StringSplitOptions.RemoveEmptyEntries)
+            .Select(part => part.Split('=', 2)).FirstOrDefault(part => part[0].Equals("list", StringComparison.OrdinalIgnoreCase))?.ElementAtOrDefault(1) ?? "";
+        return playlistId.Length is >= 6 and <= 100 && playlistId.All(character => char.IsLetterOrDigit(character) || character is '-' or '_');
+    }
+
+    static bool IsYouTubeHost(string host) => host.Equals("youtube.com", StringComparison.OrdinalIgnoreCase) ||
+        host.Equals("www.youtube.com", StringComparison.OrdinalIgnoreCase) ||
+        host.Equals("music.youtube.com", StringComparison.OrdinalIgnoreCase) ||
+        host.Equals("m.youtube.com", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>Only sources with a stable single-media timeline may expose cue boundaries.</summary>
     public static bool SupportsCueRanges(string? providerId, string? source)

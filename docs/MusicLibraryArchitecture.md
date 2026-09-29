@@ -58,3 +58,25 @@ library song.
 - **Delete from Library** removes the canonical song and all of its station
   entries after confirmation. Removing from one station leaves the song and
   every other assignment intact.
+
+## YouTube discovery
+
+`IMediaDiscoveryProvider` returns typed video or playlist candidates. The WPF Search
+window calls `YouTubeDiscoveryProvider` only after the user presses Enter or Search.
+Search uses the official YouTube Data API (`search.list`, then `videos.list` for
+video durations) with an API key supplied for the current app session. The key is
+held only in memory and never written to configuration, logs, diagnostics, or
+`.wradio` packages. Search results are cached in memory for that app session.
+
+Selection goes through `MediaDiscoveryIngestion` and `MusicLibraryService.EnsureSource`.
+Video identities normalize to `youtube.com/watch?v=<id>` even when discovered
+through `youtu.be`, `music.youtube.com`, or a watch URL with tracking and playlist
+context. Playlist identities normalize to `youtube.com/playlist?list=<id>`.
+One video can own many non-destructive song cues; a multi-video playlist is a
+source collection and does not gain a fake single-media cue timeline. The active
+YouTube station editor accepts either kind. A YouTube station playlist can add a
+searched video directly; playlist results guide the user to a station source.
+
+Preview uses an isolated visible WebView2 player while normal station playback is
+stopped. Closing Search navigates that preview to `about:blank`. It does not
+create Library records or feed the Listening recorder.

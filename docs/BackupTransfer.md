@@ -27,6 +27,7 @@ configuration/macros.json
 configuration/settings.json
 library/sources.json
 library/songs.json
+listening/history.json                (when Listening History is selected)
 metadata/export-info.json
 assets/media/<source-id>-<safe-name>     (only when selected)
 ```
@@ -34,6 +35,8 @@ assets/media/<source-id>-<safe-name>     (only when selected)
 The manifest identifies the package, application version, package type, selected content categories, and embedded-media records. `IWrRadioPackageMigration` supplies a chainable, independently testable migration seam; future package schemas must add explicit migrations instead of being guessed.
 
 The export dialog can create either a selective transfer package or a complete restorable backup. A full backup always overrides item selections and carries every supported configuration category; only it is accepted by Restore.
+
+Listening History is a separate private local journal under `%LocalAppData%\WARDOGS Radio\Listening`. It is included by default in complete backups and can be selected or omitted in transfer packages. Import merges history by stable event ID and remaps imported station/song/source IDs when those objects are copied. Restore replaces the local history when the backup includes it. Older full backups that predate Listening History remain restorable and leave the current history in place; they contain no invented past plays. A safety backup includes the current history before import or restore. API keys are never packaged.
 
 ## Safety behavior
 

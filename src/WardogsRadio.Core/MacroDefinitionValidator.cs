@@ -2,7 +2,7 @@ namespace WardogsRadio.Core;
 
 public static class MacroDefinitionValidator
 {
-    static readonly string[] Pages = ["dashboard", "stations", "macros", "audio", "settings", "diagnostics"];
+    static readonly string[] Pages = ["dashboard", "stations", "library", "listening", "macros", "audio", "settings", "diagnostics"];
 
     public static IReadOnlyList<string> Validate(RadioMacro macro, RadioProfile profile)
     {
