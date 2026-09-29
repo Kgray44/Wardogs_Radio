@@ -4856,7 +4856,7 @@ public partial class MainWindow : Window, IMacroActionHandler
             _listeningConnectionError is not null || _listeningResolution?.Resolved != true ? "NEEDS REPAIR" : "RESOLVED",
             selectedEndpoint is null ? "No listening output selected" : selectedEndpoint.Name,
             $"Windows endpoint: {_config.MonitorDeviceId ?? "none"} ({_config.MonitorDeviceName ?? "unknown"}); present={selectedEndpoint?.IsPresent == true}\n" +
-            $"Saved player ID: {_config.MpvAudioDeviceName ?? "none"}; strategy={_listeningResolution?.Strategy ?? "none"}; reason={_listeningConnectionError ?? _listeningResolution?.Detail ?? "not evaluated"}\n" +
+            $"Saved player ID: {_config.MpvAudioDeviceName ?? "none"}; bound endpoint={_config.MpvAudioDeviceEndpointId ?? "none"}; strategy={_listeningResolution?.Strategy ?? "none"}; reason={_listeningConnectionError ?? _listeningResolution?.Detail ?? "not evaluated"}\n" +
             $"Player switched/read back={_listeningPlayerSwitched}; playback path verified={_listeningPlaybackVerified}; observed endpoint signal={_sawMonitorSignal}\n" +
             "Player devices:\n" + string.Join("\n", _listeningPlayerDevices.Select(device => $"{device.Name} | {device.Description}"))));
         checks.Add(new DiagnosticItem("Audio Bridge", bridgeSnapshot.Connection.ToString().ToUpperInvariant(),

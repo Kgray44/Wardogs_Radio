@@ -22,6 +22,7 @@ public partial class MainWindow
         if (ConfiguredListeningEndpoint() is not { IsPresent: true })
             throw new InvalidOperationException("The selected listening output is disconnected. Reconnect it or choose another output.");
         if (_listeningResolution?.Device is not { } player ||
+            _listeningConnectionError is not null ||
             !string.Equals(player.Name, _config.MpvAudioDeviceName, StringComparison.OrdinalIgnoreCase) ||
             !string.Equals(_config.MpvAudioDeviceEndpointId, _config.MonitorDeviceId, StringComparison.OrdinalIgnoreCase))
             throw new InvalidOperationException("The selected listening output needs player repair. Refresh device lists.");

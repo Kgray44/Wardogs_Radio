@@ -74,6 +74,7 @@ public sealed class MpvLocator
 }
 public sealed class MpvProvider(MpvLocator locator, string? configuredPath=null, string? configuredAudioDevice=null, double loudnessCalibrationDb=0) : IPlaybackProvider
 {
+ string? _configuredAudioDevice = configuredAudioDevice;
  readonly string _pipeName="wardogs-radio-mpv-"+Guid.NewGuid().ToString("N"); Process? _process; NamedPipeClientStream? _pipe; StreamReader? _reader;
  readonly SemaphoreSlim _commands = new(1,1); long _nextRequestId;
  readonly SemaphoreSlim _volumeGate = new(1,1);
@@ -116,7 +117,7 @@ public sealed class MpvProvider(MpvLocator locator, string? configuredPath=null,
    LoadedFiles=files;
    CurrentPlaylistIndex=0;
    await EnsureStarted(ct);
-   if(!string.IsNullOrWhiteSpace(configuredAudioDevice))await SetAudioDeviceAsync(configuredAudioDevice,ct);
+   if(!string.IsNullOrWhiteSpace(_configuredAudioDevice))await SetAudioDeviceAsync(_configuredAudioDevice,ct);
    await SetRepeatModeAsync(SongPlaylist.HasBoundaries(station)?StationRepeatMode.Off:station.EffectiveRepeatMode,ct);
    await Command(new[]{"loadfile",files[0],"replace"},ct);
    foreach(var file in files.Skip(1))await Command(new[]{"loadfile",file,"append"},ct);
@@ -221,6 +222,7 @@ public sealed class MpvProvider(MpvLocator locator, string? configuredPath=null,
    await Command(new[]{"set_property","audio-device",name},ct);
    if(!string.Equals(await ReadAudioDeviceAsync(ct),name,StringComparison.Ordinal))
      throw new InvalidOperationException("MPV did not confirm the requested audio device.");
+   _configuredAudioDevice = name == "auto" ? null : name;
  }
  public async Task<PlaybackSnapshot> RefreshAsync(CancellationToken ct=default)
  {
@@ -256,7 +258,7 @@ public sealed class MpvProvider(MpvLocator locator, string? configuredPath=null,
      _firstPlayPending=false;
    }
    else await Command(new[]{"set_property","pause","no"},ct);
-   if(!string.IsNullOrWhiteSpace(configuredAudioDevice))
+   if(!string.IsNullOrWhiteSpace(_configuredAudioDevice))
    {
      var selected=await ReadAudioDeviceAsync(ct);
      string? output=null;
@@ -266,8 +268,8 @@ public sealed class MpvProvider(MpvLocator locator, string? configuredPath=null,
        if(!string.IsNullOrWhiteSpace(output))break;
        await Task.Delay(50,ct);
      }
-     if(!string.Equals(selected,configuredAudioDevice,StringComparison.Ordinal) ||
-        configuredAudioDevice.StartsWith("wasapi/",StringComparison.OrdinalIgnoreCase) &&
+     if(!string.Equals(selected,_configuredAudioDevice,StringComparison.Ordinal) ||
+        _configuredAudioDevice.StartsWith("wasapi/",StringComparison.OrdinalIgnoreCase) &&
         output?.StartsWith("wasapi",StringComparison.OrdinalIgnoreCase)!=true)
      {
        await Command(new[]{"set_property","pause","yes"},ct);
