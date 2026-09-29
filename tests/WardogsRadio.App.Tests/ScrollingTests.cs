@@ -45,6 +45,8 @@ public sealed class ScrollingTests
                 var listScroll = FindChild<ScrollViewer>(list);
                 Assert.NotNull(listScroll);
                 Assert.True(listScroll.ScrollableHeight > 0);
+                Assert.Equal(ScrollUnit.Pixel, VirtualizingPanel.GetScrollUnit(list));
+                Assert.True(VirtualizingPanel.GetIsVirtualizing(list));
                 Assert.True(page.ScrollableHeight > 0);
                 var firstItem = Assert.IsType<ListBoxItem>(list.ItemContainerGenerator.ContainerFromIndex(0));
                 var listWheel = WheelDown();
@@ -52,6 +54,8 @@ public sealed class ScrollingTests
                 window.UpdateLayout();
                 Assert.True(listScroll.VerticalOffset > 0,
                     $"Wheel should move a Library-style list (handled={listWheel.Handled}, extent={listScroll.ExtentHeight}, viewport={listScroll.ViewportHeight}).");
+                Assert.True(listScroll.VerticalOffset <= 72,
+                    $"One wheel step moved the Library-style list {listScroll.VerticalOffset:0.#} pixels.");
                 listScroll.ScrollToTop();
                 window.UpdateLayout();
                 for (var index = 0; index < 4; index++) firstItem.RaiseEvent(WheelDown(30));
@@ -65,6 +69,8 @@ public sealed class ScrollingTests
                 window.UpdateLayout();
                 Assert.True(page.VerticalOffset > 0,
                     $"Wheel should move a page (handled={pageWheel.Handled}, extent={page.ExtentHeight}, viewport={page.ViewportHeight}).");
+                Assert.True(page.VerticalOffset <= 72,
+                    $"One wheel step moved the page {page.VerticalOffset:0.#} pixels.");
 
                 combo.IsDropDownOpen = true;
                 combo.UpdateLayout();
@@ -76,6 +82,8 @@ public sealed class ScrollingTests
                 firstChoice.RaiseEvent(WheelDown());
                 popup.Child.UpdateLayout();
                 Assert.True(popupScroll.VerticalOffset > 0, "Wheel should move an open dropdown.");
+                Assert.True(popupScroll.VerticalOffset <= 72,
+                    $"One wheel step moved the dropdown {popupScroll.VerticalOffset:0.#} pixels.");
                 popupScroll.ScrollToTop();
                 popup.Child.UpdateLayout();
                 for (var index = 0; index < 4; index++) firstChoice.RaiseEvent(WheelDown(30));
@@ -94,6 +102,8 @@ public sealed class ScrollingTests
                 Assert.IsType<MenuItem>(menu.Items[0]).RaiseEvent(WheelDown());
                 menu.UpdateLayout();
                 Assert.True(menuScroll.VerticalOffset > 0, "Wheel should move an open context menu.");
+                Assert.True(menuScroll.VerticalOffset <= 72,
+                    $"One wheel step moved the menu {menuScroll.VerticalOffset:0.#} pixels.");
                 menuScroll.ScrollToTop();
                 menu.UpdateLayout();
                 for (var index = 0; index < 4; index++) Assert.IsType<MenuItem>(menu.Items[0]).RaiseEvent(WheelDown(30));
