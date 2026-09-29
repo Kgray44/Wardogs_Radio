@@ -3,10 +3,10 @@ using System.Text.Json;
 
 namespace WardogsRadio.Playback;
 
-public sealed record WindowsAudioEndpoint(string Id, string Name, bool IsInput)
+public sealed record WindowsAudioEndpoint(string Id, string Name, bool IsInput, bool IsPresent = true)
 {
     public string Category => IsInput ? "Microphone / recording" : "Headphones / speakers";
-    public string Availability => "Available now";
+    public string Availability => IsPresent ? "Available now" : "Selected, but disconnected";
 }
 
 /// <summary>Discovers currently present Windows AudioEndpoint PnP entries without changing routing.</summary>

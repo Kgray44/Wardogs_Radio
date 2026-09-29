@@ -71,7 +71,16 @@ public sealed class AppConfiguration
     public bool ReduceMotion { get; set; }
     public Dictionary<string, YouTubeTrackMetadata> YouTubeDurationCache { get; set; } = [];
     public Dictionary<string, double> LocalDurationCache { get; set; } = [];
-    public string? MpvPath { get; set; } public string? MpvAudioDeviceName { get; set; } public string? GameMpvAudioDeviceName { get; set; } public string? YtDlpPath { get; set; } public string? MonitorDeviceId { get; set; } public string? MicrophoneDeviceId { get; set; } public string GameBus { get; set; } = "B1";
+    public string? MpvPath { get; set; }
+    /// <summary>Last resolved player ID for MonitorDeviceId. This is a cache, never a separate listening selection.</summary>
+    public string? MpvAudioDeviceName { get; set; }
+    /// <summary>Endpoint identity against which the cached player ID was resolved.</summary>
+    public string? MpvAudioDeviceEndpointId { get; set; }
+    public string? GameMpvAudioDeviceName { get; set; } public string? YtDlpPath { get; set; }
+    /// <summary>Canonical selected Windows render endpoint identity.</summary>
+    public string? MonitorDeviceId { get; set; }
+    public string? MonitorDeviceName { get; set; }
+    public string? MicrophoneDeviceId { get; set; } public string GameBus { get; set; } = "B1";
     public int? MusicStripIndex { get; set; } public int? MicrophoneStripIndex { get; set; }
     public int? AutoMusicRouteStrip { get; set; } public bool? AutoMusicPreviousA1 { get; set; } public bool? AutoMusicPreviousB1 { get; set; }
     public string? AutoMusicPreviousHeadsetDeviceName { get; set; } public string? AutoMusicPreviousGameDeviceName { get; set; } public int? AutoMusicPreviousStripIndex { get; set; }

@@ -219,6 +219,8 @@ public sealed class MpvProvider(MpvLocator locator, string? configuredPath=null,
    var devices=await ListAudioDevicesAsync(ct);
    if(!devices.Any(x=>x.Name==name))throw new InvalidOperationException($"MPV output device '{name}' is not available; no output was switched.");
    await Command(new[]{"set_property","audio-device",name},ct);
+   if(!string.Equals(await ReadAudioDeviceAsync(ct),name,StringComparison.Ordinal))
+     throw new InvalidOperationException("MPV did not confirm the requested audio device.");
  }
  public async Task<PlaybackSnapshot> RefreshAsync(CancellationToken ct=default)
  {
@@ -254,6 +256,24 @@ public sealed class MpvProvider(MpvLocator locator, string? configuredPath=null,
      _firstPlayPending=false;
    }
    else await Command(new[]{"set_property","pause","no"},ct);
+   if(!string.IsNullOrWhiteSpace(configuredAudioDevice))
+   {
+     var selected=await ReadAudioDeviceAsync(ct);
+     string? output=null;
+     for(var attempt=0;attempt<20;attempt++)
+     {
+       output=await ReadCurrentAudioOutputAsync(ct);
+       if(!string.IsNullOrWhiteSpace(output))break;
+       await Task.Delay(50,ct);
+     }
+     if(!string.Equals(selected,configuredAudioDevice,StringComparison.Ordinal) ||
+        configuredAudioDevice.StartsWith("wasapi/",StringComparison.OrdinalIgnoreCase) &&
+        output?.StartsWith("wasapi",StringComparison.OrdinalIgnoreCase)!=true)
+     {
+       await Command(new[]{"set_property","pause","yes"},ct);
+       throw new InvalidOperationException("The player could not open its configured listening output.");
+     }
+   }
    Snapshot=Snapshot with{IsPlaying=true};StateChanged?.Invoke(this,EventArgs.Empty);
  }
  public async Task SetRepeatModeAsync(StationRepeatMode mode,CancellationToken ct=default)
@@ -280,6 +300,8 @@ public sealed class MpvProvider(MpvLocator locator, string? configuredPath=null,
    await GetBooleanProperty("mute",ct)??throw new InvalidOperationException("mpv did not report its mute state.");
  public async Task<string> ReadAudioDeviceAsync(CancellationToken ct=default) =>
    await GetStringProperty("audio-device",ct)??throw new InvalidOperationException("mpv did not report its audio device.");
+ public async Task<string?> ReadCurrentAudioOutputAsync(CancellationToken ct=default) =>
+   await GetStringProperty("current-ao",ct);
  public async Task SelectTrackAsync(int index,double seconds,CancellationToken ct=default)
  {
    if(index<0||index>=LoadedFiles.Count)throw new ArgumentOutOfRangeException(nameof(index));

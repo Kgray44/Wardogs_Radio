@@ -415,7 +415,7 @@ public partial class MainWindow
         {
             await old.PauseAsync();
             if (_gameMpvProvider is not null) await _gameMpvProvider.PauseAsync();
-            replacement = new MpvProvider(new MpvLocator(), _config.MpvPath, _config.MpvAudioDeviceName, LocalHeadsetLoudnessCalibrationDb);
+            replacement = new MpvProvider(new MpvLocator(), _config.MpvPath, RequireListeningPlayerDevice(), LocalHeadsetLoudnessCalibrationDb);
             await replacement.LoadAsync(station);
             await replacement.SetVolumeAsync(_config.MasterVolume * station.Volume);
             var index = Math.Clamp(station.Runtime.SequenceIndex, 0, station.PlaylistSongs.Count - 1);

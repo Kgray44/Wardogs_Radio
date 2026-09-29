@@ -13,7 +13,12 @@ public sealed record SystemReadinessSnapshot(OverallReadiness Overall, IReadOnly
     DateTimeOffset CheckedAt)
 {
     public bool MicrophonePresent { get; init; }
+    public bool ListeningOutputConfigured { get; init; }
     public bool ListeningOutputPresent { get; init; }
+    public bool ListeningPlayerResolved { get; init; }
+    public bool ListeningPlayerSwitched { get; init; }
+    public bool ListeningPlayerConnectionFailed { get; init; }
+    public bool ListeningPlaybackVerified { get; init; }
     public ReadinessCheck? FirstAction => Checks.FirstOrDefault(check => check.BlocksCoreReadiness &&
         check.Severity is ReadinessSeverity.Error or ReadinessSeverity.Unavailable or ReadinessSeverity.NeedsAction or ReadinessSeverity.Warning or ReadinessSeverity.NotTested);
     public int CorePassed => Checks.Count(check => check.BlocksCoreReadiness && check.Severity == ReadinessSeverity.Ready);
@@ -50,6 +55,10 @@ public sealed record ReadinessEvidence
     public string? VoicemeeterEdition { get; init; }
     public bool MicrophonePresent { get; init; }
     public bool HeadphonesPresent { get; init; }
+    public bool PlayerOutputResolved { get; init; }
+    public bool PlayerOutputSwitched { get; init; }
+    public bool PlayerOutputSwitchFailed { get; init; }
+    public bool PlaybackPathVerified { get; init; }
     public bool MicrophoneAssigned { get; init; }
     public bool MicrophoneRoutedToGame { get; init; }
     public bool MusicRoutedToGame { get; init; }
@@ -117,10 +126,31 @@ public static class SystemReadinessService
             micVerified && saved!.MicrophoneObserved ? "Microphone audio was verified previously; none has been observed this session. Speak to test it if desired." :
             "No microphone audio has been observed this session. Speak to test it if desired.", live: true);
         Add("listening", ReadinessCategory.Listening,
-            !evidence.HeadphonesPresent ? ReadinessSeverity.NeedsAction : ReadinessSeverity.Ready,
-            true, "Listening output", !evidence.HeadphonesPresent ? "Choose headphones or speakers that are connected now." :
+            string.IsNullOrWhiteSpace(config.MonitorDeviceId) || !evidence.HeadphonesPresent ? ReadinessSeverity.NeedsAction : ReadinessSeverity.Ready,
+            true, "Listening output", string.IsNullOrWhiteSpace(config.MonitorDeviceId) ? "Choose headphones or speakers." :
+            !evidence.HeadphonesPresent ? "The selected listening output is disconnected. Reconnect it or choose another output." :
             "The selected listening output is present.",
             !evidence.HeadphonesPresent ? RepairAction.ChooseHeadphones : null);
+        Add("listening-player", ReadinessCategory.Listening,
+            !evidence.HeadphonesPresent ? ReadinessSeverity.Info :
+            !evidence.PlayerOutputResolved || evidence.PlayerOutputSwitchFailed ? ReadinessSeverity.NeedsAction : ReadinessSeverity.Ready,
+            true, "Listening output player connection",
+            !evidence.HeadphonesPresent ? "Connect the selected listening output to check playback." :
+            !evidence.PlayerOutputResolved || evidence.PlayerOutputSwitchFailed
+                ? "The selected output is connected, but WARDOGS could not connect its player to that device."
+                : "The player output is resolved for the selected device.",
+            evidence.HeadphonesPresent && (!evidence.PlayerOutputResolved || evidence.PlayerOutputSwitchFailed)
+                ? RepairAction.RefreshDevices : null);
+        Add("listening-playback-path", ReadinessCategory.Listening,
+            evidence.PlaybackPathVerified ? ReadinessSeverity.Ready : ReadinessSeverity.Info,
+            false, "Listening playback path", evidence.PlaybackPathVerified
+                ? "A player test signal reached the selected output this session."
+                : "Run the player test sound to verify the selected output.", live: true);
+        Add("listening-player-switch", ReadinessCategory.Listening,
+            evidence.PlayerOutputSwitched ? ReadinessSeverity.Ready : ReadinessSeverity.Info,
+            false, "Active player output", evidence.PlayerOutputSwitched
+                ? "The active player confirmed the selected output this session."
+                : "No active player output switch has been confirmed this session.");
         Add("listening-confirmation", ReadinessCategory.Listening,
             evidence.ListeningConfirmed ? ReadinessSeverity.Ready : ReadinessSeverity.Info,
             false, "Listening test", evidence.ListeningConfirmed ? "You confirmed hearing the selected output this session." :
@@ -169,7 +199,12 @@ public static class SystemReadinessService
         return new(overall, checks, checkedAt ?? DateTimeOffset.Now)
         {
             MicrophonePresent = evidence.MicrophonePresent,
-            ListeningOutputPresent = evidence.HeadphonesPresent
+            ListeningOutputConfigured = !string.IsNullOrWhiteSpace(config.MonitorDeviceId),
+            ListeningOutputPresent = evidence.HeadphonesPresent,
+            ListeningPlayerResolved = evidence.PlayerOutputResolved,
+            ListeningPlayerSwitched = evidence.PlayerOutputSwitched,
+            ListeningPlayerConnectionFailed = evidence.PlayerOutputSwitchFailed,
+            ListeningPlaybackVerified = evidence.PlaybackPathVerified
         };
     }
 }

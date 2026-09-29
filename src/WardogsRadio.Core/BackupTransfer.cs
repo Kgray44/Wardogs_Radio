@@ -99,9 +99,11 @@ public sealed class WrRadioSettings
     public Dictionary<string, double> LocalDurationCache { get; set; } = [];
     public string? MpvPath { get; set; }
     public string? MpvAudioDeviceName { get; set; }
+    public string? MpvAudioDeviceEndpointId { get; set; }
     public string? GameMpvAudioDeviceName { get; set; }
     public string? YtDlpPath { get; set; }
     public string? MonitorDeviceId { get; set; }
+    public string? MonitorDeviceName { get; set; }
     public string? MicrophoneDeviceId { get; set; }
     public string GameBus { get; set; } = "B1";
     public int? MusicStripIndex { get; set; }
@@ -126,8 +128,8 @@ public sealed class WrRadioSettings
         MasterVolume = source.MasterVolume, GameMasterVolume = source.GameMasterVolume,
         MicrophoneVolume = source.MicrophoneVolume, MicrophoneVolumeInitialized = source.MicrophoneVolumeInitialized,
         YouTubeDurationCache = Clone(source.YouTubeDurationCache), LocalDurationCache = Clone(source.LocalDurationCache),
-        MpvPath = source.MpvPath, MpvAudioDeviceName = source.MpvAudioDeviceName, GameMpvAudioDeviceName = source.GameMpvAudioDeviceName,
-        YtDlpPath = source.YtDlpPath, MonitorDeviceId = source.MonitorDeviceId, MicrophoneDeviceId = source.MicrophoneDeviceId,
+        MpvPath = source.MpvPath, MpvAudioDeviceName = source.MpvAudioDeviceName, MpvAudioDeviceEndpointId = source.MpvAudioDeviceEndpointId, GameMpvAudioDeviceName = source.GameMpvAudioDeviceName,
+        YtDlpPath = source.YtDlpPath, MonitorDeviceId = source.MonitorDeviceId, MonitorDeviceName = source.MonitorDeviceName, MicrophoneDeviceId = source.MicrophoneDeviceId,
         GameBus = source.GameBus, MusicStripIndex = source.MusicStripIndex, MicrophoneStripIndex = source.MicrophoneStripIndex,
         AutoMusicRouteStrip = source.AutoMusicRouteStrip, AutoMusicPreviousA1 = source.AutoMusicPreviousA1, AutoMusicPreviousB1 = source.AutoMusicPreviousB1,
         AutoMusicPreviousHeadsetDeviceName = source.AutoMusicPreviousHeadsetDeviceName, AutoMusicPreviousGameDeviceName = source.AutoMusicPreviousGameDeviceName,
@@ -157,8 +159,8 @@ public sealed class WrRadioSettings
         if (contents.HasFlag(WrRadioContent.AudioRoutingSettings))
         {
             target.MicrophoneVolume = MicrophoneVolume; target.MicrophoneVolumeInitialized = MicrophoneVolumeInitialized;
-            target.MpvAudioDeviceName = MpvAudioDeviceName; target.GameMpvAudioDeviceName = GameMpvAudioDeviceName;
-            target.MonitorDeviceId = MonitorDeviceId; target.MicrophoneDeviceId = MicrophoneDeviceId; target.GameBus = GameBus;
+            target.MpvAudioDeviceName = MpvAudioDeviceName; target.MpvAudioDeviceEndpointId = MpvAudioDeviceEndpointId; target.GameMpvAudioDeviceName = GameMpvAudioDeviceName;
+            target.MonitorDeviceId = MonitorDeviceId; target.MonitorDeviceName = MonitorDeviceName; target.MicrophoneDeviceId = MicrophoneDeviceId; target.GameBus = GameBus;
             target.MusicStripIndex = MusicStripIndex; target.MicrophoneStripIndex = MicrophoneStripIndex;
             target.AutoMusicRouteStrip = AutoMusicRouteStrip; target.AutoMusicPreviousA1 = AutoMusicPreviousA1;
             target.AutoMusicPreviousB1 = AutoMusicPreviousB1; target.AutoMusicPreviousHeadsetDeviceName = AutoMusicPreviousHeadsetDeviceName;

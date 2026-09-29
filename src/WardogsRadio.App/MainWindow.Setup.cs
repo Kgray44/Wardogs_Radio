@@ -14,8 +14,8 @@ public partial class MainWindow
     bool _setupVisitRecoveryBlocked;
 
     sealed record SetupAudioConfiguration(
-        string? MicrophoneDeviceId, string? MonitorDeviceId, int? MicrophoneStripIndex,
-        int? MusicStripIndex, string? MpvAudioDeviceName, string? GameMpvAudioDeviceName,
+        string? MicrophoneDeviceId, string? MonitorDeviceId, string? MonitorDeviceName, int? MicrophoneStripIndex,
+        int? MusicStripIndex, string? MpvAudioDeviceName, string? MpvAudioDeviceEndpointId, string? GameMpvAudioDeviceName,
         int? AutoMicrophoneStrip, string? AutoMicrophonePreviousDeviceName,
         string? AutoMicrophonePreviousDriver, string? AutoMicrophoneAppliedDeviceName,
         bool? AutoMicrophonePreviousA1, bool? AutoMicrophonePreviousB1,
@@ -26,8 +26,8 @@ public partial class MainWindow
         SetupVerification? Verification, bool SetupComplete)
     {
         public static SetupAudioConfiguration Capture(AppConfiguration c) => new(
-            c.MicrophoneDeviceId, c.MonitorDeviceId, c.MicrophoneStripIndex, c.MusicStripIndex,
-            c.MpvAudioDeviceName, c.GameMpvAudioDeviceName, c.AutoMicrophoneStrip,
+            c.MicrophoneDeviceId, c.MonitorDeviceId, c.MonitorDeviceName, c.MicrophoneStripIndex, c.MusicStripIndex,
+            c.MpvAudioDeviceName, c.MpvAudioDeviceEndpointId, c.GameMpvAudioDeviceName, c.AutoMicrophoneStrip,
             c.AutoMicrophonePreviousDeviceName, c.AutoMicrophonePreviousDriver,
             c.AutoMicrophoneAppliedDeviceName, c.AutoMicrophonePreviousA1, c.AutoMicrophonePreviousB1,
             c.AutoMicrophonePreviousStripIndex, c.AutoMusicRouteStrip, c.AutoMusicPreviousA1,
@@ -39,9 +39,11 @@ public partial class MainWindow
         {
             c.MicrophoneDeviceId = MicrophoneDeviceId;
             c.MonitorDeviceId = MonitorDeviceId;
+            c.MonitorDeviceName = MonitorDeviceName;
             c.MicrophoneStripIndex = MicrophoneStripIndex;
             c.MusicStripIndex = MusicStripIndex;
             c.MpvAudioDeviceName = MpvAudioDeviceName;
+            c.MpvAudioDeviceEndpointId = MpvAudioDeviceEndpointId;
             c.GameMpvAudioDeviceName = GameMpvAudioDeviceName;
             c.AutoMicrophoneStrip = AutoMicrophoneStrip;
             c.AutoMicrophonePreviousDeviceName = AutoMicrophonePreviousDeviceName;
@@ -162,9 +164,11 @@ public partial class MainWindow
         }
     }
 
-    async Task<bool> UndoSetupVisitAsync()
+    async Task<bool> UndoSetupVisitAsync(bool preserveListeningSelection = false)
     {
         if (_setupVisit is not { } visit) return true;
+        var requestedListening = (_config.MonitorDeviceId, _config.MonitorDeviceName,
+            _config.MpvAudioDeviceName, _config.MpvAudioDeviceEndpointId);
         foreach (var lease in _setupRouteLeases.AsEnumerable().Reverse().ToArray())
         {
             var result = await _bridge.ReleaseRouteAsync(lease);
@@ -206,7 +210,7 @@ public partial class MainWindow
                 $"Strip[{strip}].device.name", device.Prior);
             if (!restored.Success) { Footer.Text = "SETUP UNDO NEEDS ATTENTION · " + restored.Detail; return false; }
         }
-        if (_config.MpvAudioDeviceName != visit.Original.MpvAudioDeviceName)
+        if (!preserveListeningSelection && _config.MpvAudioDeviceName != visit.Original.MpvAudioDeviceName)
         {
             await StopGameOutputAsync();
             if (_mpvProvider is not null)
@@ -214,6 +218,13 @@ public partial class MainWindow
                 catch (Exception error) { Footer.Text = "SETUP UNDO NEEDS ATTENTION · Headphone output: " + error.Message; return false; }
         }
         visit.Original.Restore(_config);
+        if (preserveListeningSelection)
+        {
+            _config.MonitorDeviceId = requestedListening.MonitorDeviceId;
+            _config.MonitorDeviceName = requestedListening.MonitorDeviceName;
+            _config.MpvAudioDeviceName = requestedListening.MpvAudioDeviceName;
+            _config.MpvAudioDeviceEndpointId = requestedListening.MpvAudioDeviceEndpointId;
+        }
         ShowMicrophoneVolume(_config.MicrophoneVolume);
         _sawMicSignal = _sawMusicSignal = _sawGameSignal = _sawGameEndpointSignal = _sawMonitorSignal = false;
         SetupHeardMusic.IsChecked = false;
@@ -287,21 +298,25 @@ public partial class MainWindow
         if (!await ConfigureAutomaticMicrophoneAsync(microphone))
         {
             SetupConnectFeedback.Text = "Microphone connection failed. Previous changes are being restored.";
-            if (_setupHasUncommittedChanges && !await UndoSetupVisitAsync())
+            if (_setupHasUncommittedChanges && !await UndoSetupVisitAsync(preserveListeningSelection: true))
                 Footer.Text = "AUDIO SETUP NEEDS ATTENTION · Microphone setup failed and prior changes need review.";
             return;
         }
         if (!await ConfigureAutomaticMusicAsync())
         {
             SetupConnectFeedback.Text = "Radio game feed connection failed. Previous changes are being restored.";
-            if (!await UndoSetupVisitAsync())
+            if (!await UndoSetupVisitAsync(preserveListeningSelection: true))
                 Footer.Text = "AUDIO SETUP NEEDS ATTENTION · Music setup failed and the setup visit could not be fully undone. Open Diagnostics.";
             return;
         }
         try
         {
             if (!await SetListeningOutputAsync(headphones))
-                throw new InvalidOperationException("The selected listening output did not become active. Choose another output or refresh devices.");
+            {
+                SetupConnectFeedback.Text = "Radio routing was applied, but the selected listening output needs playback repair. Your choice is saved.";
+                PublishReadiness(CaptureReadiness());
+                return;
+            }
             if (priorMonitor != headphones.Id) _setupHasUncommittedChanges = true;
             _loadingAudioRouteControls = true;
             MicrophoneBox.SelectedItem = (MicrophoneBox.ItemsSource as IEnumerable<WindowsAudioEndpoint>)?.FirstOrDefault(x => x.Id == microphone.Id);
@@ -314,8 +329,7 @@ public partial class MainWindow
         catch (Exception error)
         {
             SetupConnectFeedback.Text = "Audio setup did not finish: " + error.Message;
-            _config.MonitorDeviceId = priorMonitor;
-            if (!await UndoSetupVisitAsync())
+            if (!await UndoSetupVisitAsync(preserveListeningSelection: true))
                 Footer.Text = "AUDIO SETUP NEEDS ATTENTION · Save failed and route restoration needs review: " + error.Message;
             else Footer.Text = "AUDIO SETUP DID NOT SAVE · This setup visit was restored: " + error.Message;
         }
