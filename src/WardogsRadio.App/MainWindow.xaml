@@ -272,6 +272,19 @@
             <Expander Header="ADVANCED · PLAYBACK ENGINE" Margin="0,24,0,0"><StackPanel Margin="0,10,0,0"><TextBlock x:Name="MpvProviderState" Text="Checking bundled MPV…" Foreground="{StaticResource OliveBrush}"/><TextBlock Text="WARDOGS includes its own MPV player. You normally do not need to change this." TextWrapping="Wrap" Opacity=".7" Margin="0,5,0,10"/><TextBlock Text="Optional executable override"/><TextBox x:Name="MpvPathBox" LostFocus="MpvPathBox_LostFocus" MinHeight="38" Margin="0,5,0,8"/><Button Content="USE BUNDLED MPV" Click="UseBundledMpv_Click" HorizontalAlignment="Left"/></StackPanel></Expander>
           </StackPanel></Border>
           <Border Background="{StaticResource PanelBrush}" BorderBrush="{StaticResource LineBrush}" BorderThickness="1" Padding="24" CornerRadius="5" Margin="0,12,0,0"><StackPanel>
+            <TextBlock Text="MUSIC SERVICES · YOUTUBE SEARCH" FontSize="11" FontWeight="Bold" Foreground="{StaticResource OliveBrush}"/>
+            <TextBlock x:Name="YouTubeSearchStatusText" Text="NOT CONFIGURED" FontSize="18" FontWeight="SemiBold" Margin="0,8,0,3" AutomationProperties.Name="YouTube Search status"/>
+            <TextBlock x:Name="YouTubeSearchDetailText" Text="Checking search configuration…" TextWrapping="Wrap" Opacity=".7" Margin="0,0,0,12"/>
+            <WrapPanel><Button x:Name="YouTubeTestConnectionButton" Content="TEST CONNECTION" Click="YouTubeTestConnection_Click"/><Button Content="RESTORE DEFAULT KEY" Click="YouTubeRestoreDefaultKey_Click" Margin="8,0,0,0"/></WrapPanel>
+            <TextBlock Text="Test Connection sends one YouTube search request. Paste-link playback works even when Search is unavailable." TextWrapping="Wrap" Opacity=".65" Margin="0,9,0,12"/>
+            <CheckBox x:Name="UseCustomApiKeyCheck" Content="Use Custom API Key" Checked="UseCustomApiKey_Changed" Unchecked="UseCustomApiKey_Changed"/>
+            <StackPanel x:Name="YouTubeCustomKeyPanel" Visibility="Collapsed" Margin="0,9,0,0">
+              <TextBlock Text="Optional key for this Windows user. It replaces the bundled search key and is never included in backups or diagnostics." TextWrapping="Wrap" Opacity=".7" Margin="0,0,0,8"/>
+              <PasswordBox x:Name="YouTubeCustomKeyBox" Width="390" Height="36" HorizontalAlignment="Left" AutomationProperties.Name="Custom YouTube Data API key"/>
+              <Button Content="SAVE CUSTOM KEY" Click="YouTubeSaveCustomKey_Click" HorizontalAlignment="Left" Margin="0,9,0,0"/>
+            </StackPanel>
+          </StackPanel></Border>
+          <Border Background="{StaticResource PanelBrush}" BorderBrush="{StaticResource LineBrush}" BorderThickness="1" Padding="24" CornerRadius="5" Margin="0,12,0,0"><StackPanel>
             <TextBlock Text="BACKUP &amp; TRANSFER" FontSize="11" FontWeight="Bold" Foreground="{StaticResource OliveBrush}"/>
             <TextBlock Text="Move your WARDOGS Radio setup between computers, create recoverable backups, or safely import a shared package." TextWrapping="Wrap" Opacity=".7" Margin="0,8,0,12"/>
             <WrapPanel><Button Content="EXPORT CONFIGURATION" Click="ExportConfiguration_Click"/><Button Content="IMPORT PACKAGE" Click="ImportPackage_Click"/><Button Content="RESTORE BACKUP" Click="RestoreBackup_Click"/></WrapPanel>

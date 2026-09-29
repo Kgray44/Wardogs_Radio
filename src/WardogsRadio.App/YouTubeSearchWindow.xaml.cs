@@ -1,5 +1,4 @@
 using System.ComponentModel;
-using System.Net.Http;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
@@ -12,22 +11,18 @@ public partial class YouTubeSearchWindow : Window
     sealed record ResultCard(MediaSearchResult Result, bool AlreadyInLibrary)
     {
         public string Title => Result.Title;
-        public string? Creator => Result.Creator;
+        public string Creator => string.IsNullOrWhiteSpace(Result.Creator) ? "Unknown creator" : Result.Creator;
         public string? ThumbnailUrl => Result.ThumbnailUrl;
         public string Detail => (Result.Type == MediaSearchResultType.Playlist ? "PLAYLIST · individual video durations vary" :
             "VIDEO" + (Result.Duration is { } duration ? " · " + (duration.TotalHours >= 1 ? duration.ToString(@"h\:mm\:ss") : duration.ToString(@"m\:ss")) : "")) +
             (AlreadyInLibrary ? " · ALREADY IN LIBRARY" : "");
     }
 
-    static readonly HttpClient Client = new() { Timeout = TimeSpan.FromSeconds(15) };
-    static string? _sessionKey;
-    public static bool IsConfiguredForSession => !string.IsNullOrWhiteSpace(_sessionKey);
-    public static DateTimeOffset? LastSearchUtc { get; private set; }
-    public static string? LastSearchError { get; private set; }
-    static readonly YouTubeDiscoveryProvider Provider = new(Client, () => _sessionKey);
     readonly bool _previewAllowed;
     readonly MusicLibrary? _library;
     CancellationTokenSource? _searchCancellation;
+    int _searchVersion;
+    bool _closed;
     public MediaSearchResult? SelectedResult { get; private set; }
 
     public YouTubeSearchWindow(bool previewAllowed = true, MusicLibrary? library = null)
@@ -35,27 +30,14 @@ public partial class YouTubeSearchWindow : Window
         InitializeComponent();
         _previewAllowed = previewAllowed;
         _library = library;
-        KeyPanel.Visibility = string.IsNullOrWhiteSpace(_sessionKey) ? Visibility.Visible : Visibility.Collapsed;
-        ChangeKeyButton.Visibility = string.IsNullOrWhiteSpace(_sessionKey) ? Visibility.Collapsed : Visibility.Visible;
+        if (YouTubeSearchRuntime.KeySource == YouTubeSearchKeySource.None)
+        {
+            SearchButton.IsEnabled = false;
+            StatusText.Text = "YouTube Search is not configured. You can still paste a link in the previous window.";
+            ResultsEmptyText.Text = "Search is unavailable. A search key can be added under Settings → Music Services.";
+        }
         if (!previewAllowed) PreviewHint.Text = "Preview is available when normal station playback is stopped.";
         Loaded += (_, _) => QueryBox.Focus();
-    }
-
-    void UseKey_Click(object sender, RoutedEventArgs e)
-    {
-        if (string.IsNullOrWhiteSpace(KeyBox.Password)) { StatusText.Text = "Enter a YouTube Data API key, or paste a link instead."; return; }
-        _sessionKey = KeyBox.Password.Trim();
-        KeyBox.Clear();
-        KeyPanel.Visibility = Visibility.Collapsed;
-        ChangeKeyButton.Visibility = Visibility.Visible;
-        StatusText.Text = "Search is configured for this app session. The key is kept in memory only.";
-    }
-
-    void ChangeKey_Click(object sender, RoutedEventArgs e)
-    {
-        KeyPanel.Visibility = Visibility.Visible;
-        ChangeKeyButton.Visibility = Visibility.Collapsed;
-        KeyBox.Focus();
     }
 
     void QueryBox_KeyDown(object sender, KeyEventArgs e)
@@ -70,48 +52,82 @@ public partial class YouTubeSearchWindow : Window
     void TypeBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
         if (ResultsList is null) return;
+        _searchVersion++;
+        _searchCancellation?.Cancel();
         ResultsList.ItemsSource = null;
         SelectedResult = null;
         SelectButton.IsEnabled = false;
+        SearchProgress.Visibility = Visibility.Collapsed;
+        SearchButton.IsEnabled = YouTubeSearchRuntime.KeySource != YouTubeSearchKeySource.None;
+        StatusText.Text = SearchButton.IsEnabled ? "Enter a query and press Enter or Search." :
+            "YouTube Search is not configured. You can still paste a link in the previous window.";
+        ResultsEmptyText.Text = SearchButton.IsEnabled ? "Search results will appear here." :
+            "Search is unavailable. A search key can be added under Settings → Music Services.";
+        ResultsEmptyText.Visibility = Visibility.Visible;
         StopPreview();
     }
 
     async Task SearchAsync()
     {
+        if (_closed || YouTubeSearchRuntime.KeySource == YouTubeSearchKeySource.None) return;
+        var version = ++_searchVersion;
         _searchCancellation?.Cancel();
         _searchCancellation?.Dispose();
         _searchCancellation = new CancellationTokenSource();
         ResultsList.ItemsSource = null;
         SelectButton.IsEnabled = false;
         StopPreview();
+        SearchButton.IsEnabled = false;
+        SearchProgress.Visibility = Visibility.Visible;
         StatusText.Text = "Searching YouTube…";
+        ResultsEmptyText.Text = "Looking for music…";
+        ResultsEmptyText.Visibility = Visibility.Visible;
         try
         {
             var type = TypeBox.SelectedIndex == 1 ? MediaSearchResultType.Playlist : MediaSearchResultType.Video;
-            var results = await Provider.SearchAsync(new MediaSearchQuery(QueryBox.Text, type), _searchCancellation.Token);
-            LastSearchUtc = DateTimeOffset.UtcNow;
-            LastSearchError = null;
+            var results = await YouTubeSearchRuntime.SearchAsync(new MediaSearchQuery(QueryBox.Text, type), _searchCancellation.Token);
+            if (_closed || version != _searchVersion) return;
             ResultsList.ItemsSource = results.Select(result => new ResultCard(result,
                 _library is not null && MediaDiscoveryIngestion.IsAlreadyPresent(_library, result))).ToList();
-            StatusText.Text = results.Count == 0 ? "No results. Try another query or paste a link." : $"{results.Count} {type.ToString().ToLowerInvariant()} results. Select one to add it.";
+            ResultsEmptyText.Text = "No results. Try another search or paste a link.";
+            ResultsEmptyText.Visibility = results.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+            StatusText.Text = results.Count == 0 ? "No results found." :
+                $"{results.Count} {type.ToString().ToLowerInvariant()} results · Select one to add it.";
+            if (results.Count > 0) ResultsList.Focus();
         }
         catch (OperationCanceledException) { }
         catch (MediaDiscoveryException error)
         {
+            if (_closed || version != _searchVersion) return;
             StatusText.Text = error.Message;
-            LastSearchError = error.Message;
-            if (error.Message.Contains("denied", StringComparison.OrdinalIgnoreCase) ||
-                error.Message.Contains("configuration", StringComparison.OrdinalIgnoreCase))
-            {
-                KeyPanel.Visibility = Visibility.Visible;
-                ChangeKeyButton.Visibility = Visibility.Collapsed;
-            }
+            ResultsEmptyText.Text = "Search unavailable right now. You can still paste a YouTube link.";
         }
         catch (Exception)
         {
+            if (_closed || version != _searchVersion) return;
             StatusText.Text = "YouTube Search could not finish. Try again or paste a link.";
-            LastSearchError = "Unexpected search failure";
+            ResultsEmptyText.Text = "Search unavailable right now. You can still paste a YouTube link.";
         }
+        finally
+        {
+            if (!_closed && version == _searchVersion)
+            {
+                SearchButton.IsEnabled = true;
+                SearchProgress.Visibility = Visibility.Collapsed;
+            }
+        }
+    }
+
+    void ResultsList_KeyDown(object sender, KeyEventArgs e)
+    {
+        if (e.Key != Key.Enter || ResultsList.SelectedItem is null) return;
+        e.Handled = true;
+        Select_Click(sender, e);
+    }
+
+    void ResultsList_MouseDoubleClick(object sender, MouseButtonEventArgs e)
+    {
+        if (ResultsList.SelectedItem is not null) Select_Click(sender, e);
     }
 
     void ResultsList_SelectionChanged(object sender, SelectionChangedEventArgs e)
@@ -162,6 +178,8 @@ public partial class YouTubeSearchWindow : Window
 
     void Window_Closing(object? sender, CancelEventArgs e)
     {
+        _closed = true;
+        _searchVersion++;
         _searchCancellation?.Cancel();
         StopPreview();
     }

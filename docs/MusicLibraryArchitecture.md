@@ -64,9 +64,12 @@ library song.
 `IMediaDiscoveryProvider` returns typed video or playlist candidates. The WPF Search
 window calls `YouTubeDiscoveryProvider` only after the user presses Enter or Search.
 Search uses the official YouTube Data API (`search.list`, then `videos.list` for
-video durations) with an API key supplied for the current app session. The key is
-held only in memory and never written to configuration, logs, diagnostics, or
-`.wradio` packages. Search results are cached in memory for that app session.
+video durations). Key resolution is user override, then packaged default, then
+unavailable; manual links always remain available. The optional override is
+protected for the current Windows user outside configuration and backups. The
+default is supplied privately at package time. Keys are never written to logs,
+diagnostics, or `.wradio` packages. Search results are cached in memory for that
+app session. See [YouTube Search packaging](YouTubeSearchPackaging.md).
 
 Selection goes through `MediaDiscoveryIngestion` and `MusicLibraryService.EnsureSource`.
 Video identities normalize to `youtube.com/watch?v=<id>` even when discovered

@@ -28,6 +28,7 @@ Use **Listening → Store listening history on this computer** to pause future
 recording. **Clear Listening History** requires confirmation and removes the
 journal and checkpoint while keeping sources, songs, stations, and settings.
 Complete `.wradio` backups include history. Selective transfer packages expose
-an explicit Listening History checkbox. An API key entered for YouTube Search
-exists only in app memory for that session and is never included in history,
-configuration, backups, or diagnostic exports.
+an explicit Listening History checkbox. YouTube Search keys are not included in
+history, configuration, backups, or diagnostic exports. The optional user key
+is stored separately using Windows user protection; the default key is bundled
+in packaged builds.

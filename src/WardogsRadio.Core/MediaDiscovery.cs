@@ -17,7 +17,12 @@ public interface IMediaDiscoveryProvider
     Task<IReadOnlyList<MediaSearchResult>> SearchAsync(MediaSearchQuery query, CancellationToken cancellationToken = default);
 }
 
-public sealed class MediaDiscoveryException(string userMessage) : Exception(userMessage);
+public enum MediaDiscoveryFailure { NotConfigured, InvalidQuery, Authentication, Quota, Network, Service, InvalidResponse }
+
+public sealed class MediaDiscoveryException(MediaDiscoveryFailure failure, string userMessage) : Exception(userMessage)
+{
+    public MediaDiscoveryFailure Failure { get; } = failure;
+}
 
 /// <summary>Explicit, session-cached YouTube Data API searches. Credentials are supplied by the caller and never logged.</summary>
 public sealed class YouTubeDiscoveryProvider(HttpClient client, Func<string?> apiKey) : IMediaDiscoveryProvider
@@ -28,35 +33,35 @@ public sealed class YouTubeDiscoveryProvider(HttpClient client, Func<string?> ap
         CancellationToken cancellationToken = default)
     {
         var text = query.Text.Trim();
-        if (text.Length is < 2 or > 150) throw new MediaDiscoveryException("Enter 2 to 150 characters to search YouTube.");
+        if (text.Length is < 2 or > 150) throw new MediaDiscoveryException(MediaDiscoveryFailure.InvalidQuery,
+            "Enter 2 to 150 characters to search YouTube.");
         var normalized = new MediaSearchQuery(text.ToUpperInvariant(), query.Type);
         if (_cache.TryGetValue(normalized, out var cached)) return cached;
         var key = apiKey()?.Trim();
         if (string.IsNullOrWhiteSpace(key))
-            throw new MediaDiscoveryException("YouTube Search needs an API key. Paste a link or configure Search for this session.");
+            throw new MediaDiscoveryException(MediaDiscoveryFailure.NotConfigured,
+                "YouTube Search is not configured. You can still paste a YouTube link.");
         try
         {
             var kind = query.Type == MediaSearchResultType.Video ? "video" : "playlist";
             var url = "https://www.googleapis.com/youtube/v3/search?part=snippet&type=" + kind +
                 (query.Type == MediaSearchResultType.Video ? "&videoEmbeddable=true" : "") +
-                "&maxResults=25&q=" + Uri.EscapeDataString(text) + "&key=" + Uri.EscapeDataString(key);
-            using var response = await client.GetAsync(url, cancellationToken);
-            if (!response.IsSuccessStatusCode) throw new MediaDiscoveryException(response.StatusCode switch
-            {
-                HttpStatusCode.Forbidden => "YouTube Search was denied. Check the API key or daily quota, then try again.",
-                HttpStatusCode.BadRequest or HttpStatusCode.Unauthorized => "YouTube Search configuration was rejected. Check the API key.",
-                HttpStatusCode.TooManyRequests => "YouTube Search is rate limited. Try again later.",
-                _ => "YouTube Search is temporarily unavailable. You can still paste a link."
-            });
+                "&maxResults=25&q=" + Uri.EscapeDataString(text);
+            using var response = await SendWithKeyAsync(url, key, cancellationToken);
+            if (!response.IsSuccessStatusCode) throw await FailureAsync(response, cancellationToken);
             await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
             using var document = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
-            if (!document.RootElement.TryGetProperty("items", out var items) || items.ValueKind != JsonValueKind.Array)
-                throw new MediaDiscoveryException("YouTube returned an unexpected search response. Try again later.");
+            if (document.RootElement.ValueKind != JsonValueKind.Object ||
+                !document.RootElement.TryGetProperty("items", out var items) || items.ValueKind != JsonValueKind.Array)
+                throw new MediaDiscoveryException(MediaDiscoveryFailure.InvalidResponse,
+                    "YouTube returned an unexpected search response. Try again later.");
             var results = new List<MediaSearchResult>();
             var seen = new HashSet<string>(StringComparer.Ordinal);
             foreach (var item in items.EnumerateArray())
             {
-                if (!item.TryGetProperty("id", out var id) || !item.TryGetProperty("snippet", out var snippet)) continue;
+                if (item.ValueKind != JsonValueKind.Object ||
+                    !item.TryGetProperty("id", out var id) || id.ValueKind != JsonValueKind.Object ||
+                    !item.TryGetProperty("snippet", out var snippet) || snippet.ValueKind != JsonValueKind.Object) continue;
                 var idName = query.Type == MediaSearchResultType.Video ? "videoId" : "playlistId";
                 if (!id.TryGetProperty(idName, out var identity)) continue;
                 var mediaId = identity.GetString();
@@ -66,7 +71,7 @@ public sealed class YouTubeDiscoveryProvider(HttpClient client, Func<string?> ap
                     : "https://www.youtube.com/playlist?list=" + mediaId;
                 var title = GetString(snippet, "title");
                 if (string.IsNullOrWhiteSpace(title)) continue;
-                var thumbnail = snippet.TryGetProperty("thumbnails", out var thumbnails) &&
+                var thumbnail = snippet.TryGetProperty("thumbnails", out var thumbnails) && thumbnails.ValueKind == JsonValueKind.Object &&
                     thumbnails.TryGetProperty("medium", out var medium) ? GetString(medium, "url") : null;
                 results.Add(new MediaSearchResult("youtube", mediaId, query.Type, canonical, title,
                     GetString(snippet, "channelTitle"), thumbnail, null, GetString(snippet, "description")));
@@ -78,29 +83,91 @@ public sealed class YouTubeDiscoveryProvider(HttpClient client, Func<string?> ap
             return results;
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
-        { throw new MediaDiscoveryException("YouTube Search timed out. Try again or paste a link."); }
+        { throw new MediaDiscoveryException(MediaDiscoveryFailure.Network, "YouTube Search timed out. Try again or paste a link."); }
         catch (HttpRequestException)
-        { throw new MediaDiscoveryException("WARDOGS couldn't reach YouTube Search. You can still paste a link."); }
+        { throw new MediaDiscoveryException(MediaDiscoveryFailure.Network, "WARDOGS couldn't reach YouTube Search. You can still paste a link."); }
         catch (JsonException)
-        { throw new MediaDiscoveryException("YouTube returned an unreadable search response. Try again later."); }
+        { throw new MediaDiscoveryException(MediaDiscoveryFailure.InvalidResponse, "YouTube returned an unreadable search response. Try again later."); }
+    }
+
+    public async Task TestConnectionAsync(CancellationToken cancellationToken = default)
+    {
+        var key = apiKey()?.Trim();
+        if (string.IsNullOrWhiteSpace(key))
+            throw new MediaDiscoveryException(MediaDiscoveryFailure.NotConfigured,
+                "YouTube Search is not configured. You can still paste a YouTube link.");
+        try
+        {
+            using var response = await SendWithKeyAsync(
+                "https://www.googleapis.com/youtube/v3/search?part=snippet&type=video&videoEmbeddable=true&maxResults=1&q=music",
+                key, cancellationToken);
+            if (!response.IsSuccessStatusCode) throw await FailureAsync(response, cancellationToken);
+            await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
+            using var document = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
+            if (document.RootElement.ValueKind != JsonValueKind.Object ||
+                !document.RootElement.TryGetProperty("items", out var items) || items.ValueKind != JsonValueKind.Array)
+                throw new MediaDiscoveryException(MediaDiscoveryFailure.InvalidResponse,
+                    "YouTube returned an unexpected search response. Try again later.");
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        { throw new MediaDiscoveryException(MediaDiscoveryFailure.Network, "YouTube Search timed out. Try again later."); }
+        catch (HttpRequestException)
+        { throw new MediaDiscoveryException(MediaDiscoveryFailure.Network, "WARDOGS couldn't reach YouTube Search."); }
+        catch (JsonException)
+        { throw new MediaDiscoveryException(MediaDiscoveryFailure.InvalidResponse, "YouTube returned an unreadable search response."); }
+    }
+
+    public void ClearCache() => _cache.Clear();
+
+    async Task<HttpResponseMessage> SendWithKeyAsync(string url, string key, CancellationToken cancellationToken)
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Get, url);
+        request.Headers.TryAddWithoutValidation("x-goog-api-key", key);
+        return await client.SendAsync(request, cancellationToken);
+    }
+
+    static async Task<MediaDiscoveryException> FailureAsync(HttpResponseMessage response, CancellationToken cancellationToken)
+    {
+        string? reason = null;
+        try
+        {
+            await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
+            using var document = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
+            if (document.RootElement.ValueKind == JsonValueKind.Object &&
+                document.RootElement.TryGetProperty("error", out var error) && error.ValueKind == JsonValueKind.Object &&
+                error.TryGetProperty("errors", out var errors) && errors.ValueKind == JsonValueKind.Array)
+                reason = errors.EnumerateArray().Select(item => GetString(item, "reason")).FirstOrDefault(value => value is not null);
+        }
+        catch (JsonException) { /* Status code still permits a safe, generic error. */ }
+        var quota = reason is "quotaExceeded" or "dailyLimitExceeded" or "userRateLimitExceeded" or "rateLimitExceeded" ||
+            response.StatusCode == HttpStatusCode.TooManyRequests;
+        if (quota) return new(MediaDiscoveryFailure.Quota,
+            "YouTube Search has reached its quota or rate limit. Try again later, use a custom key in Settings, or paste a link.");
+        if (reason is "keyInvalid" or "accessNotConfigured" or "ipRefererBlocked" or "forbidden" ||
+            response.StatusCode is HttpStatusCode.BadRequest or HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
+            return new(MediaDiscoveryFailure.Authentication,
+                "YouTube Search could not authenticate. Check the key under Settings → Music Services, or paste a link.");
+        return new(MediaDiscoveryFailure.Service,
+            "YouTube Search is temporarily unavailable. Try again later or paste a link.");
     }
 
     async Task<List<MediaSearchResult>> WithDurationsAsync(List<MediaSearchResult> results, string key,
         CancellationToken cancellationToken)
     {
         var url = "https://www.googleapis.com/youtube/v3/videos?part=contentDetails&id=" +
-            Uri.EscapeDataString(string.Join(',', results.Select(result => result.MediaId))) +
-            "&key=" + Uri.EscapeDataString(key);
-        using var response = await client.GetAsync(url, cancellationToken);
+            Uri.EscapeDataString(string.Join(',', results.Select(result => result.MediaId)));
+        using var response = await SendWithKeyAsync(url, key, cancellationToken);
         if (!response.IsSuccessStatusCode) return results;
         await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
         using var document = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
-        if (!document.RootElement.TryGetProperty("items", out var items) || items.ValueKind != JsonValueKind.Array) return results;
+        if (document.RootElement.ValueKind != JsonValueKind.Object ||
+            !document.RootElement.TryGetProperty("items", out var items) || items.ValueKind != JsonValueKind.Array) return results;
         var durations = new Dictionary<string, TimeSpan>(StringComparer.Ordinal);
         foreach (var item in items.EnumerateArray())
         {
             var id = GetString(item, "id");
-            if (id is null || !item.TryGetProperty("contentDetails", out var details)) continue;
+            if (id is null || item.ValueKind != JsonValueKind.Object ||
+                !item.TryGetProperty("contentDetails", out var details)) continue;
             var raw = GetString(details, "duration");
             try { if (raw is not null) durations[id] = XmlConvert.ToTimeSpan(raw); }
             catch (FormatException) { /* Duration stays unknown. */ }
@@ -110,7 +177,8 @@ public sealed class YouTubeDiscoveryProvider(HttpClient client, Func<string?> ap
     }
 
     static string? GetString(JsonElement element, string name) =>
-        element.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String ? value.GetString() : null;
+        element.ValueKind == JsonValueKind.Object && element.TryGetProperty(name, out var value) &&
+        value.ValueKind == JsonValueKind.String ? value.GetString() : null;
 }
 
 /// <summary>All discovery selections enter the same canonical source and song graph as pasted links.</summary>

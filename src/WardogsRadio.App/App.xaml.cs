@@ -17,6 +17,12 @@ public partial class App : Application
         // a deliberate, readable increment instead.
         EventManager.RegisterClassHandler(typeof(ScrollViewer), UIElement.PreviewMouseWheelEvent,
             new MouseWheelEventHandler(SlowScrollWheel), true);
+        if (e.Args.Contains("--youtube-search-key-check", StringComparer.OrdinalIgnoreCase))
+        {
+            var key = BundledYouTubeSearchKey.Read();
+            Shutdown(key is { Length: >= 20 } && !key.Any(char.IsWhiteSpace) ? 0 : 1);
+            return;
+        }
         if (e.Args.Contains("--startup-health-check", StringComparer.OrdinalIgnoreCase))
         {
             var expected = File.Exists(Path.Combine(AppContext.BaseDirectory, "VERSION")) ? File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "VERSION")).Trim() : "";

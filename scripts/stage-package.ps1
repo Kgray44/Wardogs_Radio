@@ -1,11 +1,28 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory)] [string] $StageDir,
-    [string] $MpvArchivePath
+    [string] $MpvArchivePath,
+    [string] $YouTubeDefaultKeyFile,
+    [switch] $AllowUnconfiguredYouTubeSearch
 )
 
 $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent $PSScriptRoot
+$keyPath = if ($YouTubeDefaultKeyFile) { $YouTubeDefaultKeyFile }
+    elseif ($env:WARDOGS_YOUTUBE_SEARCH_KEY_FILE) { $env:WARDOGS_YOUTUBE_SEARCH_KEY_FILE }
+    else { Join-Path $repoRoot 'packaging\private\youtube-search-key.txt' }
+$keyPath = [IO.Path]::GetFullPath($keyPath)
+$hasKey = Test-Path -LiteralPath $keyPath -PathType Leaf
+if (-not $hasKey -and -not $AllowUnconfiguredYouTubeSearch) {
+    throw 'YouTube Search default key is missing. Add packaging\private\youtube-search-key.txt or pass -YouTubeDefaultKeyFile. No package was staged.'
+}
+if ($hasKey) {
+    $keyValue = (Get-Content -LiteralPath $keyPath -Raw).Trim()
+    if ($keyValue.Length -lt 20 -or $keyValue.Length -gt 256 -or $keyValue -match '\s' -or $keyValue -match '^(CHANGE_ME|YOUR_KEY)') {
+        throw 'The YouTube Search default key file must contain one valid key on a single line. No package was staged.'
+    }
+    Remove-Variable keyValue
+}
 $version = (Get-Content -LiteralPath (Join-Path $repoRoot 'WARDOGS_VERSION') -Raw).Trim()
 if ($version -notmatch '^\d+\.\d+\.\d+$') { throw 'WARDOGS_VERSION must be major.minor.patch.' }
 $dotnet = Join-Path $repoRoot '.tools\dotnet\dotnet.exe'
@@ -24,7 +41,9 @@ try {
         @{ Project = 'src\WardogsRadio.Launcher\WardogsRadio.Launcher.csproj'; Name = 'launcher'; Files = @('WARDOGS Radio Launcher.exe','WARDOGS Radio Launcher.dll','WARDOGS Radio Launcher.deps.json','WARDOGS Radio Launcher.runtimeconfig.json','WardogsRadio.Update.dll') },
         @{ Project = 'src\WardogsRadio.UpdateAgent\WardogsRadio.UpdateAgent.csproj'; Name = 'agent'; Files = @('WARDOGS Radio Update Agent.exe','WARDOGS Radio Update Agent.dll','WARDOGS Radio Update Agent.deps.json','WARDOGS Radio Update Agent.runtimeconfig.json','WardogsRadio.Update.dll') })) {
         $output = Join-Path $publishRoot $item.Name
-        & $dotnet publish (Join-Path $repoRoot $item.Project) -c Release -r win-x64 --self-contained true --no-restore -o $output
+        $publishArguments = @('publish', (Join-Path $repoRoot $item.Project), '-c', 'Release', '-r', 'win-x64', '--self-contained', 'true', '--no-restore', '-o', $output)
+        if ($item.Name -eq 'app' -and $hasKey) { $publishArguments += "-p:YouTubeDefaultKeyFile=$keyPath" }
+        & $dotnet @publishArguments
         if ($LASTEXITCODE -ne 0) { throw "dotnet publish failed for $($item.Project)." }
         if ($null -eq $item.Files) { Get-ChildItem -LiteralPath $output -Force | Copy-Item -Destination $stage -Recurse -Force }
         else { foreach ($file in $item.Files) { Copy-Item -LiteralPath (Join-Path $output $file) -Destination $stage -Force } }
@@ -35,8 +54,16 @@ try {
     & (Join-Path $PSScriptRoot 'refresh-package-inventory.ps1') -StageDir $stage
     $required = @('WARDOGS Radio.exe', 'WARDOGS Radio Launcher.exe', 'WARDOGS Radio Update Agent.exe', 'VERSION', 'WARDOGS Radio.dll', 'WARDOGS Radio.runtimeconfig.json', 'WardogsRadio.Core.dll', 'WardogsRadio.Update.dll', 'youtube-player.html', 'mpv.exe', 'mpv.com', 'd3dcompiler_43.dll', 'THIRD_PARTY_MPV.txt', 'THIRD_PARTY_DEPENDENCIES.txt', 'Prerequisites\MicrosoftEdgeWebView2RuntimeInstallerX64.exe', 'Prerequisites\VoicemeeterBananaSetup.exe', 'PACKAGE_CONTENTS.sha256')
     foreach ($file in $required) { if (-not (Test-Path -LiteralPath (Join-Path $stage $file) -PathType Leaf)) { throw "Staged package is missing $file." } }
+    if ($hasKey) {
+        $keyCheck = Start-Process -FilePath (Join-Path $stage 'WARDOGS Radio.exe') -ArgumentList '--youtube-search-key-check' -WorkingDirectory $stage -WindowStyle Hidden -Wait -PassThru
+        if ($keyCheck.ExitCode -ne 0) { throw 'The staged application does not contain a usable YouTube Search default key.' }
+    }
     if ((Get-Content -LiteralPath (Join-Path $stage 'VERSION') -Raw).Trim() -ne $version) { throw 'Staged VERSION does not match WARDOGS_VERSION.' }
     Write-Host "Staged WARDOGS Radio $version at $stage"
 } finally {
-    if (Test-Path -LiteralPath $publishRoot) { Remove-Item -LiteralPath $publishRoot -Recurse -Force }
+    $publishParent = [IO.Path]::GetFullPath([IO.Path]::GetDirectoryName($stage)).TrimEnd('\') + '\'
+    $resolvedPublishRoot = [IO.Path]::GetFullPath($publishRoot)
+    if (-not $resolvedPublishRoot.StartsWith($publishParent, [StringComparison]::OrdinalIgnoreCase) -or
+        -not (Split-Path $resolvedPublishRoot -Leaf).StartsWith('publish-')) { throw 'Refusing an unsafe temporary publish cleanup target.' }
+    if (Test-Path -LiteralPath $resolvedPublishRoot) { Remove-Item -LiteralPath $resolvedPublishRoot -Recurse -Force }
 }

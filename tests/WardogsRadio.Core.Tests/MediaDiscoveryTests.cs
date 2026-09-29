@@ -59,6 +59,8 @@ public sealed class MediaDiscoveryTests
         using var client = new HttpClient(new StubHandler(request =>
         {
             calls++;
+            Assert.DoesNotContain("key=", request.RequestUri!.Query, StringComparison.OrdinalIgnoreCase);
+            Assert.Equal("test-key", Assert.Single(request.Headers.GetValues("x-goog-api-key")));
             if (request.RequestUri!.AbsolutePath.EndsWith("/search", StringComparison.Ordinal))
                 Assert.Contains("videoEmbeddable=true", request.RequestUri.Query);
             var body = request.RequestUri!.AbsolutePath.EndsWith("/search", StringComparison.Ordinal)
@@ -77,16 +79,68 @@ public sealed class MediaDiscoveryTests
     }
 
     [Fact]
-    public async Task MissingKeyAndServiceFailureHaveHumanReadableErrors()
+    public async Task MissingKeyLeavesSearchUnavailableWithoutSendingARequest()
     {
-        using var client = new HttpClient(new StubHandler(_ => new HttpResponseMessage(HttpStatusCode.Forbidden)));
+        var calls = 0;
+        using var client = new HttpClient(new StubHandler(_ => { calls++; return new HttpResponseMessage(HttpStatusCode.OK); }));
         var noKey = new YouTubeDiscoveryProvider(client, () => null);
-        var denied = new YouTubeDiscoveryProvider(client, () => "test-key");
 
-        Assert.Contains("API key", (await Assert.ThrowsAsync<MediaDiscoveryException>(() =>
-            noKey.SearchAsync(new MediaSearchQuery("music", MediaSearchResultType.Video)))).Message);
-        Assert.Contains("daily quota", (await Assert.ThrowsAsync<MediaDiscoveryException>(() =>
-            denied.SearchAsync(new MediaSearchQuery("music", MediaSearchResultType.Video)))).Message);
+        var error = await Assert.ThrowsAsync<MediaDiscoveryException>(() =>
+            noKey.SearchAsync(new MediaSearchQuery("music", MediaSearchResultType.Video)));
+        Assert.Equal(MediaDiscoveryFailure.NotConfigured, error.Failure);
+        Assert.Contains("paste", error.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(0, calls);
+    }
+
+    [Theory]
+    [InlineData(HttpStatusCode.BadRequest, "keyInvalid", MediaDiscoveryFailure.Authentication)]
+    [InlineData(HttpStatusCode.Forbidden, "quotaExceeded", MediaDiscoveryFailure.Quota)]
+    [InlineData(HttpStatusCode.TooManyRequests, "rateLimitExceeded", MediaDiscoveryFailure.Quota)]
+    public async Task ApiFailuresAreClassifiedWithoutExposingTheKey(HttpStatusCode status, string reason,
+        MediaDiscoveryFailure expected)
+    {
+        using var client = new HttpClient(new StubHandler(_ => new HttpResponseMessage(status)
+        {
+            Content = new StringContent("{\"error\":{\"errors\":[{\"reason\":\"" + reason + "\"}]}}")
+        }));
+        var provider = new YouTubeDiscoveryProvider(client, () => "private-test-key");
+
+        var error = await Assert.ThrowsAsync<MediaDiscoveryException>(() =>
+            provider.SearchAsync(new MediaSearchQuery("music", MediaSearchResultType.Video)));
+        Assert.Equal(expected, error.Failure);
+        Assert.DoesNotContain("private-test-key", error.Message);
+        Assert.Contains("paste", error.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task ConnectionTestUsesFreshExplicitSearchAndDoesNotUseCachedResults()
+    {
+        var calls = 0;
+        using var client = new HttpClient(new StubHandler(request =>
+        {
+            calls++;
+            Assert.Contains("/search", request.RequestUri!.AbsolutePath);
+            Assert.Equal("test-key", Assert.Single(request.Headers.GetValues("x-goog-api-key")));
+            return new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("{\"items\":[]}") };
+        }));
+        var provider = new YouTubeDiscoveryProvider(client, () => "test-key");
+
+        await provider.SearchAsync(new MediaSearchQuery("music", MediaSearchResultType.Playlist));
+        await provider.SearchAsync(new MediaSearchQuery("music", MediaSearchResultType.Playlist));
+        await provider.TestConnectionAsync();
+
+        Assert.Equal(2, calls);
+    }
+
+    [Fact]
+    public async Task NetworkFailureUsesAReadableFallbackMessage()
+    {
+        using var client = new HttpClient(new StubHandler(_ => throw new HttpRequestException("private-test-key")));
+        var provider = new YouTubeDiscoveryProvider(client, () => "private-test-key");
+        var error = await Assert.ThrowsAsync<MediaDiscoveryException>(() =>
+            provider.SearchAsync(new MediaSearchQuery("music", MediaSearchResultType.Video)));
+        Assert.Equal(MediaDiscoveryFailure.Network, error.Failure);
+        Assert.DoesNotContain("private-test-key", error.Message);
     }
 
     static MediaSearchResult Video() => new("youtube", "abcDEF12345", MediaSearchResultType.Video,

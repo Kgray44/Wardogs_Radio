@@ -44,6 +44,15 @@ jobs:
       - name: Install 7-Zip for MPV packaging
         shell: pwsh
         run: choco install 7zip -y --no-progress
+      - name: Prepare private YouTube Search key
+        shell: pwsh
+        env:
+          WARDOGS_YOUTUBE_SEARCH_KEY: ${{ secrets.WARDOGS_YOUTUBE_SEARCH_KEY }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:WARDOGS_YOUTUBE_SEARCH_KEY)) { throw 'Configure the WARDOGS_YOUTUBE_SEARCH_KEY GitHub Actions secret before release packaging.' }
+          $keyFile = Join-Path $env:RUNNER_TEMP 'wardogs-youtube-search-key.txt'
+          [IO.File]::WriteAllText($keyFile, $env:WARDOGS_YOUTUBE_SEARCH_KEY.Trim())
+          "WARDOGS_YOUTUBE_SEARCH_KEY_FILE=$keyFile" >> $env:GITHUB_ENV
       - name: Stage complete self-contained package
         shell: pwsh
         run: .\scripts\stage-package.ps1 -StageDir "$PWD\release\stage"

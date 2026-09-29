@@ -283,6 +283,7 @@ public partial class MainWindow : Window, IMacroActionHandler
         });
         _backupTransfer = new WrRadioPackageService(configurationRoot);
         InitializeListening(configurationRoot);
+        YouTubeSearchRuntime.Initialize(configurationRoot);
         _diagnostics = new DiagnosticService(_bridge, _controllers);
         _macroEngine = new MacroExecutionEngine(this);
         _macroEngine.ExecutionStarted += (_, id) => Dispatcher.BeginInvoke(() => { _runningMacros.Add(id); RefreshCollections(); });
@@ -1038,7 +1039,7 @@ public partial class MainWindow : Window, IMacroActionHandler
     }
     void Macros_Click(object s, RoutedEventArgs e) => Show(MacrosView, "MACROS", "Your radio shortcuts", MacrosNav);
     void Audio_Click(object s, RoutedEventArgs e) => Show(AudioView, "AUDIO & ROUTING", "Where your sound goes", AudioNav);
-    void Settings_Click(object s, RoutedEventArgs e) { RefreshRecentBackups(); RefreshMpvAdvancedStatus(); Show(SettingsView, "SETTINGS", "Playback preferences and application", SettingsNav); }
+    void Settings_Click(object s, RoutedEventArgs e) { RefreshRecentBackups(); RefreshMpvAdvancedStatus(); RefreshYouTubeSearchSettings(); Show(SettingsView, "SETTINGS", "Playback preferences and application", SettingsNav); }
 
     void RefreshRecentBackups()
     {
@@ -4935,9 +4936,16 @@ public partial class MainWindow : Window, IMacroActionHandler
         if (_youtubePlayerErrorDetail is not null)
             checks.Add(new DiagnosticItem("YouTube playback", "WARNING",
                 "The selected YouTube video could not play", _youtubePlayerErrorDetail));
-        checks.Add(new DiagnosticItem("YouTube discovery", YouTubeSearchWindow.IsConfiguredForSession ? "READY" : "NOT CONFIGURED",
-            YouTubeSearchWindow.IsConfiguredForSession ? "Search is configured for this app session" : "Paste-link YouTube playback remains available",
-            $"Last search: {YouTubeSearchWindow.LastSearchUtc?.ToString("u") ?? "none"}; last error: {YouTubeSearchWindow.LastSearchError ?? "none"}. API key is never included."));
+        checks.Add(new DiagnosticItem("YouTube discovery", YouTubeSearchRuntime.Status switch
+            {
+                YouTubeSearchStatus.Ready => "READY",
+                YouTubeSearchStatus.NotConfigured => "NOT CONFIGURED",
+                YouTubeSearchStatus.Quota => "QUOTA",
+                _ => "ERROR"
+            },
+            YouTubeSearchRuntime.Status == YouTubeSearchStatus.NotConfigured ? "Paste-link YouTube playback remains available" :
+                "Search uses the configured Music Services key",
+            $"Key source: {YouTubeSearchRuntime.KeySource}; last search: {YouTubeSearchRuntime.LastSearchUtc?.ToString("u") ?? "none"}; last error: {YouTubeSearchRuntime.LastError ?? "none"}. No API key is included."));
         if (_listeningStore is { } historyStore)
         {
             long? journalBytes = null;
