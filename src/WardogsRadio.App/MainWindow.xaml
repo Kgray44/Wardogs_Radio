@@ -279,7 +279,7 @@
             <TextBlock Text="Test Connection sends one YouTube search request. Paste-link playback works even when Search is unavailable." TextWrapping="Wrap" Opacity=".65" Margin="0,9,0,12"/>
             <CheckBox x:Name="UseCustomApiKeyCheck" Content="Use Custom API Key" Checked="UseCustomApiKey_Changed" Unchecked="UseCustomApiKey_Changed"/>
             <StackPanel x:Name="YouTubeCustomKeyPanel" Visibility="Collapsed" Margin="0,9,0,0">
-              <TextBlock Text="Optional key for this Windows user. It replaces the bundled search key and is never included in backups or diagnostics." TextWrapping="Wrap" Opacity=".7" Margin="0,0,0,8"/>
+              <TextBlock Text="Optional key for this Windows user. It replaces the built-in search key and is never included in backups or diagnostics." TextWrapping="Wrap" Opacity=".7" Margin="0,0,0,8"/>
               <PasswordBox x:Name="YouTubeCustomKeyBox" Width="390" Height="36" HorizontalAlignment="Left" AutomationProperties.Name="Custom YouTube Data API key"/>
               <Button Content="SAVE CUSTOM KEY" Click="YouTubeSaveCustomKey_Click" HorizontalAlignment="Left" Margin="0,9,0,0"/>
             </StackPanel>

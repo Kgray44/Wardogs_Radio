@@ -30,5 +30,5 @@ journal and checkpoint while keeping sources, songs, stations, and settings.
 Complete `.wradio` backups include history. Selective transfer packages expose
 an explicit Listening History checkbox. YouTube Search keys are not included in
 history, configuration, backups, or diagnostic exports. The optional user key
-is stored separately using Windows user protection; the default key is bundled
-in packaged builds.
+is stored separately using Windows user protection; the default key is built
+into the application.

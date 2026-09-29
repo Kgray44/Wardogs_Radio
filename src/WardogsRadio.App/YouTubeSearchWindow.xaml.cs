@@ -30,12 +30,6 @@ public partial class YouTubeSearchWindow : Window
         InitializeComponent();
         _previewAllowed = previewAllowed;
         _library = library;
-        if (YouTubeSearchRuntime.KeySource == YouTubeSearchKeySource.None)
-        {
-            SearchButton.IsEnabled = false;
-            StatusText.Text = "YouTube Search is not configured. You can still paste a link in the previous window.";
-            ResultsEmptyText.Text = "Search is unavailable. A search key can be added under Settings → Music Services.";
-        }
         if (!previewAllowed) PreviewHint.Text = "Preview is available when normal station playback is stopped.";
         Loaded += (_, _) => QueryBox.Focus();
     }
@@ -58,18 +52,16 @@ public partial class YouTubeSearchWindow : Window
         SelectedResult = null;
         SelectButton.IsEnabled = false;
         SearchProgress.Visibility = Visibility.Collapsed;
-        SearchButton.IsEnabled = YouTubeSearchRuntime.KeySource != YouTubeSearchKeySource.None;
-        StatusText.Text = SearchButton.IsEnabled ? "Enter a query and press Enter or Search." :
-            "YouTube Search is not configured. You can still paste a link in the previous window.";
-        ResultsEmptyText.Text = SearchButton.IsEnabled ? "Search results will appear here." :
-            "Search is unavailable. A search key can be added under Settings → Music Services.";
+        SearchButton.IsEnabled = true;
+        StatusText.Text = "Enter a query and press Enter or Search.";
+        ResultsEmptyText.Text = "Search results will appear here.";
         ResultsEmptyText.Visibility = Visibility.Visible;
         StopPreview();
     }
 
     async Task SearchAsync()
     {
-        if (_closed || YouTubeSearchRuntime.KeySource == YouTubeSearchKeySource.None) return;
+        if (_closed) return;
         var version = ++_searchVersion;
         _searchCancellation?.Cancel();
         _searchCancellation?.Dispose();

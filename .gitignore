@@ -6,7 +6,6 @@ release/
 .release/
 .tools/
 .tools-dotnet-install.ps1
-packaging/private/
 .vs/
 TestResults/
 

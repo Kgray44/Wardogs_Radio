@@ -3,7 +3,7 @@ using System.Text;
 
 namespace WardogsRadio.Core;
 
-public enum YouTubeSearchKeySource { None, BundledDefault, UserOverride }
+public enum YouTubeSearchKeySource { BuiltInDefault, UserOverride }
 
 public interface IYouTubeSearchOverrideStore
 {
@@ -12,24 +12,24 @@ public interface IYouTubeSearchOverrideStore
     void Clear();
 }
 
-/// <summary>Resolves the local override before the packaged default without putting either key in configuration.</summary>
+/// <summary>Resolves the local override before the built-in WARDOGS key.</summary>
 public sealed class YouTubeSearchKeys
 {
+    // Replace this one value to change the shared key in future WARDOGS builds.
+    public const string BuiltInDefaultKey = "AIzaSyAw_Ke_DYIAL3hQ6MnptnVBJJsIgNoz3UQ";
+
     readonly IYouTubeSearchOverrideStore _store;
-    readonly string? _bundledDefault;
     string? _override;
 
-    public YouTubeSearchKeys(string? bundledDefault, IYouTubeSearchOverrideStore store)
+    public YouTubeSearchKeys(IYouTubeSearchOverrideStore store)
     {
-        _bundledDefault = Normalize(bundledDefault);
         _store = store;
         _override = Normalize(store.Read());
     }
 
     public bool HasUserOverride => _override is not null;
-    public YouTubeSearchKeySource Source => _override is not null ? YouTubeSearchKeySource.UserOverride :
-        _bundledDefault is not null ? YouTubeSearchKeySource.BundledDefault : YouTubeSearchKeySource.None;
-    public string? CurrentKey => _override ?? _bundledDefault;
+    public YouTubeSearchKeySource Source => _override is not null ? YouTubeSearchKeySource.UserOverride : YouTubeSearchKeySource.BuiltInDefault;
+    public string CurrentKey => _override ?? BuiltInDefaultKey;
 
     public void UseCustomKey(string key)
     {

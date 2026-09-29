@@ -17,21 +17,8 @@ jobs:
       - name: Test visible YouTube controller
         run: node tests/youtube-player.behavior.test.cjs
       - name: Publish Windows x64 app
-        shell: pwsh
-        env:
-          WARDOGS_YOUTUBE_SEARCH_KEY: ${{ secrets.WARDOGS_YOUTUBE_SEARCH_KEY }}
-        run: |
-          $arguments = @('publish', 'src/WardogsRadio.App/WardogsRadio.App.csproj', '-c', 'Release', '-r', 'win-x64', '--self-contained', 'true', '-o', 'artifacts/win-x64')
-          if (-not [string]::IsNullOrWhiteSpace($env:WARDOGS_YOUTUBE_SEARCH_KEY)) {
-            $keyFile = Join-Path $env:RUNNER_TEMP 'wardogs-youtube-search-key.txt'
-            [IO.File]::WriteAllText($keyFile, $env:WARDOGS_YOUTUBE_SEARCH_KEY.Trim())
-            $arguments += "-p:YouTubeDefaultKeyFile=$keyFile"
-            'YOUTUBE_SEARCH_BUNDLED=true' >> $env:GITHUB_ENV
-          }
-          dotnet @arguments
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        run: dotnet publish src/WardogsRadio.App/WardogsRadio.App.csproj -c Release -r win-x64 --self-contained true -o artifacts/win-x64
       - uses: actions/upload-artifact@v4
-        if: env.YOUTUBE_SEARCH_BUNDLED == 'true'
         with:
           name: wardogs-radio-win-x64
           path: artifacts/win-x64/

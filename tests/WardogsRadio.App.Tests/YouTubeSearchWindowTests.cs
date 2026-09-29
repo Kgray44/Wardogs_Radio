@@ -10,7 +10,7 @@ namespace WardogsRadio.App.Tests;
 public sealed class YouTubeSearchWindowTests
 {
     [Fact]
-    public void SearchWindowLoadsWithoutCredentialControlsAndExplainsUnavailableSearch()
+    public void SearchWindowLoadsReadyWithoutCredentialControls()
     {
         RunSta(() =>
         {
@@ -24,12 +24,12 @@ public sealed class YouTubeSearchWindowTests
                 Assert.NotNull(window.FindName("SelectButton"));
                 Assert.Null(window.FindName("KeyBox"));
                 Assert.Null(window.FindName("KeyPanel"));
-                Assert.False(Assert.IsType<Button>(window.FindName("SearchButton")).IsEnabled);
-                Assert.Contains("paste a link", Assert.IsType<TextBlock>(window.FindName("StatusText")).Text,
+                Assert.True(Assert.IsType<Button>(window.FindName("SearchButton")).IsEnabled);
+                Assert.Contains("Enter", Assert.IsType<TextBlock>(window.FindName("StatusText")).Text,
                     StringComparison.OrdinalIgnoreCase);
                 Assert.IsType<ComboBox>(window.FindName("TypeBox")).SelectedIndex = 1;
-                Assert.False(Assert.IsType<Button>(window.FindName("SearchButton")).IsEnabled);
-                Assert.Contains("paste a link", Assert.IsType<TextBlock>(window.FindName("StatusText")).Text,
+                Assert.True(Assert.IsType<Button>(window.FindName("SearchButton")).IsEnabled);
+                Assert.Contains("Enter", Assert.IsType<TextBlock>(window.FindName("StatusText")).Text,
                     StringComparison.OrdinalIgnoreCase);
             }
             finally { window.Close(); }

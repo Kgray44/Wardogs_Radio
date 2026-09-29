@@ -6,38 +6,34 @@ namespace WardogsRadio.Core.Tests;
 
 public sealed class YouTubeSearchKeysTests
 {
-    const string DefaultKey = "default-api-key-123456789012345";
     const string OverrideKey = "personal-api-key-12345678901234";
 
     [Fact]
     public void DefaultOverrideAndRestoreFollowResolutionOrder()
     {
         var store = new MemoryStore();
-        var keys = new YouTubeSearchKeys(DefaultKey, store);
-        Assert.Equal(YouTubeSearchKeySource.BundledDefault, keys.Source);
-        Assert.Equal(DefaultKey, keys.CurrentKey);
+        var keys = new YouTubeSearchKeys(store);
+        Assert.Equal(YouTubeSearchKeySource.BuiltInDefault, keys.Source);
+        Assert.Equal(YouTubeSearchKeys.BuiltInDefaultKey, keys.CurrentKey);
 
         keys.UseCustomKey(OverrideKey);
         Assert.Equal(YouTubeSearchKeySource.UserOverride, keys.Source);
         Assert.Equal(OverrideKey, keys.CurrentKey);
-        Assert.Equal(OverrideKey, new YouTubeSearchKeys(DefaultKey, store).CurrentKey);
+        Assert.Equal(OverrideKey, new YouTubeSearchKeys(store).CurrentKey);
 
         keys.RestoreDefault();
-        Assert.Equal(YouTubeSearchKeySource.BundledDefault, keys.Source);
-        Assert.Equal(DefaultKey, keys.CurrentKey);
+        Assert.Equal(YouTubeSearchKeySource.BuiltInDefault, keys.Source);
+        Assert.Equal(YouTubeSearchKeys.BuiltInDefaultKey, keys.CurrentKey);
         Assert.Null(store.Read());
     }
 
     [Fact]
-    public void MissingDefaultAndOverrideMeanSearchIsUnconfigured()
+    public void FreshInstallAlwaysHasTheBuiltInDefault()
     {
-        var keys = new YouTubeSearchKeys(null, new MemoryStore());
-        Assert.Equal(YouTubeSearchKeySource.None, keys.Source);
-        Assert.Null(keys.CurrentKey);
-        keys.UseCustomKey(OverrideKey);
-        Assert.Equal(OverrideKey, keys.CurrentKey);
-        keys.RestoreDefault();
-        Assert.Equal(YouTubeSearchKeySource.None, keys.Source);
+        var keys = new YouTubeSearchKeys(new MemoryStore());
+        Assert.Equal(YouTubeSearchKeySource.BuiltInDefault, keys.Source);
+        Assert.StartsWith("AIza", keys.CurrentKey, StringComparison.Ordinal);
+        Assert.True(keys.CurrentKey.Length >= 20);
     }
 
     [Theory]
@@ -47,10 +43,10 @@ public sealed class YouTubeSearchKeysTests
     public void InvalidOverrideIsNotPersisted(string value)
     {
         var store = new MemoryStore();
-        var keys = new YouTubeSearchKeys(DefaultKey, store);
+        var keys = new YouTubeSearchKeys(store);
         Assert.Throws<ArgumentException>(() => keys.UseCustomKey(value));
         Assert.Null(store.Read());
-        Assert.Equal(DefaultKey, keys.CurrentKey);
+        Assert.Equal(YouTubeSearchKeys.BuiltInDefaultKey, keys.CurrentKey);
     }
 
     [Fact]

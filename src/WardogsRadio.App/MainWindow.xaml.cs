@@ -4939,12 +4939,10 @@ public partial class MainWindow : Window, IMacroActionHandler
         checks.Add(new DiagnosticItem("YouTube discovery", YouTubeSearchRuntime.Status switch
             {
                 YouTubeSearchStatus.Ready => "READY",
-                YouTubeSearchStatus.NotConfigured => "NOT CONFIGURED",
                 YouTubeSearchStatus.Quota => "QUOTA",
                 _ => "ERROR"
             },
-            YouTubeSearchRuntime.Status == YouTubeSearchStatus.NotConfigured ? "Paste-link YouTube playback remains available" :
-                "Search uses the configured Music Services key",
+            "Search uses the built-in WARDOGS key or your Music Services override",
             $"Key source: {YouTubeSearchRuntime.KeySource}; last search: {YouTubeSearchRuntime.LastSearchUtc?.ToString("u") ?? "none"}; last error: {YouTubeSearchRuntime.LastError ?? "none"}. No API key is included."));
         if (_listeningStore is { } historyStore)
         {

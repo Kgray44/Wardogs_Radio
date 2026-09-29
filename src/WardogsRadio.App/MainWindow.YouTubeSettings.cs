@@ -14,15 +14,13 @@ public partial class MainWindow
         YouTubeSearchStatusText.Text = YouTubeSearchRuntime.Status switch
         {
             YouTubeSearchStatus.Ready => "READY",
-            YouTubeSearchStatus.NotConfigured => "NOT CONFIGURED",
             YouTubeSearchStatus.Quota => "QUOTA",
             _ => "ERROR"
         };
         var source = YouTubeSearchRuntime.KeySource switch
         {
             YouTubeSearchKeySource.UserOverride => "Using your custom key.",
-            YouTubeSearchKeySource.BundledDefault => "Using the WARDOGS default search key.",
-            _ => "No search key is installed. Paste YouTube links until a packaged default or custom key is available."
+            _ => "Using the built-in WARDOGS search key."
         };
         YouTubeSearchDetailText.Text = YouTubeSearchRuntime.LastError is { } error ? source + " " + error : source;
         _updatingYouTubeSearchSettings = true;
@@ -69,9 +67,7 @@ public partial class MainWindow
             YouTubeSearchRuntime.RestoreDefault();
             YouTubeCustomKeyBox.Clear();
             RefreshYouTubeSearchSettings();
-            Footer.Text = YouTubeSearchRuntime.KeySource == YouTubeSearchKeySource.BundledDefault
-                ? "WARDOGS DEFAULT YOUTUBE SEARCH KEY RESTORED."
-                : "CUSTOM KEY REMOVED · YouTube links still work; Search needs a packaged default key.";
+            Footer.Text = "BUILT-IN WARDOGS YOUTUBE SEARCH KEY RESTORED.";
         }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException)
         {

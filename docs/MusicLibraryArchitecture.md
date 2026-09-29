@@ -64,12 +64,12 @@ library song.
 `IMediaDiscoveryProvider` returns typed video or playlist candidates. The WPF Search
 window calls `YouTubeDiscoveryProvider` only after the user presses Enter or Search.
 Search uses the official YouTube Data API (`search.list`, then `videos.list` for
-video durations). Key resolution is user override, then packaged default, then
-unavailable; manual links always remain available. The optional override is
+video durations). Key resolution is user override, then the built-in WARDOGS
+default; manual links always remain available. The optional override is
 protected for the current Windows user outside configuration and backups. The
-default is supplied privately at package time. Keys are never written to logs,
-diagnostics, or `.wradio` packages. Search results are cached in memory for that
-app session. See [YouTube Search packaging](YouTubeSearchPackaging.md).
+shared default is defined in `YouTubeSearchKeys.BuiltInDefaultKey`. Keys are
+never written to logs, diagnostics, or `.wradio` packages. Search results are
+cached in memory for that app session.
 
 Selection goes through `MediaDiscoveryIngestion` and `MusicLibraryService.EnsureSource`.
 Video identities normalize to `youtube.com/watch?v=<id>` even when discovered

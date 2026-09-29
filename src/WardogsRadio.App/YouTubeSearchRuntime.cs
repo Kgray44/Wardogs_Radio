@@ -3,31 +3,29 @@ using WardogsRadio.Core;
 
 namespace WardogsRadio.App;
 
-internal enum YouTubeSearchStatus { Ready, NotConfigured, Quota, Error }
+internal enum YouTubeSearchStatus { Ready, Quota, Error }
 
 /// <summary>One app-session search state shared by Settings, diagnostics, and the native search window.</summary>
 internal static class YouTubeSearchRuntime
 {
     static readonly HttpClient Client = new() { Timeout = TimeSpan.FromSeconds(15) };
     static YouTubeSearchKeys? _keys;
-    static WindowsYouTubeSearchOverrideStore? _overrideStore;
     static YouTubeDiscoveryProvider? _provider;
     static MediaDiscoveryFailure? _lastFailure;
 
     public static DateTimeOffset? LastSearchUtc { get; private set; }
     public static string? LastError { get; private set; }
-    public static YouTubeSearchKeySource KeySource => _keys?.Source ?? YouTubeSearchKeySource.None;
+    public static YouTubeSearchKeySource KeySource => _keys?.Source ?? YouTubeSearchKeySource.BuiltInDefault;
     public static bool HasUserOverride => _keys?.HasUserOverride == true;
-    public static YouTubeSearchStatus Status => KeySource == YouTubeSearchKeySource.None ? YouTubeSearchStatus.NotConfigured :
-        _lastFailure == MediaDiscoveryFailure.Quota ? YouTubeSearchStatus.Quota :
+    public static YouTubeSearchStatus Status => _lastFailure == MediaDiscoveryFailure.Quota ? YouTubeSearchStatus.Quota :
         _lastFailure is null ? YouTubeSearchStatus.Ready : YouTubeSearchStatus.Error;
 
     public static void Initialize(string configurationRoot)
     {
-        _overrideStore = new WindowsYouTubeSearchOverrideStore(configurationRoot);
-        _keys = new YouTubeSearchKeys(BundledYouTubeSearchKey.Read(), _overrideStore);
+        var overrideStore = new WindowsYouTubeSearchOverrideStore(configurationRoot);
+        _keys = new YouTubeSearchKeys(overrideStore);
         _provider = new YouTubeDiscoveryProvider(Client, () => _keys.CurrentKey);
-        if (_overrideStore.ReadFailed)
+        if (overrideStore.ReadFailed)
         {
             _lastFailure = MediaDiscoveryFailure.Authentication;
             LastError = "The saved custom key could not be opened. Restore the default key or save a new custom key.";
