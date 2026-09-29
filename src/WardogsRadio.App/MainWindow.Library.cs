@@ -143,8 +143,11 @@ public partial class MainWindow
 
     void OpenLibrarySource(MediaSource source)
     {
+        string listeningDevice;
+        try { listeningDevice = RequireListeningPlayerDevice(); }
+        catch (InvalidOperationException error) { Footer.Text = error.Message; return; }
         var inspector = new LibrarySourceInspectorWindow(_config.MusicLibrary, source,
-            () => _store.SaveAsync(_config), _config.MpvPath, _config.MpvAudioDeviceName) { Owner = this };
+            () => _store.SaveAsync(_config), _config.MpvPath, listeningDevice) { Owner = this };
         inspector.ShowDialog();
         RefreshLibrary();
         RefreshDashboardPlaylist();

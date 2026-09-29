@@ -17,7 +17,10 @@ public sealed class ConfigurationMigrationTests
                 MasterVolume = .61,
                 GameMasterVolume = .29,
                 MicrophoneVolume = 1.6,
+                MonitorDeviceId = @"SWD\MMDEVAPI\{0.0.0.00000000}.{D19C6579-B0C2-43D8-9E5F-F66A242151A7}",
+                MonitorDeviceName = "Speakers (Razer Barracuda Pro 2.4)",
                 MpvAudioDeviceName = "wasapi/headset",
+                MpvAudioDeviceEndpointId = @"SWD\MMDEVAPI\{0.0.0.00000000}.{D19C6579-B0C2-43D8-9E5F-F66A242151A7}",
                 GameMpvAudioDeviceName = "wasapi/game"
             };
             config.Profile.Stations[0].Volume = .77;
@@ -28,6 +31,9 @@ public sealed class ConfigurationMigrationTests
             Assert.Equal(.29, restored.GameMasterVolume);
             Assert.Equal(1.6, restored.MicrophoneVolume);
             Assert.Equal("wasapi/headset", restored.MpvAudioDeviceName);
+            Assert.Equal(config.MonitorDeviceId, restored.MonitorDeviceId);
+            Assert.Equal(config.MonitorDeviceName, restored.MonitorDeviceName);
+            Assert.Equal(config.MpvAudioDeviceEndpointId, restored.MpvAudioDeviceEndpointId);
             Assert.Equal("wasapi/game", restored.GameMpvAudioDeviceName);
             Assert.Equal(.77, restored.Profile.Stations[0].Volume);
             Assert.Equal(.43, restored.Profile.Stations[0].GameVolume);

@@ -78,7 +78,7 @@ public partial class MainWindow
                 Reconnect_Click(sender, e);
                 return;
             case RepairAction.RefreshDevices:
-                await LoadAudioEndpointsAsync();
+                await RefreshListeningOutputDevicesAsync();
                 break;
             case RepairAction.ChooseMicrophone:
             case RepairAction.ChooseHeadphones:

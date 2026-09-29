@@ -36,14 +36,15 @@ public partial class MainWindow
         try
         {
             var previousMic = MicrophoneBox.SelectedItem is WindowsAudioEndpoint;
-            var previousHeadphones = MonitorBox.SelectedItem is WindowsAudioEndpoint;
+            var previousHeadphones = MonitorBox.SelectedItem is WindowsAudioEndpoint { IsPresent: true };
             var previousGameOutput = _gameOutputEndpointId is not null;
-            if (!await LoadAudioEndpointsAsync(quiet: true)) return;
+            if (!await LoadAudioEndpointsAsync(quiet: true, reconcile: false)) return;
             var currentMic = MicrophoneBox.SelectedItem is WindowsAudioEndpoint;
-            var currentHeadphones = MonitorBox.SelectedItem is WindowsAudioEndpoint;
+            var currentHeadphones = MonitorBox.SelectedItem is WindowsAudioEndpoint { IsPresent: true };
             var currentGameOutput = _gameOutputEndpointId is not null;
             if (previousMic == currentMic && previousHeadphones == currentHeadphones &&
                 previousGameOutput == currentGameOutput) return;
+            if (previousHeadphones != currentHeadphones) await LoadMpvOutputsAsync();
             if ((!previousMic && currentMic) || (!previousHeadphones && currentHeadphones) ||
                 (!previousGameOutput && currentGameOutput))
             {
@@ -180,7 +181,7 @@ public partial class MainWindow
             audio = _bridge.SampleTelemetry(_config.MicrophoneStripIndex, _config.MusicStripIndex, vmStatus);
         var vm = audio.Status;
         var microphone = MicrophoneBox.SelectedItem as WindowsAudioEndpoint;
-        var headphones = MonitorBox.SelectedItem as WindowsAudioEndpoint;
+        var headphones = ConfiguredListeningEndpoint();
         var library = _config.MusicLibrary ?? new MusicLibrary();
         var sourceIds = library.Sources.Select(source => source.Id).ToHashSet();
         var songIds = library.Songs.Select(song => song.Id).ToHashSet();
@@ -199,7 +200,12 @@ public partial class MainWindow
                 _bridge.RecoveryReady,
             VoicemeeterEdition = vm.Edition,
             MicrophonePresent = microphone is not null && microphone.Id == _config.MicrophoneDeviceId,
-            HeadphonesPresent = headphones is not null && headphones.Id == _config.MonitorDeviceId,
+            HeadphonesPresent = headphones is { IsPresent: true } && headphones.Id == _config.MonitorDeviceId,
+            PlayerOutputResolved = _listeningResolution?.Device is { } resolved && resolved.Name == _config.MpvAudioDeviceName &&
+                _config.MpvAudioDeviceEndpointId == _config.MonitorDeviceId,
+            PlayerOutputSwitched = _listeningPlayerSwitched,
+            PlayerOutputSwitchFailed = _listeningConnectionError is not null,
+            PlaybackPathVerified = _listeningPlaybackVerified,
             MicrophoneAssigned = micAssigned,
             MicrophoneRoutedToGame = audio.MicrophoneGameRoute == true,
             MusicRoutedToGame = audio.MusicGameRoute == true,
@@ -246,9 +252,11 @@ public partial class MainWindow
         SetMissingDeviceAlert(MissingMicrophoneAlert, !snapshot.MicrophonePresent,
             string.IsNullOrWhiteSpace(_config.MicrophoneDeviceId)
                 ? "⚠ MICROPHONE NOT SELECTED · FIX" : "⚠ MICROPHONE DISCONNECTED · FIX");
-        SetMissingDeviceAlert(MissingListeningAlert, !snapshot.ListeningOutputPresent,
-            string.IsNullOrWhiteSpace(_config.MonitorDeviceId)
-                ? "⚠ LISTENING OUTPUT NOT SELECTED · FIX" : "⚠ LISTENING OUTPUT DISCONNECTED · FIX");
+        SetMissingDeviceAlert(MissingListeningAlert,
+            !snapshot.ListeningOutputPresent || !snapshot.ListeningPlayerResolved || snapshot.ListeningPlayerConnectionFailed,
+            string.IsNullOrWhiteSpace(_config.MonitorDeviceId) ? "⚠ LISTENING OUTPUT NOT SELECTED · FIX" :
+            !snapshot.ListeningOutputPresent ? "⚠ LISTENING OUTPUT DISCONNECTED · FIX" :
+            "⚠ LISTENING OUTPUT NEEDS REPAIR · FIX");
         OperationalStatus.Text = snapshot.FirstAction?.Summary ?? quietMicrophone ?? "Core audio path is ready.";
     }
 
