@@ -1,5 +1,6 @@
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Threading;
 using WardogsRadio.Core;
 
 namespace WardogsRadio.App;
@@ -11,11 +12,28 @@ public partial class MainWindow
     ListeningStats? _visibleListeningStats;
     ListeningStats? _libraryAllTimeStats;
     bool _updatingListeningControls;
+    readonly DispatcherTimer _listeningPageTimer = new() { Interval = VisiblePageRefresh.Interval };
+    readonly VisiblePageRefresh _listeningPageRefresh = new();
 
-    async void Listening_Click(object sender, RoutedEventArgs e)
+    void InitializeListeningPageRefresh()
+    {
+        _listeningPageTimer.Tick += async (_, _) => await RefreshListeningPageAsync(explicitRequest: false);
+    }
+
+    async void ListeningView_IsVisibleChanged(object sender, DependencyPropertyChangedEventArgs e)
+    {
+        if (!IsLoaded || _closingInProgress || ListeningView is null) return;
+        if (ListeningView.IsVisible)
+        {
+            _listeningPageTimer.Start();
+            await RefreshListeningPageAsync();
+        }
+        else _listeningPageTimer.Stop();
+    }
+
+    void Listening_Click(object sender, RoutedEventArgs e)
     {
         Show(ListeningView, "LISTENING", "Your radio, over time", ListeningNav);
-        await RefreshListeningPageAsync();
     }
 
     async Task RefreshDashboardListeningAsync()
@@ -83,14 +101,15 @@ public partial class MainWindow
         }
     }
 
-    async void ListeningRefresh_Click(object sender, RoutedEventArgs e) => await RefreshListeningPageAsync();
-
     async void ListeningRange_Changed(object sender, SelectionChangedEventArgs e)
     {
         if (IsLoaded && ListeningView?.Visibility == Visibility.Visible) await RefreshListeningPageAsync();
     }
 
-    async Task RefreshListeningPageAsync()
+    Task RefreshListeningPageAsync(bool explicitRequest = true) => _listeningPageRefresh.RunAsync(
+        () => ListeningView.IsVisible && !_closingInProgress, RefreshListeningPageCoreAsync, explicitRequest);
+
+    async Task RefreshListeningPageCoreAsync()
     {
         if (_listeningStore is null) return;
         try
@@ -104,7 +123,8 @@ public partial class MainWindow
                 "year" => new DateTimeOffset(DateTime.Now.Year, 1, 1, 0, 0, 0, DateTimeOffset.Now.Offset),
                 _ => (DateTimeOffset?)null
             } : null;
-            var stats = ListeningStatsService.Aggregate(records, from);
+            var stats = await Task.Run(() => ListeningStatsService.Aggregate(records, from));
+            if (!ListeningView.IsVisible || _closingInProgress) return;
             _visibleListeningStats = stats;
             ListeningTotalText.Text = FormatListeningTime(stats.TotalAudibleSeconds);
             ListeningPlaysText.Text = stats.QualifiedPlays.ToString("N0");

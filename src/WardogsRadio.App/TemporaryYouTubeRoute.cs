@@ -113,8 +113,9 @@ internal sealed class TemporaryYouTubeRoute(AudioBridgeService bridge) : IDispos
         // never fall back to WDM/KS: they may seize the physical output.
         var headsetChoice = VoicemeeterSharedOutputSelector.Find(bridge.ListAudioDevices(false), headset.FriendlyName)
             ?? throw new InvalidOperationException("No shared MME route matches the selected headphones. Your Windows output was not changed.");
-        var priorDriver = bridge.ListAudioDevices(false)
-            .FirstOrDefault(x => x.Name.Equals(priorDevice, StringComparison.OrdinalIgnoreCase))?.InterfaceName.ToLowerInvariant();
+        var priorResolution = VoicemeeterDeviceIdentity.Resolve(priorDevice, bridge.ListAudioDevices(false));
+        var priorDriver = priorResolution.Device?.InterfaceName.ToLowerInvariant();
+        if (priorResolution.Device is { } resolvedPrior) priorDevice = VoicemeeterDeviceIdentity.Parse(resolvedPrior.Name).Name;
         if (!string.IsNullOrWhiteSpace(priorDevice) && priorDriver is not ("mme" or "wdm"))
             throw new InvalidOperationException("Voicemeeter's current A1 device cannot be identified for safe restoration; no output changed.");
         var snapshot = new Snapshot(WindowsDefaultRender.Current(Role.Console),

@@ -20,6 +20,7 @@ public partial class MainWindow
     {
         _listeningStore = new ListeningHistoryStore(configurationRoot);
         _listeningTimer.Tick += ListeningTimer_Tick;
+        InitializeListeningPageRefresh();
     }
 
     async Task StartListeningAsync()
@@ -150,6 +151,7 @@ public partial class MainWindow
     async Task StopListeningAsync()
     {
         _listeningTimer.Stop();
+        _listeningPageTimer.Stop();
         if (_listeningStore is null || !_config.ListeningHistoryEnabled) return;
         var now = DateTimeOffset.UtcNow;
         _listeningRecorder.Close(now);

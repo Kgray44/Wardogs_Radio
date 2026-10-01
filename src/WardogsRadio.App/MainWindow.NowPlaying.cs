@@ -193,31 +193,30 @@ public partial class MainWindow
 
     void UpdateNowPlayingVisualizer(SignalLevel music, SignalLevel monitor)
     {
-        // A configured Voicemeeter strip can be available but silent when local
-        // MPV plays directly to the selected headphones. Fall back on a silent
-        // strip as well as an unavailable one, so the dock follows actual audio.
-        var source = music.Available && music.Peak > VoicemeeterSignalMonitor.VisualSignalFloor ? music : monitor;
-        var loadingOrSwitching = _activationGate.CurrentCount == 0 ||
+        _nowPlayingListeningSignal = monitor;
+        var observation = CurrentListeningObservation();
+        var switching = _activationGate.CurrentCount == 0 || _listeningOutputChangeInProgress ||
             _active?.ProviderId == "youtube" && (!_youtubePlayerReady || _youtubePlayerErrorDetail is not null) ||
             _youtubeRouteRecoveryBlocked;
-        _nowPlayingLevelTarget = loadingOrSwitching ? 0 : source.Available
-            ? VoicemeeterSignalMonitor.BarValue(source) / 100d : 0;
+        // Local MPV and YouTube both listen directly to the selected Windows endpoint.
+        // No other provider currently proves a mixer listening path, so it stays idle.
+        var topology = _active?.ProviderId is "mpv" or "youtube"
+            ? PlaybackListeningTopology.DirectEndpoint : PlaybackListeningTopology.Unavailable;
+        _nowPlayingVisualLevel = NowPlayingVisualLevelResolver.Resolve(topology,
+            ListeningAudibility.IsAudibleListening(observation), switching,
+            new(music.Available, music.Peak), new(monitor.Available, monitor.Peak));
+        _nowPlayingLevelTarget = VoicemeeterSignalMonitor.BarValue(
+            new SignalLevel(_nowPlayingVisualLevel.Source != VisualLevelSource.None, _nowPlayingVisualLevel.Peak)) / 100d;
     }
+
+    SignalLevel _nowPlayingListeningSignal = new(false, 0);
+    NowPlayingVisualLevel _nowPlayingVisualLevel = new(VisualLevelSource.None, 0);
 
     void RenderNowPlayingVisualizer()
     {
         for (var index = 0; index < _nowPlayingBars.Count; index++)
-        {
-            // A shared source-level signal is rendered as a restrained, deterministic meter pattern.
-            var shape = .44 + ((index * 5 + 3) % 7) * .075;
-            // Keep the compact dock geometry unchanged, but use more of its
-            // existing height range so live audio is easier to read at a glance.
-            var desired = 3 + _nowPlayingLevelTarget * 52 * shape;
-            var previous = _nowPlayingBars[index].Height;
-            _nowPlayingBars[index].Height = _config.ReduceMotion ? desired : desired >= previous
-                ? previous + (desired - previous) * .58 // quick attack
-                : Math.Max(3, previous - 1.55); // slower signal decay
-        }
+            _nowPlayingBars[index].Height = NowPlayingVisualLevelResolver.BarHeight(index,
+                _nowPlayingLevelTarget, _nowPlayingBars[index].Height, _config.ReduceMotion);
     }
 
     async void DockStationSelector_Changed(object sender, SelectionChangedEventArgs e)

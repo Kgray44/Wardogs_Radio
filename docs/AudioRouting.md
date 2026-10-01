@@ -23,3 +23,36 @@ The five-step Setup & Repair flow chooses microphone and headphones, connects th
 Dashboard signal bars distinguish Voicemeeter strip/bus signal from Windows headset/B1 endpoint signal. A moving B1 bar confirms signal at that measured point, not that a game or voice-chat app has selected Voicemeeter Out B1 as its microphone. That receiver must still be checked separately. The app does not install/configure Voicemeeter's audio driver automatically or claim route verification based only on saved device names. A saved Setup verification survives restart only while its component identities and current routes still match; a live meter conflict blocks Ready.
 
 The current YouTube listening route identifies the WebView2 audio session, applies the selected endpoint for that process, and verifies that the session moved. Its separate process-loopback game feed is controlled independently. The older global-default route is retained only to restore an interrupted legacy candidate session at startup. Windows per-app endpoint policy uses an undocumented interface and still requires owner-live validation for sound quality, active device switching, restart, and recovery. See [candidate acceptance](ReadinessAudioBridgeCandidate.md) for those checks.
+
+## v0.4.1 device identity and startup preference
+
+Physical microphone names use one complete-name resolver for known WDM/MME/KS/ASIO
+presentation prefixes, whitespace and case. A driver prefix constrains the match;
+zero or multiple candidates cannot authorize a write. New automatic assignments
+prefer WDM. Recovery can restore positively identified WDM, MME or physical KS
+assignments through their actual driver. ASIO prior-strip recovery and KS output
+selection are outside this contract. The legacy shared-MME output selector's
+specific truncated-name rule remains separate from physical microphone identity.
+
+Before reusing a saved automatic strip, WARDOGS checks whether its current device
+matches the recorded applied or prior device. An outside change is left untouched.
+Device, route and gain leases persist before writes; readback and conservative
+rollback remain required. Failed dropdown changes restore the saved selection and
+report the failure. Advanced Diagnostics includes identity resolution evidence.
+
+Settings offers Last WARDOGS Devices (the default for existing configurations) or
+Current Windows Default Devices. The latter reads Core Audio Multimedia capture
+and render defaults once at startup, maps their stable IDs to the Windows inventory,
+then uses the existing microphone and listening reconciliation paths. It never
+continuously follows default changes. Virtual capture defaults are refused to avoid
+feeding game output back into a physical input. Unavailable or unsafe changes
+retain previous selections with a targeted repair state. Unchanged devices avoid
+new assignments, and only evidence for a changed device becomes stale.
+
+The compact Now Playing visualizer reads the actual selected listening endpoint
+for direct local/YouTube playback, rather than prioritizing its separate game-feed
+strip. Pause, loading and unavailable trusted meters return its target to zero;
+attack/decay and Reduce Motion presentation remain intact. An endpoint meter can
+also see other applications sharing that output; it is not isolated station PCM.
+
+See [v0.4.1 candidate audit and acceptance](V0.4.1-CandidateAudit.md).

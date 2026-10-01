@@ -190,7 +190,7 @@ public partial class MainWindow
         var missing = library.Sources.Count(source => source.ProviderId == "mpv" &&
             !Uri.TryCreate(source.Source, UriKind.Absolute, out _) && !File.Exists(source.Source));
         var micAssigned = microphone is not null && audio.MicrophoneDevice is { } assignedName &&
-            assignedName.Contains(microphone.Name, StringComparison.OrdinalIgnoreCase);
+            VoicemeeterDeviceIdentity.SameName(assignedName, microphone.Name);
         var evidence = new ReadinessEvidence
         {
             MpvAvailable = new MpvLocator().Find(_config.MpvPath) is not null,
@@ -227,7 +227,15 @@ public partial class MainWindow
             BrokenLibraryReferences = broken,
             MissingLocalSources = missing
         };
-        return SystemReadinessService.Evaluate(_config, evidence);
+        var snapshot = SystemReadinessService.Evaluate(_config, evidence);
+        var attention = new[] {
+            (_startupMicrophoneAttention, ReadinessCategory.Microphone, RepairAction.ChooseMicrophone),
+            (_startupListeningAttention, ReadinessCategory.Listening, RepairAction.ChooseHeadphones) };
+        var checks = attention.Where(item => item.Item1 is not null).Select(item =>
+            new ReadinessCheck("startup-" + item.Item2, item.Item2, ReadinessSeverity.NeedsAction, true,
+                "Startup audio devices", item.Item1!, Repair: item.Item3)).ToArray();
+        return checks.Length == 0 ? snapshot : snapshot with { Overall = OverallReadiness.NeedsAttention,
+            Checks = snapshot.Checks.Concat(checks).ToArray() };
     }
 
     void PublishReadiness(SystemReadinessSnapshot snapshot)

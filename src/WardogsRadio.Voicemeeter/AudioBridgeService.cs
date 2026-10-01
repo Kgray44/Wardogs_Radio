@@ -209,7 +209,7 @@ public sealed class AudioBridgeService(IVoicemeeterRemote remote, TimeProvider? 
             for (var attempt = 0; attempt < 10; attempt++)
             {
                 if (remote.TryGetParameterString(readbackParameter, out var actual) &&
-                    actual.Equals(desired, StringComparison.OrdinalIgnoreCase)) return true;
+                    VoicemeeterDeviceIdentity.MatchesAssignment(actual, desired, parameter.Split('.').Last())) return true;
                 Thread.Sleep(30);
             }
             return false;
@@ -239,6 +239,8 @@ public sealed class AudioBridgeService(IVoicemeeterRemote remote, TimeProvider? 
             if (!_recoveryChecked) return new(false, "Unresolved Audio Bridge recovery state must be repaired before a new mixer change.");
             if (!IsBananaConnected()) return new(false, "Audio Bridge is not connected to Voicemeeter Banana.");
             var parameter = $"Strip[{strip}].Gain";
+            if (remote.TryGetParameterFloat(parameter, out var current) && Math.Abs(current - gain) < .1f)
+                return new(true, "Microphone gain already has the requested value.");
             if (!remote.TrySetParameterFloat(parameter, gain) || !await VerifyFloatAsync(parameter, gain, cancellationToken))
                 return Failure("Gain", $"Voicemeeter did not confirm {parameter} at {gain:0.0} dB.", "set microphone gain");
             return new(true, $"Microphone gain verified at {gain:0.0} dB.");
@@ -297,7 +299,7 @@ public sealed class AudioBridgeService(IVoicemeeterRemote remote, TimeProvider? 
 
     public async Task<AudioOperationResult> SetDeviceAsync(string owner, string parameter, string readbackParameter,
         string desired, Func<string, bool>? matches = null, bool persistLease = false,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default, string? expectedPriorReadback = null)
     {
         if (!IsSupportedDeviceParameter(parameter, readbackParameter) || persistLease && string.IsNullOrWhiteSpace(desired))
             return new(false, "Unsupported Banana device parameter.");
@@ -308,21 +310,35 @@ public sealed class AudioBridgeService(IVoicemeeterRemote remote, TimeProvider? 
             if (!IsBananaConnected()) return new(false, "Audio Bridge is not connected to Voicemeeter Banana.");
             if (!remote.TryGetParameterString(readbackParameter, out var prior))
                 return Failure("Device", $"Could not read {readbackParameter}; no change was made.", "read prior device");
-            matches ??= current => current.Equals(desired, StringComparison.OrdinalIgnoreCase);
-            if (matches(prior)) return new(true, $"{readbackParameter} already has the requested device.");
+            var requestedDriver = parameter.Split('.').Last();
+            if (expectedPriorReadback is not null && !VoicemeeterDeviceIdentity.SameName(prior, expectedPriorReadback))
+                return Failure("Device", "MICROPHONE ROUTE CHANGED OUTSIDE WARDOGS · Review Audio & Routing. No mixer state was changed.", "verify strip ownership");
+            var devices = remote.ListAudioDevices(readbackParameter.StartsWith("Strip[", StringComparison.Ordinal));
+            var requested = VoicemeeterDeviceIdentity.Resolve(desired, devices, requestedDriver);
+            if (persistLease && requested.Device is null)
+                return Failure("Device", "MICROPHONE CHANGE WAS NOT APPLIED · The requested input cannot be identified safely. " + requested.Detail, "resolve requested device");
+            // The optional matcher is retained for the shared MME output's documented truncated-name contract.
+            // Transactional physical inputs always use the canonical identity rules.
+            if (persistLease || matches is null)
+                matches = current => VoicemeeterDeviceIdentity.MatchesAssignment(current, desired, requestedDriver);
+            if (!persistLease && matches(prior)) return new(true, $"{readbackParameter} already has the requested device.");
             AudioDeviceLease? lease = null;
             if (persistLease)
             {
                 if (_deviceLeases.Any(existing => existing.ReadbackResource == readbackParameter))
                     return new(false, $"{readbackParameter} already has an Audio Bridge owner.");
-                var driver = string.IsNullOrWhiteSpace(prior) ? parameter.Split('.').Last() :
-                    remote.ListAudioDevices(readbackParameter.StartsWith("Strip[", StringComparison.Ordinal))
-                        .FirstOrDefault(device => device.Name.Equals(prior, StringComparison.OrdinalIgnoreCase))
-                        ?.InterfaceName.ToLowerInvariant();
-                if (driver is not ("mme" or "wdm"))
-                    return Failure("Device", $"Cannot identify the prior driver for {readbackParameter}; no change was made.", "prepare device recovery");
+                var previous = VoicemeeterDeviceIdentity.Resolve(prior, devices);
+                var driver = string.IsNullOrWhiteSpace(prior) ? requestedDriver : previous.Device?.InterfaceName.ToLowerInvariant();
+                if (driver is not ("mme" or "wdm" or "ks"))
+                    return Failure("Device", "MICROPHONE CHANGE WAS NOT APPLIED · WARDOGS could not safely identify the device currently assigned to this hardware input. No mixer state was changed. " + previous.Detail, "prepare device recovery");
+                if (driver == "ks" && !readbackParameter.StartsWith("Strip[", StringComparison.Ordinal))
+                    return Failure("Device", "KS output recovery is outside the supported shared-listening contract. No mixer state was changed.", "prepare device recovery");
+                if (driver == requestedDriver && matches(prior))
+                    return new(true, $"{readbackParameter} already has the requested device.");
                 var restoreParameter = readbackParameter[..readbackParameter.LastIndexOf('.')] + "." + driver;
-                lease = new(owner, parameter, readbackParameter, prior, desired, restoreParameter, _clock.GetUtcNow());
+                // Remote API writes require the undecorated public name and its actual driver.
+                var priorName = previous.Device is { } resolvedPrior ? VoicemeeterDeviceIdentity.Parse(resolvedPrior.Name).Name : "";
+                lease = new(owner, parameter, readbackParameter, priorName, desired, restoreParameter, _clock.GetUtcNow());
                 _deviceLeases.Add(lease);
                 try { SaveDeviceRecovery(); }
                 catch (Exception error)
@@ -504,11 +520,44 @@ public sealed class AudioBridgeService(IVoicemeeterRemote remote, TimeProvider? 
         {
             if (!_deviceLeases.Contains(lease)) return new(false, "Audio Bridge no longer owns this device assignment.");
             if (!remote.TryGetParameterString(lease.ReadbackResource, out var current) ||
-                !MatchesDevice(current, lease.AppliedName))
+                !VoicemeeterDeviceIdentity.MatchesAssignment(current, lease.AppliedName, lease.Resource.Split('.').Last()))
                 return Failure("Device", $"{lease.ReadbackResource} changed before configuration was saved.", "commit device");
             _deviceLeases.Remove(lease);
             SaveDeviceRecovery();
             return new(true, $"{lease.ReadbackResource} is now owned by saved configuration.");
+        }
+        finally { _operations.Release(); }
+    }
+
+    /// <summary>Validate a microphone transaction together before handing its leases to saved configuration.</summary>
+    public async Task<AudioOperationResult> CommitConfigurationAsync(AudioDeviceLease? device,
+        IReadOnlyList<AudioRouteLease> routes, CancellationToken cancellationToken = default)
+    {
+        await _operations.WaitAsync(cancellationToken);
+        try
+        {
+            if (device is not null && (!_deviceLeases.Contains(device) ||
+                !remote.TryGetParameterString(device.ReadbackResource, out var currentDevice) ||
+                !VoicemeeterDeviceIdentity.MatchesAssignment(currentDevice, device.AppliedName, device.Resource.Split('.').Last())))
+                return Failure("Device", "Microphone assignment changed before ownership could be committed.", "commit microphone configuration");
+            foreach (var route in routes)
+                if (!_leases.Contains(route) || !remote.TryGetParameterFloat(route.Resource, out var current) ||
+                    Math.Abs(current - route.AppliedState) >= .1f)
+                    return Failure("Route", $"{route.Resource} changed before ownership could be committed.", "commit microphone configuration");
+            if (device is not null) _deviceLeases.Remove(device);
+            foreach (var route in routes) _leases.Remove(route);
+            try { SaveRecovery(); SaveDeviceRecovery(); }
+            catch (Exception error)
+            {
+                if (device is not null) _deviceLeases.Add(device);
+                _leases.AddRange(routes);
+                _publishedDevices = Array.AsReadOnly(_deviceLeases.ToArray());
+                _publishedRoutes = Array.AsReadOnly(_leases.ToArray());
+                // Restore durable ownership too if the failure was transient. Never hide the failure.
+                try { SaveRecovery(); SaveDeviceRecovery(); } catch { }
+                return Failure("Recovery", "Microphone recovery ownership could not be committed: " + error.Message, "commit microphone configuration");
+            }
+            return new(true, "Microphone device, routes and gain are now owned by saved configuration.");
         }
         finally { _operations.Release(); }
     }
@@ -524,13 +573,13 @@ public sealed class AudioBridgeService(IVoicemeeterRemote remote, TimeProvider? 
     {
         if (!_deviceLeases.Contains(lease) || !remote.TryGetParameterString(lease.ReadbackResource, out var current))
             return AudioLeaseReleaseState.Failed;
-        if (current.Equals(lease.PriorName, StringComparison.OrdinalIgnoreCase))
+        if (VoicemeeterDeviceIdentity.MatchesAssignment(current, lease.PriorName, lease.RestoreParameter.Split('.').Last()))
         {
             _deviceLeases.Remove(lease);
             SaveDeviceRecovery();
             return AudioLeaseReleaseState.Restored;
         }
-        if (!MatchesDevice(current, lease.AppliedName))
+        if (!VoicemeeterDeviceIdentity.MatchesAssignment(current, lease.AppliedName, lease.Resource.Split('.').Last()))
         {
             _deviceLeases.Remove(lease);
             SaveDeviceRecovery();
@@ -538,7 +587,7 @@ public sealed class AudioBridgeService(IVoicemeeterRemote remote, TimeProvider? 
             return AudioLeaseReleaseState.ExternallyChanged;
         }
         if (!remote.TrySetParameterString(lease.RestoreParameter, lease.PriorName) ||
-            !await VerifyDeviceAsync(lease.ReadbackResource, lease.PriorName, token))
+            !await VerifyDeviceAsync(lease.ReadbackResource, lease.PriorName, lease.RestoreParameter.Split('.').Last(), token))
             return AudioLeaseReleaseState.Failed;
         _deviceLeases.Remove(lease);
         SaveDeviceRecovery();
@@ -577,28 +626,19 @@ public sealed class AudioBridgeService(IVoicemeeterRemote remote, TimeProvider? 
         await ReleaseDeviceCoreAsync(lease, token);
     }
 
-    async Task<bool> VerifyDeviceAsync(string readback, string expected, CancellationToken token)
+    async Task<bool> VerifyDeviceAsync(string readback, string expected, string driver, CancellationToken token)
     {
         for (var attempt = 0; attempt < 20; attempt++)
         {
             await Task.Delay(100, token);
             if (remote.TryGetParameterString(readback, out var current) &&
-                current.Equals(expected, StringComparison.OrdinalIgnoreCase)) return true;
+                VoicemeeterDeviceIdentity.MatchesAssignment(current, expected, driver)) return true;
         }
         return false;
     }
 
-    public static bool MatchesDeviceName(string? current, string? expected)
-    {
-        if (string.IsNullOrWhiteSpace(current) || string.IsNullOrWhiteSpace(expected)) return false;
-        var actual = current.Trim();
-        var wanted = expected.Trim();
-        if (actual.Equals(wanted, StringComparison.OrdinalIgnoreCase)) return true;
-        return new[] { "WDM:", "MME:" }.Any(prefix => actual.StartsWith(prefix, StringComparison.OrdinalIgnoreCase) &&
-            actual[prefix.Length..].Trim().Equals(wanted, StringComparison.OrdinalIgnoreCase));
-    }
-
-    static bool MatchesDevice(string current, string expected) => MatchesDeviceName(current, expected);
+    public static bool MatchesDeviceName(string? current, string? expected) =>
+        VoicemeeterDeviceIdentity.SameName(current, expected);
 
     void SaveDeviceRecovery()
     {
@@ -644,7 +684,7 @@ public sealed class AudioBridgeService(IVoicemeeterRemote remote, TimeProvider? 
 
     static bool IsSupportedDeviceParameter(string parameter, string readback) =>
         Enumerable.Range(0, 3).Any(strip => readback == $"Strip[{strip}].device.name" &&
-            (parameter == $"Strip[{strip}].device.wdm" || parameter == $"Strip[{strip}].device.mme")) ||
+            (parameter == $"Strip[{strip}].device.wdm" || parameter == $"Strip[{strip}].device.mme" || parameter == $"Strip[{strip}].device.ks")) ||
         readback == "Bus[0].device.name" && (parameter == "Bus[0].device.mme" || parameter == "Bus[0].device.wdm");
 
     async Task<bool> VerifyFloatAsync(string parameter, float expected, CancellationToken token)

@@ -22,7 +22,13 @@ per-frame counters. A small atomic checkpoint is refreshed about every 30
 seconds while playing. After a crash, startup accepts only time up to that
 checkpoint and deduplicates it against the journal. Names are stored with
 historical entries so deleting a Library song or station does not erase or
-break old statistics. Statistics are derived from the journal when opened.
+break old statistics. Statistics include both the journal and the current checkpoint. The Listening
+page refreshes immediately when opened, then every 30 seconds while visible.
+Date-range changes refresh immediately. Timer ticks do not overlap; an explicit
+refresh request coalesces while an earlier read is in flight. Hidden pages do not
+periodically read/aggregate history. The separate one-second recorder and safe
+checkpoint behavior continue while other pages are open. No manual Refresh or
+application restart is needed to display current-session statistics.
 
 Use **Listening → Store listening history on this computer** to pause future
 recording. **Clear Listening History** requires confirmation and removes the

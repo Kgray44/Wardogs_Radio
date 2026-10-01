@@ -309,6 +309,9 @@ public partial class MainWindow : Window, IMacroActionHandler
     {
         ApplicationVersionText.Text = "WARDOGS Radio v" + (File.Exists(Path.Combine(AppContext.BaseDirectory, "VERSION")) ? File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "VERSION")).Trim() : "development build");
         _config = await _store.LoadAsync();
+        LoadStartupAudioDeviceControls();
+        if (_config.StartupAudioDeviceMode == StartupAudioDeviceMode.WindowsDefaults)
+            _startupDefaults = await Task.Run(() => new WindowsDefaultAudioEndpointService().Read());
         var interruptedSetup = TryLoadSetupVisit(out var setupRecoveryIssue);
         if (setupRecoveryIssue.Length > 0)
         {
@@ -363,7 +366,13 @@ public partial class MainWindow : Window, IMacroActionHandler
             Footer.Text = listeningRecovery;
         }
         PopulateMusicStrips();
-        await InitializeMicrophoneVolumeAsync();
+        if (interruptedSetup) await ResolveInterruptedSetupAsync();
+        await ApplyStartupAudioDevicesAsync();
+        if (_config.AutoMicrophoneStrip is not { } ownedMic ||
+            _bridge.TryReadDevice(ownedMic, out var currentMic) && VoicemeeterDeviceIdentity.CanReuseOwnedStrip(
+                currentMic, _config.AutoMicrophoneAppliedDeviceName, _config.AutoMicrophonePreviousDeviceName))
+            await InitializeMicrophoneVolumeAsync();
+        else _startupMicrophoneAttention = "MICROPHONE ROUTE CHANGED OUTSIDE WARDOGS · Review Audio & Routing.";
         _bridge.StartTelemetry(_config.MicrophoneStripIndex, _config.MusicStripIndex);
         RegisterHotkeys();
         StartControllerInput();
@@ -376,7 +385,6 @@ public partial class MainWindow : Window, IMacroActionHandler
         _signalTimer.Start();
         await StartListeningAsync();
         await RefreshDashboardListeningAsync();
-        if (interruptedSetup) await ResolveInterruptedSetupAsync();
         var startupPackagePath = _startupPackagePath;
         if (!string.IsNullOrWhiteSpace(startupPackagePath) && File.Exists(startupPackagePath))
             await Dispatcher.InvokeAsync(() => _ = ImportPackageAsync(startupPackagePath));
@@ -1043,7 +1051,7 @@ public partial class MainWindow : Window, IMacroActionHandler
     }
     void Macros_Click(object s, RoutedEventArgs e) => Show(MacrosView, "MACROS", "Your radio shortcuts", MacrosNav);
     void Audio_Click(object s, RoutedEventArgs e) => Show(AudioView, "AUDIO & ROUTING", "Where your sound goes", AudioNav);
-    void Settings_Click(object s, RoutedEventArgs e) { RefreshRecentBackups(); RefreshMpvAdvancedStatus(); RefreshYouTubeSearchSettings(); Show(SettingsView, "SETTINGS", "Playback preferences and application", SettingsNav); }
+    void Settings_Click(object s, RoutedEventArgs e) { RefreshRecentBackups(); RefreshMpvAdvancedStatus(); RefreshYouTubeSearchSettings(); LoadStartupAudioDeviceControls(); Show(SettingsView, "SETTINGS", "Playback preferences and application", SettingsNav); }
 
     void RefreshRecentBackups()
     {
@@ -3723,217 +3731,6 @@ public partial class MainWindow : Window, IMacroActionHandler
         await ConfigureAutomaticMicrophoneAsync(microphone);
     }
 
-    async Task<bool> ConfigureAutomaticMicrophoneAsync(WindowsAudioEndpoint microphone)
-    {
-        var status = _bridge.Probe();
-        if (!status.Connected || status.Edition != "Banana")
-        {
-            Footer.Text = "AUTO MICROPHONE SETUP NEEDS A CONNECTED VOICEMEETER BANANA ENGINE.";
-            return false;
-        }
-        var device = _bridge.ListAudioDevices(true)
-            .Where(x => x.InterfaceType == 3 && x.Name.Equals(microphone.Name, StringComparison.OrdinalIgnoreCase))
-            .FirstOrDefault();
-        if (device is null)
-        {
-            Footer.Text = "VOICEMEETER CANNOT MATCH THAT MICROPHONE TO AN AVAILABLE WDM INPUT.";
-            return false;
-        }
-        if (device.HardwareId.StartsWith("BTHHFENUM", StringComparison.OrdinalIgnoreCase) &&
-            !RadioDialogWindow.Confirm(this, "Bluetooth microphone changes headphone audio",
-                "Opening this Bluetooth headset microphone can switch the same headset from high-quality stereo music to lower-quality call audio. A separate microphone keeps stereo playback available.\n\nConnect this Bluetooth mic anyway?",
-                "USE BLUETOOTH MIC"))
-        {
-            Footer.Text = "MIC ROUTE UNCHANGED · Choose a separate microphone on Step 2 to keep stereo headset music.";
-            return false;
-        }
-        var ownedStrip = _config.AutoMicrophoneStrip;
-        var strip = ownedStrip ?? Enumerable.Range(0, 3).FirstOrDefault(index =>
-            _bridge.TryReadDevice(index, out var name) && string.IsNullOrWhiteSpace(name), -1);
-        if (strip < 0)
-        {
-            Footer.Text = "ALL PHYSICAL VOICEMEETER INPUTS ARE ASSIGNED. AUTO SETUP WILL NOT REPLACE AN EXISTING DEVICE.";
-            return false;
-        }
-        var meter = _bridge.ReadStripSignal(strip, status.Edition);
-        if (!meter.Available || ownedStrip is null && meter.Peak > .005f)
-        {
-            Footer.Text = "THE FREE PHYSICAL INPUT HAS LIVE SIGNAL OR NO READABLE METER; AUTO SETUP WILL NOT TAKE IT OVER.";
-            return false;
-        }
-        if (!_bridge.TryReadRoute(strip, _bridge.Topology.ListeningBus, out var priorA1) ||
-            !_bridge.TryReadRoute(strip, _bridge.Topology.GameBus, out var priorB1) ||
-            !_bridge.TryReadGain(strip, out var priorGain))
-        {
-            Footer.Text = "CANNOT READ MICROPHONE ROUTES; NOTHING CHANGED.";
-            return false;
-        }
-        var priorStrip = _config.MicrophoneStripIndex;
-        _bridge.TryReadDevice(strip, out var priorDevice);
-        if (ownedStrip is not null && string.Equals(priorDevice, device.Name, StringComparison.OrdinalIgnoreCase))
-        {
-            var previousSelection = _config.MicrophoneDeviceId;
-            var previousVolume = _config.MicrophoneVolume;
-            var previousVolumeInitialized = _config.MicrophoneVolumeInitialized;
-            try
-            {
-                _config.MicrophoneDeviceId = microphone.Id;
-                await InitializeMicrophoneVolumeAsync(persistInitializedVolume: false);
-                if (!_bridge.TryReadGain(strip, out var existingGain) ||
-                    Math.Abs(existingGain - MicrophoneLevel.GainDb(_config.MicrophoneVolume)) >= .1f)
-                    throw new InvalidOperationException("Microphone gain could not be confirmed after connecting.");
-                await _store.SaveAsync(_config);
-                if (SetupView.Visibility == Visibility.Visible && _setupVisit is { } noChangeVisit)
-                {
-                    noChangeVisit.RecordFloat($"Strip[{strip}].Gain", priorGain, existingGain);
-                    if (previousSelection != microphone.Id || Math.Abs(priorGain - existingGain) >= .1f)
-                        _setupHasUncommittedChanges = true;
-                }
-                Footer.Text = $"MICROPHONE ALREADY CONNECTED · {device.Name} → {_config.GameBus}.";
-                return true;
-            }
-            catch (Exception error)
-            {
-                await _bridge.RestoreConfiguredFloatAsync("microphone gain", $"Strip[{strip}].Gain",
-                    MicrophoneLevel.GainDb(_config.MicrophoneVolume), priorGain);
-                _config.MicrophoneDeviceId = previousSelection;
-                _config.MicrophoneVolume = previousVolume;
-                _config.MicrophoneVolumeInitialized = previousVolumeInitialized;
-                try { await _store.SaveAsync(_config); } catch { /* Save indicator reports the failure. */ }
-                Footer.Text = "MICROPHONE SETUP NEEDS ATTENTION · " + error.Message;
-                return false;
-            }
-        }
-        var driver = device.InterfaceName.ToLowerInvariant();
-        var connected = false;
-        var routeLeases = new List<AudioRouteLease>();
-        AudioDeviceLease? deviceLease = null;
-        var formerConfig = (_config.MicrophoneStripIndex, _config.MicrophoneDeviceId, _config.AutoMicrophoneStrip,
-            _config.AutoMicrophonePreviousDeviceName, _config.AutoMicrophonePreviousDriver,
-            _config.AutoMicrophoneAppliedDeviceName, _config.AutoMicrophonePreviousA1,
-            _config.AutoMicrophonePreviousB1, _config.AutoMicrophonePreviousStripIndex, _config.SetupComplete,
-            _config.MicrophoneVolume, _config.MicrophoneVolumeInitialized);
-        var priorDriver = _bridge.ListAudioDevices(true).FirstOrDefault(candidate =>
-            candidate.Name.Equals(priorDevice, StringComparison.OrdinalIgnoreCase))?.InterfaceName.ToLowerInvariant() ?? driver;
-        try
-        {
-            var assignment = await _bridge.SetDeviceAsync("automatic microphone setup", $"Strip[{strip}].device.{driver}",
-                $"Strip[{strip}].device.name", device.Name,
-                current => AudioBridgeService.MatchesDeviceName(current, device.Name), persistLease: true);
-            deviceLease = assignment.DeviceLease ?? _bridge.OwnedDevices.FirstOrDefault(lease =>
-                lease.Owner == "automatic microphone setup" && lease.ReadbackResource == $"Strip[{strip}].device.name");
-            if (!assignment.Success)
-            {
-                connected = _bridge.TryReadDevice(strip, out var current) && AudioBridgeService.MatchesDeviceName(current, device.Name);
-                throw new InvalidOperationException(assignment.Detail);
-            }
-            connected = true;
-            foreach (var (bus, enabled) in new[] { (_bridge.Topology.ListeningBus, false), (_bridge.Topology.GameBus, true) })
-            {
-                var route = await _bridge.ApplyRouteAsync("automatic microphone setup", strip, bus, enabled);
-                if (!route.Success) throw new InvalidOperationException(route.Detail);
-                if (route.Lease is { } lease) routeLeases.Add(lease);
-            }
-            if (ownedStrip is null)
-            {
-                _config.AutoMicrophoneStrip = strip;
-                _config.AutoMicrophonePreviousDeviceName = priorDevice;
-                _config.AutoMicrophonePreviousDriver = priorDriver;
-                _config.AutoMicrophonePreviousA1 = priorA1;
-                _config.AutoMicrophonePreviousB1 = priorB1;
-                _config.AutoMicrophonePreviousStripIndex = priorStrip;
-            }
-            _config.AutoMicrophoneAppliedDeviceName = device.Name;
-            _config.MicrophoneStripIndex = strip;
-            _config.MicrophoneDeviceId = microphone.Id;
-            InvalidateSignalVerification();
-            if (SetupView.Visibility == Visibility.Visible && _setupVisit is { } visit)
-            {
-                visit.RecordRoute(strip, _bridge.Topology.ListeningBus, priorA1, false);
-                visit.RecordRoute(strip, _bridge.Topology.GameBus, priorB1, true);
-                if (!string.Equals(priorDevice, device.Name, StringComparison.OrdinalIgnoreCase))
-                    visit.RecordDevice(strip, priorDevice ?? "", device.Name, priorDriver);
-                _setupHasUncommittedChanges = true;
-            }
-            PopulateMusicStrips();
-            await InitializeMicrophoneVolumeAsync(persistInitializedVolume: false);
-            if (!_bridge.TryReadGain(strip, out var confirmedGain) ||
-                Math.Abs(confirmedGain - MicrophoneLevel.GainDb(_config.MicrophoneVolume)) >= .1f)
-                throw new InvalidOperationException("Microphone gain could not be confirmed after connecting.");
-            if (SetupView.Visibility == Visibility.Visible && _setupVisit is { } gainVisit)
-                gainVisit.RecordFloat($"Strip[{strip}].Gain", priorGain, confirmedGain);
-            await _store.SaveAsync(_config);
-            if (SetupView.Visibility != Visibility.Visible && deviceLease is { } assignedLease)
-            {
-                var committedDevice = await _bridge.CommitDeviceAsync(assignedLease);
-                if (!committedDevice.Success)
-                {
-                    Footer.Text = "MICROPHONE CONFIGURATION SAVED, BUT DEVICE OWNERSHIP NEEDS ATTENTION · " + committedDevice.Detail;
-                    return false;
-                }
-                deviceLease = null;
-            }
-            foreach (var lease in SetupView.Visibility == Visibility.Visible ? [] : routeLeases)
-            {
-                var committed = await _bridge.CommitRouteAsync(lease);
-                if (!committed.Success)
-                {
-                    Footer.Text = "MICROPHONE CONFIGURATION SAVED, BUT ROUTE OWNERSHIP NEEDS ATTENTION · " + committed.Detail;
-                    return false;
-                }
-            }
-            RefreshSignalMeters();
-            if (SetupView.Visibility == Visibility.Visible) _setupHasUncommittedChanges = true;
-            Footer.Text = $"MICROPHONE ASSIGNED TO VOICEMEETER HARDWARE INPUT {strip + 1} → {_config.GameBus}; A1 SELF-MONITORING OFF. SPEAK TO VERIFY ITS LIVE METER.";
-            RefreshSetupWizard();
-            return true;
-        }
-        catch (Exception error)
-        {
-            var restoreErrors = new List<string>();
-            var gainRestore = await _bridge.RestoreConfiguredFloatAsync("microphone gain", $"Strip[{strip}].Gain",
-                MicrophoneLevel.GainDb(_config.MicrophoneVolume), priorGain);
-            if (!gainRestore.Success) restoreErrors.Add(gainRestore.Detail);
-            foreach (var lease in routeLeases.AsEnumerable().Reverse())
-            {
-                var state = await _bridge.ReleaseRouteAsync(lease);
-                if (state != AudioLeaseReleaseState.Restored) restoreErrors.Add($"{lease.Resource}: {state}");
-            }
-            if (deviceLease is { } pendingDevice)
-            {
-                var restored = await _bridge.ReleaseDeviceAsync(pendingDevice);
-                if (restored != AudioLeaseReleaseState.Restored)
-                    restoreErrors.Add($"{pendingDevice.ReadbackResource}: {restored}");
-            }
-            else if (connected)
-            {
-                if (!_bridge.TryReadDevice(strip, out var currentDevice)) restoreErrors.Add("Cannot read microphone assignment.");
-                else if (!AudioBridgeService.MatchesDeviceName(currentDevice, device.Name))
-                    restoreErrors.Add("Microphone assignment changed outside WARDOGS; it was left untouched.");
-                else
-                {
-                    var restored = await _bridge.SetDeviceAsync("automatic microphone rollback",
-                        $"Strip[{strip}].device.{priorDriver}", $"Strip[{strip}].device.name", priorDevice,
-                        current => current.Equals(priorDevice, StringComparison.OrdinalIgnoreCase));
-                    if (!restored.Success) restoreErrors.Add(restored.Detail);
-                }
-            }
-            if (restoreErrors.Count == 0)
-            {
-                (_config.MicrophoneStripIndex, _config.MicrophoneDeviceId, _config.AutoMicrophoneStrip,
-                    _config.AutoMicrophonePreviousDeviceName, _config.AutoMicrophonePreviousDriver,
-                    _config.AutoMicrophoneAppliedDeviceName, _config.AutoMicrophonePreviousA1,
-                    _config.AutoMicrophonePreviousB1, _config.AutoMicrophonePreviousStripIndex, _config.SetupComplete,
-                    _config.MicrophoneVolume, _config.MicrophoneVolumeInitialized) = formerConfig;
-            }
-            try { await _store.SaveAsync(_config); }
-            catch (Exception saveError) { restoreErrors.Add("Configuration save failed: " + saveError.Message); }
-            Footer.Text = "AUTO MICROPHONE SETUP FAILED · " + error.Message +
-                (restoreErrors.Count == 0 ? " · Prior mixer state restored." : " · Restore needs attention: " + string.Join("; ", restoreErrors));
-            return false;
-        }
-    }
-
     async void SetupAutomaticMusic_Click(object sender, RoutedEventArgs e) => await ConfigureAutomaticMusicAsync();
 
     async Task<bool> ConfigureAutomaticMusicAsync()
@@ -4141,8 +3938,8 @@ public partial class MainWindow : Window, IMacroActionHandler
             var priorDevice = _config.AutoMicrophonePreviousDeviceName ?? "";
             var appliedDevice = _config.AutoMicrophoneAppliedDeviceName ??
                 (SetupMicrophoneBox.SelectedItem as WindowsAudioEndpoint)?.Name;
-            if (!currentMic.Equals(priorDevice, StringComparison.OrdinalIgnoreCase) &&
-                !AudioBridgeService.MatchesDeviceName(currentMic, appliedDevice))
+            if (!VoicemeeterDeviceIdentity.MatchesAssignment(currentMic, priorDevice, _config.AutoMicrophonePreviousDriver) &&
+                !VoicemeeterDeviceIdentity.MatchesAssignment(currentMic, appliedDevice, "wdm"))
             {
                 Footer.Text = "MICROPHONE INPUT WAS CHANGED ELSEWHERE. AUTO RESTORE WILL NOT OVERWRITE IT.";
                 return false;
@@ -4155,9 +3952,14 @@ public partial class MainWindow : Window, IMacroActionHandler
                 Footer.Text = "MICROPHONE ROUTE RESTORE FAILED · Saved prior state kept for retry.";
                 return false;
             }
-            if (!currentMic.Equals(priorDevice, StringComparison.OrdinalIgnoreCase))
+            if (!VoicemeeterDeviceIdentity.MatchesAssignment(currentMic, priorDevice, _config.AutoMicrophonePreviousDriver))
             {
-                var driver = _config.AutoMicrophonePreviousDriver ?? "wdm";
+                var driver = _config.AutoMicrophonePreviousDriver;
+                if (string.IsNullOrWhiteSpace(priorDevice)) driver ??= "wdm";
+                else driver ??= VoicemeeterDeviceIdentity.Resolve(priorDevice, _bridge.ListAudioDevices(true)).Device?.InterfaceName.ToLowerInvariant();
+                if (driver is not ("mme" or "wdm" or "ks"))
+                { Footer.Text = "MICROPHONE DEVICE RESTORE NEEDS ATTENTION · The prior driver cannot be identified safely."; return false; }
+                priorDevice = VoicemeeterDeviceIdentity.Parse(priorDevice).Name;
                 var restoredDevice = await _bridge.SetDeviceAsync("microphone restore", $"Strip[{micStrip}].device.{driver}",
                     $"Strip[{micStrip}].device.name", priorDevice);
                 if (!restoredDevice.Success)
@@ -4482,23 +4284,6 @@ public partial class MainWindow : Window, IMacroActionHandler
         AudioGraphGameState.Text = "✓ Input name copied";
     }
 
-    async void MicrophoneBox_SelectionChanged(object s, SelectionChangedEventArgs e)
-    {
-        if (_loadingAudioRouteControls || !IsLoaded || MicrophoneBox.SelectedItem is not WindowsAudioEndpoint microphone) return;
-        if (!await ConfigureAutomaticMicrophoneAsync(microphone))
-        {
-            _loadingAudioRouteControls = true;
-            MicrophoneBox.SelectedItem = (MicrophoneBox.ItemsSource as IEnumerable<WindowsAudioEndpoint>)?.FirstOrDefault(x => x.Id == _config.MicrophoneDeviceId);
-            _loadingAudioRouteControls = false;
-            return;
-        }
-        MicrophoneRouteText.Text = microphone.Name + " · connected to Voicemeeter B1";
-        _loadingSetupControls = true;
-        SetupMicrophoneBox.SelectedItem = (SetupMicrophoneBox.ItemsSource as IEnumerable<WindowsAudioEndpoint>)?.FirstOrDefault(x => x.Id == microphone.Id);
-        _loadingSetupControls = false;
-        RefreshSetupWizard();
-    }
-
     async void MonitorBox_SelectionChanged(object s, SelectionChangedEventArgs e)
     {
         if (_loadingAudioRouteControls || !IsLoaded || MonitorBox.SelectedItem is not WindowsAudioEndpoint monitor) return;
@@ -4530,13 +4315,14 @@ public partial class MainWindow : Window, IMacroActionHandler
                 _config.MpvAudioDeviceName = null;
                 _config.MpvAudioDeviceEndpointId = null;
                 _listeningResolution = null;
-                InvalidateSignalVerification();
+                InvalidateListeningVerification();
             }
             await _store.SaveAsync(_config);
             selectionSaved = true;
             if (changed && SetupView.Visibility == Visibility.Visible) _setupHasUncommittedChanges = true;
             SyncListeningSelectors();
             var success = await ReconcileListeningOutputAsync();
+            if (success) _startupListeningAttention = null;
             if (_listeningPlayerDevices.Count == 0)
             {
                 await LoadMpvOutputsAsync();
@@ -4897,6 +4683,11 @@ public partial class MainWindow : Window, IMacroActionHandler
         checks.Add(new DiagnosticItem("Audio Bridge", bridgeSnapshot.Connection.ToString().ToUpperInvariant(),
             bridgeSnapshot.Detail,
             $"Edition: {bridgeSnapshot.Edition ?? "unknown"}; route leases: {bridgeSnapshot.OwnedRoutes.Count}; device leases: {bridgeSnapshot.OwnedDevices.Count}; recent faults: {bridgeSnapshot.Faults.Count}."));
+        checks.Add(new DiagnosticItem("Microphone identity", "DETAIL", "Physical input identity resolution", _microphoneIdentityDetail ?? "No microphone change attempted this session."));
+        checks.Add(new DiagnosticItem("Now Playing visualizer", "DETAIL", _nowPlayingVisualLevel.Source.ToString(),
+            $"music={bridgeSnapshot.Telemetry?.Music.Peak}; listening={_nowPlayingListeningSignal.Peak} (available={_nowPlayingListeningSignal.Available}); selected={_nowPlayingVisualLevel.Peak}; endpoint={_config.MonitorDeviceId}; target={_nowPlayingLevelTarget}"));
+        checks.Add(new DiagnosticItem("Startup audio devices", "DETAIL", _config.StartupAudioDeviceMode.ToString(),
+            $"Multimedia snapshot: capture={_startupDefaults?.Capture?.Id} ({_startupDefaults?.Capture?.Name}); render={_startupDefaults?.Render?.Id} ({_startupDefaults?.Render?.Name}); errors={_startupDefaults?.CaptureError}/{_startupDefaults?.RenderError}; selected mic={_config.MicrophoneDeviceId}; listening={_config.MonitorDeviceId}; attention={_startupMicrophoneAttention}/{_startupListeningAttention}"));
         AddLimiterDiagnostic(checks);
         if (_b1AuditionErrorDetail is not null)
             checks.Add(new DiagnosticItem("B1 listening test", "WARNING",

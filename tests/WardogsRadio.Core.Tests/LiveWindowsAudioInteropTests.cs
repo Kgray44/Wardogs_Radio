@@ -1,12 +1,34 @@
 using NAudio.CoreAudioApi;
 using WardogsRadio.Playback;
 using Xunit;
+using Xunit.Abstractions;
 
 namespace WardogsRadio.Core.Tests;
 
 [Collection("Live Voicemeeter")]
-public sealed class LiveWindowsAudioInteropTests
+public sealed class LiveWindowsAudioInteropTests(ITestOutputHelper output)
 {
+    [Fact]
+    public async Task StartupMultimediaDefaultsMapToCanonicalInventoryWithoutChangingWindows()
+    {
+        if (Environment.GetEnvironmentVariable("WARDOGS_LIVE_DEFAULT_PROBE") != "1") return;
+        var snapshot = new WindowsDefaultAudioEndpointService().Read();
+        var inventory = await new WindowsAudioEndpointService().DiscoverAsync();
+        foreach (var endpoint in new[] { snapshot.Capture, snapshot.Render })
+        {
+            Assert.NotNull(endpoint);
+            output.WriteLine($"Multimedia default: {endpoint.Name} / {endpoint.Id}; input={endpoint.IsInput}; active={endpoint.IsPresent}");
+            var match = Assert.Single(inventory, item => item.IsInput == endpoint.IsInput && AudioDeviceIdentity.SameEndpoint(item.Id, endpoint.Id));
+            output.WriteLine($"Canonical inventory: {match.Id}");
+            using var meter = new WindowsAudioPeakMeter();
+            Assert.True(meter.TryRead(match.Id, out var peak));
+            output.WriteLine($"Endpoint meter readable; peak={peak}");
+        }
+        var after = new WindowsDefaultAudioEndpointService().Read();
+        Assert.Equal(snapshot.Capture!.Id, after.Capture!.Id);
+        Assert.Equal(snapshot.Render!.Id, after.Render!.Id);
+    }
+
     [Fact]
     public async Task EndpointMeterAndAuditionEnumeratorShareOneComWrapper()
     {

@@ -138,6 +138,35 @@ public sealed class ListeningHistoryTests
         Assert.Equal("Fortunate Son", Assert.Single(stats.Songs).Name);
     }
 
+    [Fact]
+    public async Task FreshSessionStatisticsGrowAtThirtySecondCheckpointsWithoutRestartAndStayExactAfterClose()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "wardogs-live-history-" + Guid.NewGuid());
+        try
+        {
+            var store = new ListeningHistoryStore(root);
+            await store.RecoverCheckpointAsync();
+            var recorder = new ListeningHistoryRecorder();
+            recorder.Observe(Observation(Cruise), Start);
+            for (var second = 1; second <= 90; second++)
+            {
+                recorder.Observe(Observation(Cruise), Start.AddSeconds(second));
+                await store.AppendAsync(recorder.Drain());
+                if (second % 30 != 0) continue;
+                await store.CheckpointAsync(recorder.Checkpoint());
+                var stats = ListeningStatsService.Aggregate(await store.ReadAsync());
+                Assert.Equal(second, stats.TotalAudibleSeconds, 3);
+                Assert.Equal(1, stats.QualifiedPlays);
+                Assert.Equal(1, stats.Sessions);
+            }
+            recorder.Close(Start.AddSeconds(90));
+            await store.AppendAsync(recorder.Drain());
+            await store.CheckpointAsync(recorder.Checkpoint());
+            Assert.Equal(90, ListeningStatsService.Aggregate(await store.ReadAsync()).TotalAudibleSeconds, 3);
+        }
+        finally { if (Directory.Exists(root)) Directory.Delete(root, true); }
+    }
+
     static ListeningObservation Observation(Guid stationId) => new(stationId,
         stationId == Cruise ? "Cruise" : "Combat", Song, "Fortunate Son", Source, "CCR source",
         IsPlaying: true, IsActiveStation: true, EffectiveGain: .7);
