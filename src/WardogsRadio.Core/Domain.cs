@@ -61,6 +61,8 @@ public sealed class RadioMacro : INotifyPropertyChanged
 public sealed class RadioAction { public ActionKind Kind { get; set; } public Guid? StationId { get; set; } public double? Value { get; set; } public int DelayMilliseconds { get; set; } public TransitionCurve Curve { get; set; } = TransitionCurve.EqualPower; public string? Argument { get; set; } }
 public sealed class YouTubeTrackMetadata { public string VideoId { get; set; } = ""; public double DurationSeconds { get; set; } public DateTimeOffset LastConfirmedUtc { get; set; } }
 public sealed class RadioProfile { public Guid Id { get; set; } = Guid.NewGuid(); public string Name { get; set; } = "WARDOGS"; public List<Station> Stations { get; set; } = []; public List<RadioMacro> Macros { get; set; } = []; }
+public enum StartupAudioDeviceMode { LastUsed, WindowsDefaults }
+
 public sealed class AppConfiguration
 {
     public int SchemaVersion { get; set; } = MusicLibraryService.CurrentSchemaVersion; public bool SetupComplete { get; set; } public SetupVerification? SetupVerification { get; set; } public RadioProfile Profile { get; set; } = Defaults.Profile(); public MusicLibrary MusicLibrary { get; set; } = new();
@@ -69,6 +71,7 @@ public sealed class AppConfiguration
     public double MasterVolume { get; set; } = .8; public double GameMasterVolume { get; set; } = .8; public double MicrophoneVolume { get; set; } = 1; public bool MicrophoneVolumeInitialized { get; set; }
     /// <summary>Suppresses decorative Now Playing transitions while retaining all controls and state updates.</summary>
     public bool ReduceMotion { get; set; }
+    public StartupAudioDeviceMode StartupAudioDeviceMode { get; set; } = StartupAudioDeviceMode.LastUsed;
     /// <summary>Local listening history is opt-out and is never sent to a service.</summary>
     public bool ListeningHistoryEnabled { get; set; } = true;
     public Dictionary<string, YouTubeTrackMetadata> YouTubeDurationCache { get; set; } = [];
@@ -154,6 +157,7 @@ public sealed class ConfigurationStore(string root)
     }
     static AppConfiguration Normalize(AppConfiguration config)
     {
+        if (!Enum.IsDefined(config.StartupAudioDeviceMode)) config.StartupAudioDeviceMode = StartupAudioDeviceMode.LastUsed;
         config.Profile ??= Defaults.Profile();
         config.ClipGuard ??= new ClipGuardSettings();
         config.ClipGuard.Normalize();

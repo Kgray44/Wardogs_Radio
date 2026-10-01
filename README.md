@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  Windows 10/11 • Current release: <strong>v0.4.0</strong>
+  Windows 10/11 • Owner-review candidate: <strong>v0.4.1</strong> • Public stable: v0.4.0
 </p>
 
 WARDOGS Radio is a Windows desktop app for playing music through your headset **and** your in-game voice output without having to rebuild an audio-routing science experiment every time you launch a game.
@@ -549,6 +549,29 @@ To completely exit and restore any temporary route owned by WARDOGS Radio, use:
 **Tray icon → Exit**
 
 ---
+
+## v0.4.1 candidate: audio reliability
+
+In **Audio & Routing**, choose an available physical microphone. WARDOGS verifies
+the Voicemeeter assignment, enables B1, disables A1 self-monitoring, confirms gain,
+and saves the selection. Decorated WDM/MME names use consistent recovery rules.
+An ambiguous or externally changed input is left untouched with a repair message.
+
+**Settings → Audio Devices on Startup** offers **Use Last WARDOGS Devices** (the
+existing default) or **Use Current Windows Default Devices**. Windows Defaults
+reads the Multimedia microphone and listening output once at launch; changing
+Windows defaults later does not replace your selection. Unsafe virtual microphone
+defaults or failed mappings retain the previous selection and need attention.
+
+**Listening** refreshes immediately on opening and every 30 seconds while visible,
+including current-session activity. Date-range changes refresh immediately. There
+is no manual Listening Refresh button. Audio-device refresh remains available in
+Audio & Routing. Now Playing bars follow the selected listening endpoint during
+local and YouTube playback, then decay to idle when paused.
+
+This is an owner-review candidate; the public stable download remains v0.4.0.
+See [candidate release notes](docs/ReleaseNotes-v0.4.1.md) and the
+[audit and live acceptance checklist](docs/V0.4.1-CandidateAudit.md).
 
 ## Updates
 

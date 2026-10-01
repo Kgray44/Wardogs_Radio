@@ -143,7 +143,7 @@ public partial class MainWindow
                 saved.Routes.Any(x => string.IsNullOrWhiteSpace(x.Key) || x.Value is null ||
                     !float.IsFinite(x.Value.Prior) || !float.IsFinite(x.Value.Applied)) ||
                 saved.Devices.Any(x => x.Key is < 0 or > 2 || x.Value is null ||
-                    string.IsNullOrWhiteSpace(x.Value.Applied) || x.Value.Driver is not ("mme" or "wdm")))
+                    string.IsNullOrWhiteSpace(x.Value.Applied) || x.Value.Driver is not ("mme" or "wdm" or "ks")))
                 throw new InvalidOperationException("The saved Setup checkpoint is invalid.");
             if (saved.Routes.Count == 0 && saved.Devices.Count == 0 &&
                 saved.Original == SetupAudioConfiguration.Capture(_config))
@@ -203,8 +203,8 @@ public partial class MainWindow
         {
             if (!_bridge.TryReadDevice(strip, out var current))
             { Footer.Text = "SETUP UNDO NEEDS ATTENTION · Could not read microphone assignment."; return false; }
-            if (current.Equals(device.Prior, StringComparison.OrdinalIgnoreCase)) continue;
-            if (!AudioBridgeService.MatchesDeviceName(current, device.Applied))
+            if (VoicemeeterDeviceIdentity.MatchesAssignment(current, device.Prior, device.Driver)) continue;
+            if (!VoicemeeterDeviceIdentity.MatchesAssignment(current, device.Applied, "wdm"))
             { Footer.Text = "SETUP UNDO NEEDS ATTENTION · Microphone changed outside WARDOGS; it was left untouched."; return false; }
             var restored = await _bridge.SetDeviceAsync("setup visit undo", $"Strip[{strip}].device.{device.Driver}",
                 $"Strip[{strip}].device.name", device.Prior);

@@ -40,6 +40,11 @@ public sealed class LiveVoicemeeterProbeTests(ITestOutputHelper output)
             remote.TryGetParameterString($"Strip[{strip}].device.name", out var stripDevice);
             remote.TryGetParameterFloat($"Strip[{strip}].Gain", out var gain);
             output.WriteLine($"Strip {strip}: device={stripDevice}, B1={b1}, A1={a1}, gain={gain:0.0} dB, available={level.Available}, peak={level.Peak}");
+            if (strip < 3 && !string.IsNullOrWhiteSpace(stripDevice))
+            {
+                var identity = VoicemeeterDeviceIdentity.Resolve(stripDevice, remote.ListAudioDevices(true));
+                output.WriteLine($"Prior identity: {identity.Detail}; resolved driver={identity.Device?.InterfaceName}");
+            }
         }
         var bus = monitor.ReadBus(status.Edition, "B1");
         var b1Index = status.Edition switch { "Standard" => 1, "Banana" => 3, "Potato" => 5, _ => -1 };

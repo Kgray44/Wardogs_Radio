@@ -9,6 +9,10 @@ public sealed class AudioBridgeServiceTests
     {
         public bool Installed = true, Connected, Running, AllowStart = true, ApplyWrites = true;
         public string Edition = "Banana";
+        public bool DecorateDeviceWrites;
+        public string? RefuseFloatParameter;
+        public List<(string Parameter, string Name)> DeviceWrites { get; } = [];
+        public IReadOnlyList<VoicemeeterAudioDevice>? Devices;
         public int StartCalls;
         public int ProbeCalls;
         public int FastProbeCalls;
@@ -36,7 +40,7 @@ public sealed class AudioBridgeServiceTests
         public bool TryGetParameterFloat(string name, out float value) => Values.TryGetValue(name, out value);
         public bool TrySetParameterFloat(string name, float value)
         {
-            if (!Values.ContainsKey(name)) return false;
+            if (name == RefuseFloatParameter || !Values.ContainsKey(name)) return false;
             if (ApplyWrites) Values[name] = value;
             return true;
         }
@@ -45,12 +49,128 @@ public sealed class AudioBridgeServiceTests
         {
             var readback = name[..name.LastIndexOf('.')] + ".name";
             if (!Strings.ContainsKey(readback)) return false;
-            if (ApplyWrites) Strings[readback] = value;
+            DeviceWrites.Add((name, value));
+            if (ApplyWrites) Strings[readback] = DecorateDeviceWrites && value.Length > 0
+                ? name.Split('.').Last().ToUpperInvariant() + ": " + value : value;
             return true;
         }
         public IReadOnlyList<VoicemeeterAudioDevice> ListAudioDevices(bool inputs) =>
-            [new(3, "Owner microphone", "device-owner"), new(3, "WARDOGS microphone", "device-wardogs")];
+            Devices ?? [new(3, "Owner microphone", "device-owner"), new(3, "WARDOGS microphone", "device-wardogs")];
         public void Dispose() { }
+    }
+
+    [Theory]
+    [InlineData("Owner microphone", 3, "wdm")]
+    [InlineData("WDM: Owner microphone", 3, "wdm")]
+    [InlineData("MME: Owner microphone", 1, "mme")]
+    [InlineData("KS: Owner microphone", 4, "ks")]
+    public async Task DecoratedPriorRestoresThroughActualDriverAfterLaterRouteFailure(string prior, int type, string driver)
+    {
+        var remote = new Remote { Connected = true, Running = true, DecorateDeviceWrites = true,
+            RefuseFloatParameter = "Strip[0].B1",
+            Devices = [new(type, "Owner microphone", "owner"), new(3, "WARDOGS microphone", "wardogs")] };
+        remote.Strings["Strip[0].device.name"] = prior;
+        remote.Values["Strip[0].B1"] = 0;
+        var bridge = new AudioBridgeService(remote);
+        var assigned = await bridge.SetDeviceAsync("test", "Strip[0].device.wdm", "Strip[0].device.name",
+            "WARDOGS microphone", persistLease: true);
+        Assert.True(assigned.Success, assigned.Detail);
+        Assert.Equal("Strip[0].device." + driver, assigned.DeviceLease!.RestoreParameter);
+        Assert.False((await bridge.ApplyRouteAsync("test", 0, "B1", true)).Success);
+        Assert.Equal(AudioLeaseReleaseState.Restored, await bridge.ReleaseDeviceAsync(assigned.DeviceLease));
+        Assert.Equal(("Strip[0].device." + driver, "Owner microphone"), remote.DeviceWrites.Last());
+        Assert.True(VoicemeeterDeviceIdentity.MatchesAssignment(remote.Strings["Strip[0].device.name"], "Owner microphone", driver));
+    }
+
+    [Fact]
+    public async Task AmbiguousPriorAndRequestedDeviceCannotMutateMixer()
+    {
+        var remote = new Remote { Connected = true, Running = true,
+            Devices = [new(3, "Owner microphone", "a"), new(1, "Owner microphone", "b"), new(3, "WARDOGS microphone", "c")] };
+        remote.Strings["Strip[0].device.name"] = "Owner microphone";
+        var bridge = new AudioBridgeService(remote);
+        Assert.False((await bridge.SetDeviceAsync("test", "Strip[0].device.wdm", "Strip[0].device.name", "WARDOGS microphone", persistLease: true)).Success);
+        Assert.Empty(remote.DeviceWrites);
+        remote.Devices = [new(3, "WARDOGS microphone", "a"), new(3, "WARDOGS microphone", "b")];
+        remote.Strings["Strip[0].device.name"] = "";
+        Assert.False((await bridge.SetDeviceAsync("test", "Strip[0].device.wdm", "Strip[0].device.name", "WARDOGS microphone", persistLease: true)).Success);
+        Assert.Empty(remote.DeviceWrites);
+    }
+
+    [Fact]
+    public async Task ExternalChangeBetweenOwnershipCheckAndWriteIsRefused()
+    {
+        var remote = new Remote { Connected = true, Running = true };
+        remote.Strings["Strip[0].device.name"] = "Another application microphone";
+        var bridge = new AudioBridgeService(remote);
+        var result = await bridge.SetDeviceAsync("test", "Strip[0].device.wdm", "Strip[0].device.name", "WARDOGS microphone",
+            persistLease: true, expectedPriorReadback: "WDM: Owner microphone");
+        Assert.False(result.Success);
+        Assert.Contains("CHANGED OUTSIDE WARDOGS", result.Detail);
+        Assert.Empty(remote.DeviceWrites);
+    }
+
+    [Fact]
+    public async Task EmptyStripAndSuccessfulReplacementVerifyRoutesGainAndCommitOwnership()
+    {
+        var remote = new Remote { Connected = true, Running = true, DecorateDeviceWrites = true };
+        remote.Strings["Strip[0].device.name"] = "";
+        remote.Values["Strip[0].A1"] = 1;
+        remote.Values["Strip[0].B1"] = 0;
+        remote.Values["Strip[0].Gain"] = 0;
+        var bridge = new AudioBridgeService(remote);
+        var device = await bridge.SetDeviceAsync("test", "Strip[0].device.wdm", "Strip[0].device.name", "WARDOGS microphone", persistLease: true);
+        Assert.True(device.Success, device.Detail);
+        var a1 = await bridge.ApplyRouteAsync("test", 0, "A1", false);
+        var b1 = await bridge.ApplyRouteAsync("test", 0, "B1", true);
+        var gain = await bridge.SetFloatAsync("test", "Strip[0].Gain", -3);
+        Assert.True(a1.Success && b1.Success && gain.Success);
+        Assert.True((await bridge.CommitConfigurationAsync(device.DeviceLease, [a1.Lease!, b1.Lease!, gain.Lease!])).Success);
+        Assert.Equal(0, remote.Values["Strip[0].A1"]);
+        Assert.Equal(1, remote.Values["Strip[0].B1"]);
+        Assert.Equal(-3, remote.Values["Strip[0].Gain"]);
+        Assert.Empty(bridge.OwnedDevices);
+        Assert.Empty(bridge.Snapshot.OwnedRoutes);
+    }
+
+    [Fact]
+    public async Task GroupCommitRefusesExternalRouteChangeAndRetainsOtherRecoveryOwnership()
+    {
+        var remote = new Remote { Connected = true, Running = true };
+        remote.Strings["Strip[0].device.name"] = "Owner microphone";
+        remote.Values["Strip[0].B1"] = 0;
+        var bridge = new AudioBridgeService(remote);
+        var device = (await bridge.SetDeviceAsync("test", "Strip[0].device.wdm", "Strip[0].device.name", "WARDOGS microphone", persistLease: true)).DeviceLease!;
+        var route = (await bridge.ApplyRouteAsync("test", 0, "B1", true)).Lease!;
+        remote.Values["Strip[0].B1"] = 0;
+        Assert.False((await bridge.CommitConfigurationAsync(device, [route])).Success);
+        Assert.Single(bridge.OwnedDevices);
+        Assert.Single(bridge.Snapshot.OwnedRoutes);
+        Assert.Equal(AudioLeaseReleaseState.ExternallyChanged, await bridge.ReleaseRouteAsync(route));
+        Assert.Equal(AudioLeaseReleaseState.Restored, await bridge.ReleaseDeviceAsync(device));
+    }
+
+    [Fact]
+    public async Task SameDeviceNameWithDifferentPriorDriverStillAssignsAndRestoresCorrectly()
+    {
+        var remote = new Remote { Connected = true, Running = true, DecorateDeviceWrites = true,
+            Devices = [new(1, "Owner microphone", "mme"), new(3, "Owner microphone", "wdm")] };
+        remote.Strings["Strip[0].device.name"] = "MME: Owner microphone";
+        var bridge = new AudioBridgeService(remote);
+        var result = await bridge.SetDeviceAsync("test", "Strip[0].device.wdm", "Strip[0].device.name", "Owner microphone", persistLease: true);
+        Assert.True(result.Success, result.Detail);
+        Assert.NotNull(result.DeviceLease);
+        Assert.Equal("WDM: Owner microphone", remote.Strings["Strip[0].device.name"]);
+        Assert.Equal(AudioLeaseReleaseState.Restored, await bridge.ReleaseDeviceAsync(result.DeviceLease));
+        Assert.Equal("MME: Owner microphone", remote.Strings["Strip[0].device.name"]);
+    }
+
+    [Fact]
+    public async Task UnchangedGainDoesNotWriteToMixer()
+    {
+        var remote = new Remote { Connected = true, Running = true, RefuseFloatParameter = "Strip[0].Gain" };
+        remote.Values["Strip[0].Gain"] = -3;
+        Assert.True((await new AudioBridgeService(remote).SetGainAsync(0, -3)).Success);
     }
 
     [Fact]
