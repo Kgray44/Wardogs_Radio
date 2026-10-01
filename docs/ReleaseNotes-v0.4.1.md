@@ -1,6 +1,6 @@
 # WARDOGS Radio v0.4.1
 
-Owner-review candidate. This version has not been tagged or published.
+Audio reliability improvements, live playback visualization, automatic Listening updates, and a new startup-device preference.
 
 ## Fixed
 
@@ -17,4 +17,6 @@ Owner-review candidate. This version has not been tagged or published.
 
 Audio Bridge readback, rollback, crash recovery, and protection against outside changes remain in place. Startup microphone changes use the same verified routing pipeline as manual selection. Unavailable, ambiguous, or virtual default microphones retain the previous selection and show a repair message.
 
-Physical microphone selection, visible playback animation, audible output switching, and restart behavior still require the [owner acceptance checks](V0.4.1-CandidateAudit.md).
+Owner acceptance was recorded on October 1, 2026. See the [validation and acceptance record](https://github.com/Kgray44/Wardogs_Radio/blob/v0.4.1/docs/V0.4.1-CandidateAudit.md) for test evidence and known limitations.
+
+The Windows installer is unsigned.
