@@ -12,8 +12,10 @@ namespace WardogsRadio.App;
 /// Source volume stays at unity; Windows session volume controls listening,
 /// leaving process-loopback game-feed gain independent. No system default changes.
 /// </summary>
-internal sealed class YouTubeListeningRoute(string configurationRoot)
+internal sealed class YouTubeListeningRoute(string configurationRoot,
+    Func<IWindowsPerAppAudioPolicy>? policyFactory = null)
 {
+    readonly Func<IWindowsPerAppAudioPolicy> _policyFactory = policyFactory ?? (() => new WindowsPerAppAudioPolicy());
     readonly string _recoveryPath = Path.Combine(configurationRoot, "youtube-listening-policy-recovery.json");
     Snapshot? _snapshot;
 
@@ -32,7 +34,7 @@ internal sealed class YouTubeListeningRoute(string configurationRoot)
         {
             if (!OriginalProcessIsAlive(snapshot))
                 throw new InvalidOperationException("The YouTube audio process exited or restarted; reconnect the player.");
-            using var policy = new WindowsPerAppAudioPolicy();
+            using var policy = _policyFactory();
             RequirePolicy(policy, snapshot);
             if (!TrySession(snapshot.ProcessId, snapshot.RawEndpoint, out _))
                 throw new InvalidOperationException("YouTube audio is no longer on the selected output.");
@@ -75,7 +77,7 @@ internal sealed class YouTubeListeningRoute(string configurationRoot)
         using var process = Process.GetProcessById((int)pid.Value);
         var processStart = process.StartTime.ToUniversalTime().Ticks;
         var session = AudioSessions([pid.Value]).First();
-        using var policy = new WindowsPerAppAudioPolicy();
+        using var policy = _policyFactory();
         var target = WindowsPerAppAudioPolicy.FormatEndpoint(rawEndpoint);
         var snapshot = new Snapshot(pid.Value, processStart, policy.Read(pid.Value, 0),
             policy.Read(pid.Value, 1), target, rawEndpoint, session.Volume, session.Volume);
@@ -103,7 +105,7 @@ internal sealed class YouTubeListeningRoute(string configurationRoot)
             throw new InvalidOperationException("The YouTube audio process exited or restarted; reconnect the player.");
         var rawEndpoint = ActiveRenderEndpoint(endpointId);
         if (SameEndpoint(rawEndpoint, prior.RawEndpoint)) return;
-        using var policy = new WindowsPerAppAudioPolicy();
+        using var policy = _policyFactory();
         RequirePolicy(policy, prior);
         var next = prior with
         {
@@ -176,7 +178,7 @@ internal sealed class YouTubeListeningRoute(string configurationRoot)
                 detail = "The original YouTube audio process exited or restarted. Its recovery record was retained; no other process was changed.";
                 return true;
             }
-            using var policy = new WindowsPerAppAudioPolicy();
+            using var policy = _policyFactory();
             if (TrySession(snapshot.ProcessId, snapshot.RawEndpoint, out var session) &&
                 Math.Abs(session.SimpleAudioVolume.Volume - snapshot.AppliedVolume) < .02f)
                 session.SimpleAudioVolume.Volume = snapshot.PriorVolume;
@@ -227,7 +229,7 @@ internal sealed class YouTubeListeningRoute(string configurationRoot)
         catch (ArgumentException) { return false; }
     }
 
-    static void RestoreRole(WindowsPerAppAudioPolicy policy, Snapshot snapshot, int role, string? prior)
+    static void RestoreRole(IWindowsPerAppAudioPolicy policy, Snapshot snapshot, int role, string? prior)
     {
         var current = policy.Read(snapshot.ProcessId, role);
         if (string.Equals(current, prior, StringComparison.OrdinalIgnoreCase)) return;
@@ -240,7 +242,7 @@ internal sealed class YouTubeListeningRoute(string configurationRoot)
             throw new InvalidOperationException("Prior per-app output did not read back after restoration.");
     }
 
-    static void RequirePolicy(WindowsPerAppAudioPolicy policy, Snapshot snapshot)
+    static void RequirePolicy(IWindowsPerAppAudioPolicy policy, Snapshot snapshot)
     {
         if (!string.Equals(policy.Read(snapshot.ProcessId, 0), snapshot.AppliedEndpoint, StringComparison.OrdinalIgnoreCase) ||
             !string.Equals(policy.Read(snapshot.ProcessId, 1), snapshot.AppliedEndpoint, StringComparison.OrdinalIgnoreCase))

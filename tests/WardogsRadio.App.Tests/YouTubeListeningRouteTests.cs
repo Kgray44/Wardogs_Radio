@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Text.Json;
 using WardogsRadio.App;
+using WardogsRadio.Playback;
 using Xunit;
 
 namespace WardogsRadio.App.Tests;
@@ -58,16 +59,35 @@ public sealed class YouTubeListeningRouteTests : IDisposable
     public void FailedLiveRestorationRetainsLeaseAndJournal()
     {
         using var process = Process.GetCurrentProcess();
-        // The test runner has no owned audio policy. A different saved prior
-        // output must not be written into the live runner during recovery.
+        // Model an empty Windows policy without relying on a hosted runner's
+        // undocumented Windows interface or changing the runner's audio policy.
         var saved = Save((uint)process.Id, process.StartTime.ToUniversalTime().Ticks);
-        var route = new YouTubeListeningRoute(_root);
+        var policy = new FakePolicy(null);
+        var route = new YouTubeListeningRoute(_root, () => policy);
 
         Assert.False(route.TryRecover(out var detail));
         Assert.Contains("changed outside WARDOGS", detail);
         Assert.True(route.IsActive);
         Assert.Equal(saved, File.ReadAllText(RecoveryPath));
         Assert.Empty(Directory.GetFiles(_root, "*.retired-*"));
+        Assert.Equal(0, policy.Writes);
+    }
+
+    [Fact]
+    public void OwnedLivePolicyRestoresBothRolesAndClearsJournal()
+    {
+        using var process = Process.GetCurrentProcess();
+        Save((uint)process.Id, process.StartTime.ToUniversalTime().Ticks);
+        var policy = new FakePolicy("applied");
+        var route = new YouTubeListeningRoute(_root, () => policy);
+
+        Assert.True(route.TryRecover(out var detail), detail);
+        Assert.False(route.IsActive);
+        Assert.False(File.Exists(RecoveryPath));
+        Assert.Empty(Directory.GetFiles(_root, "*.retired-*"));
+        Assert.Equal("prior", policy.Read((uint)process.Id, 0));
+        Assert.Equal("prior", policy.Read((uint)process.Id, 1));
+        Assert.Equal(2, policy.Writes);
     }
 
     [Fact]
@@ -79,7 +99,8 @@ public sealed class YouTubeListeningRouteTests : IDisposable
         try
         {
             Save((uint)process.Id, process.StartTime.ToUniversalTime().Ticks);
-            var route = new YouTubeListeningRoute(_root);
+            var policy = new FakePolicy(null);
+            var route = new YouTubeListeningRoute(_root, () => policy);
             Assert.False(route.TryRecover(out _));
             Assert.True(route.IsActive);
             process.Kill();
@@ -91,6 +112,7 @@ public sealed class YouTubeListeningRouteTests : IDisposable
             Assert.True(route.TryEnd(out var detail), detail);
             Assert.False(route.IsActive);
             Assert.Single(Directory.GetFiles(_root, "*.retired-*"));
+            Assert.Equal(0, policy.Writes);
         }
         finally
         {
@@ -113,4 +135,17 @@ public sealed class YouTubeListeningRouteTests : IDisposable
     }
 
     public void Dispose() => Directory.Delete(_root, true);
+
+    sealed class FakePolicy(string? current) : IWindowsPerAppAudioPolicy
+    {
+        readonly Dictionary<int, string?> _roles = new() { [0] = current, [1] = current };
+        public int Writes { get; private set; }
+        public string? Read(uint pid, int role) => _roles[role];
+        public void Set(uint pid, int role, string? rawDeviceId)
+        {
+            _roles[role] = rawDeviceId;
+            Writes++;
+        }
+        public void Dispose() { }
+    }
 }

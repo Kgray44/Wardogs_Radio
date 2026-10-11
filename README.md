@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  Windows 10/11 • Current release: <strong>v0.4.1</strong>
+  Windows 10/11 • Current release: <strong>v0.4.2</strong>
 </p>
 
 WARDOGS Radio is a Windows desktop app for playing music through your headset **and** your in-game voice output without having to rebuild an audio-routing science experiment every time you launch a game.
@@ -385,7 +385,7 @@ WARDOGS Radio is designed so the complicated audio setup happens **once**, not e
 
 ### 1. Run the WARDOGS Radio installer
 
-Download **WARDOGS Radio v0.4.1** from [GitHub Releases](https://github.com/Kgray44/Wardogs_Radio/releases/latest) and run the installer.
+Download **WARDOGS Radio v0.4.2** from [GitHub Releases](https://github.com/Kgray44/Wardogs_Radio/releases/latest) and run the installer.
 
 You do **not** need to prepare MPV, WebView2, or Voicemeeter beforehand.
 
@@ -550,6 +550,16 @@ To completely exit and restore any temporary route owned by WARDOGS Radio, use:
 
 ---
 
+## v0.4.2: YouTube recovery hotfix
+
+YouTube playlists no longer stay blocked by a recovery record for an audio process
+that exited or restarted. WARDOGS retains the stale record for diagnostics, then
+lets the current player reconnect. Live-process policy restoration still requires
+ownership and readback; outside changes are left untouched.
+
+The owner confirmed playback after applying the local hotfix on October 10, 2026.
+See [release notes](docs/ReleaseNotes-v0.4.2.md).
+
 ## v0.4.1: audio reliability
 
 In **Audio & Routing**, choose an available physical microphone. WARDOGS verifies
@@ -638,6 +648,6 @@ No owner music, credentials, personal settings, or local build artifacts are int
 
 ## Current release
 
-**v0.4.1**
+**v0.4.2**
 
 [Download the latest WARDOGS Radio release](https://github.com/Kgray44/Wardogs_Radio/releases/latest)
