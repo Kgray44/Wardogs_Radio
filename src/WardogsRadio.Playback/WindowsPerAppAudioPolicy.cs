@@ -2,12 +2,18 @@ using System.Runtime.InteropServices;
 
 namespace WardogsRadio.Playback;
 
+public interface IWindowsPerAppAudioPolicy : IDisposable
+{
+    string? Read(uint pid, int role);
+    void Set(uint pid, int role, string? rawDeviceId);
+}
+
 /// <summary>
 /// Windows per-app render endpoint policy. The interface is an internal Windows
 /// contract also used by EarTrumpet; callers must verify both persisted policy
 /// and the real audio session endpoint, then restore their prior policy.
 /// </summary>
-public sealed class WindowsPerAppAudioPolicy : IDisposable
+public sealed class WindowsPerAppAudioPolicy : IWindowsPerAppAudioPolicy
 {
     const string RenderSuffix = "#{e6327cad-dcec-4949-ae8a-991e976a79d2}";
     const string DevicePrefix = @"\\?\SWD#MMDEVAPI#";
