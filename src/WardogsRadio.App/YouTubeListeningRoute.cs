@@ -30,6 +30,8 @@ internal sealed class YouTubeListeningRoute(string configurationRoot)
         if (_snapshot is not { } snapshot) return true;
         try
         {
+            if (!OriginalProcessIsAlive(snapshot))
+                throw new InvalidOperationException("The YouTube audio process exited or restarted; reconnect the player.");
             using var policy = new WindowsPerAppAudioPolicy();
             RequirePolicy(policy, snapshot);
             if (!TrySession(snapshot.ProcessId, snapshot.RawEndpoint, out _))
@@ -97,6 +99,8 @@ internal sealed class YouTubeListeningRoute(string configurationRoot)
     public async Task SwitchAsync(string endpointId)
     {
         var prior = _snapshot ?? throw new InvalidOperationException("YouTube listening is not connected yet.");
+        if (!OriginalProcessIsAlive(prior))
+            throw new InvalidOperationException("The YouTube audio process exited or restarted; reconnect the player.");
         var rawEndpoint = ActiveRenderEndpoint(endpointId);
         if (SameEndpoint(rawEndpoint, prior.RawEndpoint)) return;
         using var policy = new WindowsPerAppAudioPolicy();
@@ -133,6 +137,8 @@ internal sealed class YouTubeListeningRoute(string configurationRoot)
     public void SetVolume(double gain)
     {
         var snapshot = _snapshot ?? throw new InvalidOperationException("YouTube listening is not connected yet.");
+        if (!OriginalProcessIsAlive(snapshot))
+            throw new InvalidOperationException("The YouTube audio process exited or restarted; reconnect the player.");
         var value = (float)Math.Clamp(gain, 0, 1);
         if (!float.IsFinite(value)) throw new ArgumentOutOfRangeException(nameof(gain));
         if (!TrySession(snapshot.ProcessId, snapshot.RawEndpoint, out var session))
@@ -158,6 +164,18 @@ internal sealed class YouTubeListeningRoute(string configurationRoot)
         if (snapshot is null) { detail = "No YouTube listening policy is active."; return true; }
         try
         {
+            // Windows resolves per-app policy through a live audio process. An
+            // exited PID cannot be restored (E_INVALIDARG), and a reused PID must
+            // never be touched. Keep the journal as evidence, release this lease,
+            // and let the next WebView session acquire its own policy snapshot.
+            if (!OriginalProcessIsAlive(snapshot))
+            {
+                if (File.Exists(_recoveryPath))
+                    File.Move(_recoveryPath, _recoveryPath + ".retired-" + Guid.NewGuid().ToString("N"));
+                _snapshot = null;
+                detail = "The original YouTube audio process exited or restarted. Its recovery record was retained; no other process was changed.";
+                return true;
+            }
             using var policy = new WindowsPerAppAudioPolicy();
             if (TrySession(snapshot.ProcessId, snapshot.RawEndpoint, out var session) &&
                 Math.Abs(session.SimpleAudioVolume.Volume - snapshot.AppliedVolume) < .02f)
@@ -188,14 +206,6 @@ internal sealed class YouTubeListeningRoute(string configurationRoot)
                     string.IsNullOrWhiteSpace(saved.AppliedEndpoint) ||
                     string.IsNullOrWhiteSpace(saved.RawEndpoint))
                     throw new InvalidOperationException("Recovery record is invalid.");
-                // A PID may be reused after a crash. Never modify a different process.
-                try
-                {
-                    using var process = Process.GetProcessById((int)saved.ProcessId);
-                    if (process.StartTime.ToUniversalTime().Ticks != saved.ProcessStartTicks)
-                        throw new InvalidOperationException("The original WebView process ID was reused; policy was left untouched.");
-                }
-                catch (ArgumentException) { /* The original process exited. */ }
                 _snapshot = saved;
             }
             catch (Exception error)
@@ -207,12 +217,23 @@ internal sealed class YouTubeListeningRoute(string configurationRoot)
         return TryEnd(out detail);
     }
 
+    static bool OriginalProcessIsAlive(Snapshot snapshot)
+    {
+        try
+        {
+            using var process = Process.GetProcessById(checked((int)snapshot.ProcessId));
+            return !process.HasExited && process.StartTime.ToUniversalTime().Ticks == snapshot.ProcessStartTicks;
+        }
+        catch (ArgumentException) { return false; }
+    }
+
     static void RestoreRole(WindowsPerAppAudioPolicy policy, Snapshot snapshot, int role, string? prior)
     {
         var current = policy.Read(snapshot.ProcessId, role);
         if (string.Equals(current, prior, StringComparison.OrdinalIgnoreCase)) return;
         if (!string.Equals(current, snapshot.AppliedEndpoint, StringComparison.OrdinalIgnoreCase) &&
-            !string.Equals(current, snapshot.PreviousAppliedEndpoint, StringComparison.OrdinalIgnoreCase))
+            !(snapshot.PreviousAppliedEndpoint is not null &&
+              string.Equals(current, snapshot.PreviousAppliedEndpoint, StringComparison.OrdinalIgnoreCase)))
             throw new InvalidOperationException("The per-app output changed outside WARDOGS; it was left untouched.");
         policy.Set(snapshot.ProcessId, role, prior);
         if (!string.Equals(policy.Read(snapshot.ProcessId, role), prior, StringComparison.OrdinalIgnoreCase))

@@ -24,6 +24,15 @@ Dashboard signal bars distinguish Voicemeeter strip/bus signal from Windows head
 
 The current YouTube listening route identifies the WebView2 audio session, applies the selected endpoint for that process, and verifies that the session moved. Its separate process-loopback game feed is controlled independently. The older global-default route is retained only to restore an interrupted legacy candidate session at startup. Windows per-app endpoint policy uses an undocumented interface and still requires owner-live validation for sound quality, active device switching, restart, and recovery. See [candidate acceptance](ReadinessAudioBridgeCandidate.md) for those checks.
 
+YouTube recovery checks both the saved process ID and its start time before any
+policy or volume change. If the original process exited or its ID was reused, the
+old lease is released and its journal is retained with a `.retired-` suffix. A new
+WebView audio session can then acquire its own route; the retired policy is not
+reported as restored. Windows cannot restore a policy through an exited audio
+process. For a live original process, outside policy changes still block recovery
+and remain untouched. An absent prior switch endpoint never authorizes changing
+an empty Windows policy.
+
 ## v0.4.1 device identity and startup preference
 
 Physical microphone names use one complete-name resolver for known WDM/MME/KS/ASIO
